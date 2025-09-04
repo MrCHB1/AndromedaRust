@@ -1,0 +1,16 @@
+[package]
+name = "AndromedaRust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+memmap2 = "0.9.5"
+eframe = { version = "0.31.1", features = ["glow"] }
+egui_extras = { version = "0.31.1", features = ["image"] }
+rfd = "0.14"
+itertools = "0.14.0"
+num-traits = "0.2.19"
+midir = "0.10.2"
+rtrb = "0.3.2"
+crossbeam = "0.8.4"
+arc-swap = "1.7.1"
