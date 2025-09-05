@@ -1,4 +1,4 @@
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum MetaEventType {
     SequenceNumber = 0x00,
     Text = 0x01,

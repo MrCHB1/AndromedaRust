@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use eframe::egui::Vec2;
 use eframe::glow;
-use crate::{app::{main_window::{GhostNote, MainWindow}, rendering::{piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, view_settings::ViewSettings}, editor::{navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
+use crate::{app::{main_window::{GhostNote, MainWindow}, rendering::{piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
 
 pub mod buffers;
 pub mod piano_roll;
@@ -40,7 +40,7 @@ impl Default for RenderManager {
 }
 
 impl RenderManager {
-    pub fn init_renderers(&mut self, project_data: Arc<Mutex<ProjectData>>, gl: Option<Arc<glow::Context>>, nav: Arc<Mutex<PianoRollNavigation>>, track_view_nav: Arc<Mutex<TrackViewNavigation>>, view_settings: Arc<Mutex<ViewSettings>>) {
+    pub fn init_renderers(&mut self, project_data: Arc<Mutex<ProjectData>>, gl: Option<Arc<glow::Context>>, nav: Arc<Mutex<PianoRollNavigation>>, track_view_nav: Arc<Mutex<TrackViewNavigation>>, view_settings: Arc<Mutex<ViewSettings>>, playback_manager: Arc<Mutex<PlaybackManager>>) {
         // initialize piano roll renderer
         {
             let gl = gl.as_ref().unwrap();
@@ -52,7 +52,8 @@ impl RenderManager {
                     project_data.notes.clone(),
                     view_settings.clone(),
                     nav.clone(),
-                    gl.clone()
+                    gl.clone(),
+                    playback_manager.clone()
                 )
             };
 

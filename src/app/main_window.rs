@@ -1,5 +1,5 @@
 // abstraction is NEEDED!!
-use crate::{app::{custom_widgets::IntegerField, rendering::{RenderManager, RenderType, Renderer}, view_settings::VS_PianoRoll_OnionState}, audio::midi_devices::MIDIDevices, editor::{edit_functions::EFChopDialog, navigation::TrackViewNavigation, settings::editor_settings::ESSettingsWindow}};
+use crate::{app::{custom_widgets::IntegerField, rendering::{RenderManager, RenderType, Renderer}, view_settings::VS_PianoRoll_OnionState}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}, editor::{edit_functions::EFChopDialog, navigation::TrackViewNavigation, settings::editor_settings::ESSettingsWindow}};
 
 use eframe::{
     egui::{self, Color32, RichText, Stroke, Ui},
@@ -137,6 +137,7 @@ pub struct MainWindow {
     gl: Option<Arc<glow::Context>>,
     // renderer: Option<Arc<Mutex<dyn Renderer + Send + Sync>>>,
     render_manager: Option<Arc<Mutex<RenderManager>>>,
+    playback_manager: Option<Arc<Mutex<PlaybackManager>>>,
     nav: Option<Arc<Mutex<PianoRollNavigation>>>,
     track_view_nav: Option<Arc<Mutex<TrackViewNavigation>>>,
     view_settings: Option<Arc<Mutex<ViewSettings>>>,
@@ -208,9 +209,23 @@ impl MainWindow {
         s.midi_devices = Some(Arc::new(Mutex::new(
             MIDIDevices::new().unwrap()
         )));
+
         if let Some(midi_devices) = s.midi_devices.as_ref() {
+            let project_data = s.project_data.lock().unwrap();
+            let playback_manager = Arc::new(Mutex::new(
+                PlaybackManager::new(
+                    midi_devices.clone(),
+                    project_data.notes.clone(),
+                    project_data.global_metas.clone(),
+                    project_data.channel_events.clone()
+                )
+            ));
             s.settings_window.use_midi_devices(midi_devices.clone());
+            s.settings_window.use_playback_manager(playback_manager.clone());
+            
+            s.playback_manager = Some(playback_manager);
         }
+
         s.ghost_notes = Arc::new(Mutex::new(vec![GhostNote {
             ..Default::default()
         }]));
@@ -224,6 +239,11 @@ impl MainWindow {
         let midi_fd = rfd::FileDialog::new().add_filter("MIDI Files", &["mid", "midi"]);
         if let Some(file) = midi_fd.pick_file() {
             project_data.import_from_midi_file(String::from(file.to_str().unwrap()));
+        }
+
+        if let Some(playback_manager) = self.playback_manager.as_mut() {
+            let mut playback_manager = playback_manager.lock().unwrap();
+            playback_manager.ppq = project_data.project_info.ppq;
         }
     }
 
@@ -252,9 +272,9 @@ impl MainWindow {
         let view_settings = Arc::new(Mutex::new(ViewSettings::default()));
         
         let mut render_manager: RenderManager = Default::default();
-        {
+        if let Some(playback_manager) = self.playback_manager.as_ref() {
             let project_data = self.project_data.clone();
-            render_manager.init_renderers(project_data, Some(gl.clone()), nav.clone(), track_view_nav.clone(), view_settings.clone());
+            render_manager.init_renderers(project_data, Some(gl.clone()), nav.clone(), track_view_nav.clone(), view_settings.clone(), playback_manager.clone());
         }
 
         render_manager.switch_renderer(RenderType::PianoRoll);
@@ -1478,6 +1498,13 @@ impl MainWindow {
 
             self.delete_selected_notes();
         }
+
+        if ui.input(|i| i.key_pressed(egui::Key::Space)) {
+            if let Some(playback_manager) = self.playback_manager.as_ref() {
+                let mut playback_manager = playback_manager.lock().unwrap();
+                playback_manager.toggle_playback();
+            }
+        }
     }
 
     fn delete_notes(&mut self, sel_ids: Arc<Mutex<Vec<usize>>>) {
@@ -2001,6 +2028,14 @@ impl eframe::App for MainWindow {
                 self.init_gl();
             }
         }
+
+        if let Some(playback_manager) = self.playback_manager.as_ref() {
+            let playback_manager = playback_manager.lock().unwrap();
+            if playback_manager.playing {
+                ctx.request_repaint();
+            }
+        }
+
         egui::CentralPanel::default().show(ctx, |_| {
             // Menu Bar at top
             egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {

@@ -1,6 +1,6 @@
 use eframe::egui::{self, RichText, Ui};
 
-use crate::{app::custom_widgets::IntegerField, audio::midi_devices::MIDIDevices};
+use crate::{app::custom_widgets::IntegerField, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
 use std::sync::{Arc, Mutex};
 
 pub struct ESGeneralSettings {
@@ -29,13 +29,17 @@ impl Default for ESGeneralSettings {
 pub struct ESAudioSettings {
     port_in: usize,
     port_out: usize,
+
+    // advanced settings
+    event_pool_size: IntegerField
 }
 
 impl Default for ESAudioSettings {
     fn default() -> Self {
         Self {
             port_in: 0,
-            port_out: 0
+            port_out: 0,
+            event_pool_size: IntegerField::new(100000, Some(100), Some(1000000))
         }
     }
 }
@@ -59,7 +63,8 @@ pub struct ESSettingsWindow {
     general_settings: ESGeneralSettings,
     audio_settings: ESAudioSettings,
 
-    midi_devices: Option<Arc<Mutex<MIDIDevices>>>
+    midi_devices: Option<Arc<Mutex<MIDIDevices>>>,
+    playback_manager: Option<Arc<Mutex<PlaybackManager>>>
 }
 
 impl ESSettingsWindow {
@@ -71,10 +76,13 @@ impl ESSettingsWindow {
         self.midi_devices = Some(devices);
     }
 
+    pub fn use_playback_manager(&mut self, playback_manager: Arc<Mutex<PlaybackManager>>) {
+        self.playback_manager = Some(playback_manager);
+    }
+
     fn draw_general_tab(&mut self, ui: &mut Ui) {
         let mut general_settings = &mut self.general_settings;
         ui.label(RichText::new("MIDI Import").size(15.0));
-        ui.separator();
         {
             ui.checkbox(&mut general_settings.import_discard_empty_tracks, "Discard empty tracks");
             ui.checkbox(&mut general_settings.import_max_ppq_override, "Keep PPQ at a Maximum").on_hover_text_at_pointer("If any imported MIDI's PPQ exceeds the specified PPQ, the MIDI will be quantized.");
@@ -83,8 +91,8 @@ impl ESSettingsWindow {
             });
             ui.checkbox(&mut general_settings.import_remove_overlaps, "Remove overlaps");
         }
-        ui.label(RichText::new("MIDI Export").size(15.0));
         ui.separator();
+        ui.label(RichText::new("MIDI Export").size(15.0));
         {
             ui.checkbox(&mut general_settings.export_discard_empty_tracks, "Discard empty tracks");
         }
@@ -94,7 +102,6 @@ impl ESSettingsWindow {
         if let Some(midi_devices) = self.midi_devices.as_ref() {
             let mut audio_settings = &mut self.audio_settings;
             ui.label(RichText::new("MIDI Input Devices").size(15.0));
-            ui.separator();
             {
                 let midi_in_names = {
                     let midi_devices = midi_devices.lock().unwrap();
@@ -110,8 +117,8 @@ impl ESSettingsWindow {
                     //ui.label(in_name);
                 }
             }
-            ui.label(RichText::new("MIDI Output Devices").size(15.0));
             ui.separator();
+            ui.label(RichText::new("MIDI Output Devices").size(15.0));
             {
                 let midi_out_names = {
                     let midi_devices = midi_devices.lock().unwrap();
@@ -125,6 +132,17 @@ impl ESSettingsWindow {
                         midi_devices.connect_out_port(i).unwrap()
                     }
                     //ui.label(in_name);
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new("Advanced").size(15.0));
+            {
+                audio_settings.event_pool_size.show("MIDI Event pool size", ui, None);
+                if audio_settings.event_pool_size.changed {
+                    if let Some(playback_manager) = self.playback_manager.as_ref() {
+                        let mut playback_manager = playback_manager.lock().unwrap();
+                        playback_manager.set_event_pool_size(audio_settings.event_pool_size.value() as usize);
+                    }
                 }
             }
         }

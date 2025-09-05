@@ -5,7 +5,8 @@ pub struct IntegerField {
     buffer: String,
     min_value: i32,
     max_value: i32,
-    value: i32
+    value: i32,
+    pub changed: bool,
 }
 
 impl IntegerField {
@@ -14,19 +15,21 @@ impl IntegerField {
             buffer: initial.to_string(),
             min_value: min_value.unwrap_or(i32::MIN),
             max_value: max_value.unwrap_or(i32::MAX),
-            value: initial
+            value: initial,
+            changed: false
         }
     }
 
     pub fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response {
+        self.changed = false;
         let mut text_edit = egui::TextEdit::singleline(&mut self.buffer);
         if let Some(width) = width {
             text_edit = text_edit.desired_width(width);
         }
 
         let res = ui.horizontal(|ui| {
-            let response = ui.label(label);
-            ui.add(text_edit);
+            ui.label(label);
+            let response = ui.add(text_edit);
             response
         }).inner;
 
@@ -45,8 +48,10 @@ impl IntegerField {
     fn update_buffer(&mut self) {
         if let Ok(parsed) = self.buffer.parse::<i32>() {
             self.value = parsed.clamp(self.min_value,self.max_value);
+            self.changed = true;
         } else {
             self.buffer = self.value.to_string();
+            self.changed = false;
         }
     }
 
