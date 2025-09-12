@@ -1,6 +1,10 @@
+use crate::audio::event_playback::PlaybackManager;
+use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::navigation::TrackViewNavigation;
+use crate::editor::project_data::ProjectData;
+use crate::midi::events::meta_event::MetaEvent;
 use crate::midi::events::note::Note;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use eframe::egui::Vec2;
 use eframe::glow;
 use eframe::glow::HasContext;
@@ -12,7 +16,7 @@ use crate::app::rendering::{
 
 use crate::set_attribute;
 
-const NOTE_BUFFER_SIZE: usize = 32768;
+const NOTE_BUFFER_SIZE: usize = 4096;
 const BAR_BUFFER_SIZE: usize = 32;
 
 // track view background
@@ -51,6 +55,8 @@ const QUAD_INDICES: [u32; 6] = [
 
 pub struct TrackViewRenderer {
     pub navigation: Arc<Mutex<TrackViewNavigation>>,
+    pub playback_manager: Arc<Mutex<PlaybackManager>>,
+    pub bar_cacher: Arc<Mutex<BarCacher>>,
     pub window_size: Vec2<>,
     pub ppq: u16,
 
@@ -70,7 +76,8 @@ pub struct TrackViewRenderer {
 
     bars_render: Vec<RenderTrackViewBar>,
     notes_render: Vec<RenderTrackViewNote>,
-    render_notes: Arc<Mutex<Vec<Vec<Vec<Note>>>>>,
+    render_notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
+    global_metas: Arc<Mutex<Vec<MetaEvent>>>,
     note_colors: Vec<[f32; 3]>,
 
     // per channel per track
@@ -82,7 +89,13 @@ pub struct TrackViewRenderer {
 }
 
 impl TrackViewRenderer {
-    pub unsafe fn new(notes: Arc<Mutex<Vec<Vec<Vec<Note>>>>>, nav: Arc<Mutex<TrackViewNavigation>>, gl: Arc<glow::Context>) -> Self {
+    pub unsafe fn new(
+        project_data: &Arc<Mutex<ProjectData>>,
+        nav: Arc<Mutex<TrackViewNavigation>>,
+        gl: Arc<glow::Context>,
+        playback_manager: &Arc<Mutex<PlaybackManager>>,
+        bar_cacher: &Arc<Mutex<BarCacher>>
+    ) -> Self {
         let tv_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/track_view_bg");
         let tv_notes_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/track_view_note");
 
@@ -132,7 +145,7 @@ impl TrackViewRenderer {
         set_attribute!(glow::FLOAT, tv_notes_vao, 0, Vertex::0);
 
         let tv_notes_ibo = Buffer::new(gl.clone(), glow::ARRAY_BUFFER);
-        let tv_notes_render = [
+        let tv_notes_render = vec![
             RenderTrackViewNote {
                 0: [0.0, 1.0, 0.0, 1.0],
                 1: [1.0, 0.0, 0.0]
@@ -148,19 +161,26 @@ impl TrackViewRenderer {
         gl.vertex_attrib_divisor(1, 1);
         gl.vertex_attrib_divisor(2, 1);
 
+        let (notes, global_metas) = {
+            let project_data = project_data.lock().unwrap();
+            (project_data.notes.clone(), project_data.global_metas.clone())
+        };
+
         let last_note_start = {
-            let notes = notes.lock().unwrap();
+            let notes = notes.read().unwrap();
             vec![vec![0usize; 16]; notes.len()]
         };
 
         let first_render_note = {
-            let notes = notes.lock().unwrap();
+            let notes = notes.read().unwrap();
             vec![vec![0usize; 16]; notes.len()]
         };
 
         Self {
             navigation: nav,
             window_size: Vec2::new(0.0, 0.0),
+            playback_manager: playback_manager.clone(),
+            bar_cacher: bar_cacher.clone(),
             tv_program,
             tv_vertex_buffer,
             tv_vertex_array,
@@ -176,7 +196,8 @@ impl TrackViewRenderer {
             gl,
             bars_render: tv_bars_render.to_vec(),
             notes_render: tv_notes_render.to_vec(),
-            render_notes: notes.clone(),
+            render_notes: notes,
+            global_metas,
 
             ppq: 960,
             note_colors: vec![
@@ -205,13 +226,38 @@ impl TrackViewRenderer {
             last_time: 0.0
         }
     }
+
+    fn get_time(&self) -> f32 {
+        let nav = self.navigation.lock().unwrap();
+
+        let is_playing = {
+            let playback_manager = self.playback_manager.lock().unwrap();
+            playback_manager.playing
+        };
+
+        let nav_ticks = {
+            let mut playback_manager = self.playback_manager.lock().unwrap();
+            if is_playing {
+                playback_manager.get_playback_ticks() as f32
+            } else {
+                nav.tick_pos_smoothed
+            }
+        };
+
+        nav_ticks
+    }
 }
 
 impl Renderer for TrackViewRenderer {
     fn draw(&mut self) {
         if !self.render_active { return; }
         unsafe {
-            let nav = self.navigation.lock().unwrap();
+            let tick_pos = self.get_time();
+
+            let (zoom_ticks, track_pos, zoom_tracks) = {
+                let nav = self.navigation.lock().unwrap();
+                (nav.zoom_ticks_smoothed, nav.track_pos_smoothed, nav.zoom_tracks_smoothed)
+            };
 
             // RENDER BARS
             {
@@ -220,32 +266,40 @@ impl Renderer for TrackViewRenderer {
                 // render from top to bottom
                 let mut curr_track = 0;
                 
-                while (curr_track as f32) < nav.track_pos_smoothed + nav.zoom_tracks_smoothed {
+                while (curr_track as f32) < track_pos + zoom_tracks {
                     let mut curr_bar_tick = 0.0;
                     let mut bar_num = 0;
                     let mut bar_id = 0;
 
-                    let num_bars = nav.zoom_tracks_smoothed;
+                    let num_bars = zoom_tracks;
 
-                    let bar_top = (nav.zoom_tracks_smoothed - curr_track as f32) + nav.track_pos_smoothed;
-                    let bar_bottom = (nav.zoom_tracks_smoothed - curr_track as f32 - 1.0) + nav.track_pos_smoothed;
+                    let bar_top = (zoom_tracks - curr_track as f32) + track_pos;
+                    let bar_bottom = (zoom_tracks - curr_track as f32 - 1.0) + track_pos;
 
                     self.tv_program.set_float("width", self.window_size.x);
                     self.tv_program.set_float("height", self.window_size.y);
                     self.tv_program.set_float("tvBarTop", bar_top / num_bars);
                     self.tv_program.set_float("tvBarBottom", bar_bottom / num_bars);
+                    self.tv_program.set_float("ppqNorm", self.ppq as f32 / zoom_ticks);
 
-                    while curr_bar_tick <= nav.zoom_ticks_smoothed + nav.tick_pos_smoothed {
+                    while curr_bar_tick <= zoom_ticks + tick_pos {
                         // TODO: proper bar position calculation because of signature change events
-                        bar_num += 1;
-                        if (bar_num as f32) * ((self.ppq as f32) * 4.0) < nav.tick_pos_smoothed {
-                            curr_bar_tick += self.ppq as f32 * 4.0;
+                        let (bar_tick, bar_length) = {
+                            let mut bar_cacher = self.bar_cacher.lock().unwrap();
+                            let interval = bar_cacher.get_bar_interval(bar_num);
+                            interval
+                        };
+
+                        if ((bar_tick + bar_length) as f32) < tick_pos{
+                            curr_bar_tick += bar_length as f32;
+                            bar_num += 1;
                             continue;
                         }
+                        
                         self.bars_render[bar_id] = RenderTrackViewBar {
-                            0: ((curr_bar_tick - nav.tick_pos_smoothed) / nav.zoom_ticks_smoothed),
-                            1: ((self.ppq as f32 * 4.0) / nav.zoom_ticks_smoothed),
-                            2: bar_num as u32 - 1
+                            0: ((curr_bar_tick - tick_pos) / zoom_ticks),
+                            1: ((bar_length as f32) / zoom_ticks),
+                            2: bar_num as u32
                         };
 
                         bar_id += 1;
@@ -261,7 +315,8 @@ impl Renderer for TrackViewRenderer {
                             bar_id = 0;
                         }
 
-                        curr_bar_tick += self.ppq as f32 * 4.0;
+                        curr_bar_tick += bar_length as f32;
+                        bar_num += 1;
                     }
 
                     if bar_id != 0 {
@@ -287,7 +342,7 @@ impl Renderer for TrackViewRenderer {
                 self.tv_notes_program.set_float("width", self.window_size.x);
                 self.tv_notes_program.set_float("height", self.window_size.y);
 
-                let all_render_notes = self.render_notes.lock().unwrap();
+                let all_render_notes = self.render_notes.read().unwrap();
 
                 if self.last_note_start.len() != all_render_notes.len() {
                     self.last_note_start = vec![vec![0usize; 16]; all_render_notes.len()];
@@ -297,7 +352,7 @@ impl Renderer for TrackViewRenderer {
                 let track_start = {
                     let mut track_start = 0;
                     for track in 0..all_render_notes.len() {
-                        if track as f32 >= nav.track_pos_smoothed { break; }
+                        if track as f32 >= track_pos { break; }
                         track_start += 1;
                     }
                     track_start
@@ -306,7 +361,7 @@ impl Renderer for TrackViewRenderer {
                 let track_end = {
                     let mut track_end = track_start;
                     for track in track_start..all_render_notes.len() {
-                        if track as f32 >= nav.track_pos_smoothed + nav.zoom_tracks_smoothed { break; }
+                        if track as f32 >= track_pos + zoom_tracks { break; }
                         track_end += 1;
                     }
                     track_end
@@ -329,22 +384,22 @@ impl Renderer for TrackViewRenderer {
                         let mut curr_note = 0;
 
                         let mut n_off = self.first_render_note[curr_track as usize][curr_channel];
-                        if self.last_time > nav.tick_pos_smoothed {
+                        if self.last_time > tick_pos {
                             if n_off == 0 {
                                 for note in &notes[0..notes.len()] {
-                                    if (note.start + note.length) as f32 > nav.tick_pos_smoothed { break; }
+                                    if (note.start + note.length) as f32 > tick_pos { break; }
                                     n_off += 1;
                                 }
                             } else {
                                 for note in notes[0..n_off].iter().rev() {
-                                    if ((note.start + note.length) as f32) <= nav.tick_pos_smoothed { break; }
+                                    if ((note.start + note.length) as f32) <= tick_pos { break; }
                                     n_off -= 1;
                                 }
                             }
                             self.first_render_note[curr_track as usize][curr_channel] = n_off;
-                        } else if self.last_time < nav.tick_pos_smoothed {
+                        } else if self.last_time < tick_pos {
                             for note in &notes[n_off..notes.len()] {
-                                if (note.start + note.length) as f32 > nav.tick_pos_smoothed { break; }
+                                if (note.start + note.length) as f32 > tick_pos { break; }
                                 n_off += 1;
                             }
                             self.first_render_note[curr_track as usize][curr_channel] = n_off;
@@ -355,7 +410,7 @@ impl Renderer for TrackViewRenderer {
                         let note_end = {
                             let mut e = n_off;
                             for note in &notes[n_off..notes.len()] {
-                                if (note.start as f32) > nav.tick_pos_smoothed + nav.zoom_ticks_smoothed { break; }
+                                if (note.start as f32) > tick_pos + zoom_ticks { break; }
                                 e += 1;
                             }
                             e
@@ -363,13 +418,13 @@ impl Renderer for TrackViewRenderer {
 
                         for note in &notes[n_off..note_end] {
                             {
-                                let note_top =    (nav.zoom_tracks_smoothed - curr_track as f32 - (1.0 - ((note.key as f32 + 1.0) / 128.0))) + nav.track_pos_smoothed;
-                                let note_bottom = (nav.zoom_tracks_smoothed - curr_track as f32 - (1.0 - ((note.key as f32 - 1.0) / 128.0))) + nav.track_pos_smoothed;
+                                let note_top =    (zoom_tracks - curr_track as f32 - (1.0 - ((note.key as f32 + 1.0) / 128.0))) + track_pos;
+                                let note_bottom = (zoom_tracks - curr_track as f32 - (1.0 - ((note.key as f32 - 1.0) / 128.0))) + track_pos;
                                 self.notes_render[note_id] = RenderTrackViewNote {
-                                    0: [(note.start as f32 - nav.tick_pos_smoothed) / nav.zoom_ticks_smoothed,
-                                        (note.length as f32) / nav.zoom_ticks_smoothed,
-                                        note_bottom / nav.zoom_tracks_smoothed,
-                                        note_top / nav.zoom_tracks_smoothed],
+                                    0: [(note.start as f32 - tick_pos) / zoom_ticks,
+                                        (note.length as f32) / zoom_ticks,
+                                        note_bottom / zoom_tracks,
+                                        note_top / zoom_tracks],
                                     1: {
                                         let color = self.note_colors[curr_channel as usize % self.note_colors.len()];
                                         [color[0], color[1], color[2]]
@@ -410,7 +465,7 @@ impl Renderer for TrackViewRenderer {
                 self.gl.use_program(None);
             }
 
-            self.last_time = nav.tick_pos_smoothed;
+            self.last_time = tick_pos;
         }
     }
 
@@ -422,11 +477,11 @@ impl Renderer for TrackViewRenderer {
         self.render_active = is_active;
     }
 
-    fn set_ghost_notes(&mut self, _notes: Arc<Mutex<Vec<crate::app::main_window::GhostNote>>>) {
+    /*fn set_ghost_notes(&mut self, _notes: Arc<Mutex<Vec<crate::app::main_window::GhostNote>>>) {
         
     }
 
     fn clear_ghost_notes(&mut self) {
         
-    }
+    }*/
 }

@@ -1,5 +1,12 @@
 use eframe::egui;
-use num_traits::{NumCast, PrimInt};
+use num_traits::{NumCast, PrimInt, Num};
+
+pub trait EditField<T> {
+    fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response;
+    fn update_value(&mut self, new_value: T);
+    fn update_buffer(&mut self);
+    fn value(&self) -> T;
+}
 
 pub struct IntegerField {
     buffer: String,
@@ -19,8 +26,10 @@ impl IntegerField {
             changed: false
         }
     }
+}
 
-    pub fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response {
+impl EditField<i32> for IntegerField {
+    fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response {
         self.changed = false;
         let mut text_edit = egui::TextEdit::singleline(&mut self.buffer);
         if let Some(width) = width {
@@ -40,7 +49,7 @@ impl IntegerField {
         res
     }
 
-    pub fn update_value(&mut self, new_value: i32) {
+    fn update_value(&mut self, new_value: i32) {
         self.buffer = new_value.to_string();
         self.value = new_value;
     }
@@ -55,7 +64,7 @@ impl IntegerField {
         }
     }
 
-    pub fn value(&self) -> i32 {
+    fn value(&self) -> i32 {
         self.value
     }
 }

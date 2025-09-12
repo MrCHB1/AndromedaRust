@@ -8,13 +8,14 @@ in float bLength;
 
 uniform float width;
 uniform float height;
+uniform float ppqNorm;
 
 void main() {
     float key_pos = uv.y * 128.0;
     int key_int = int(key_pos) % 12;
     float key_sharp_fac = (key_int == 1 || key_int == 3 || key_int == 6 || key_int == 8 || key_int == 10) ? 0.7 : 1.0;
 
-    float beat_pos = uv.x * 4.0;
+    float beat_pos = uv.x * bLength / ppqNorm;
     int beat_int = int(beat_pos) % 2;
     float beat_odds_fac = (beat_int == 0) ? 0.9 : 1.0;
 
@@ -22,14 +23,19 @@ void main() {
     color *= key_sharp_fac;
     color *= beat_odds_fac;
     color *= oddBarFac;
-    if (uv.x * bLength <= 1.5 / width) {
+
+    if (uv.x * bLength <= 2.75 / width) {
         color *= 0.1;
     }
-    if (fract(beat_pos * 4.0) * (bLength / 16.0) <= 1.0 / width) {
+
+    if (fract(beat_pos * 4.0) * ppqNorm <= 4.0 / width ||
+        fract(beat_pos) * ppqNorm <= 2.0 / width) {
         color *= 0.1;
     }
-    if (fract(key_pos) <= 0.07) {
+
+    if (fract(key_pos) <= 0.09) {
         color *= 0.3;
     }
+
     fragColor = vec4(color, 1.0);
 }

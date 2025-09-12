@@ -1,10 +1,14 @@
 use crate::app::rendering::Renderer;
 use crate::audio::event_playback::PlaybackManager;
+use crate::editor::midi_bar_cacher::BarCacher;
+use crate::editor::project_data::ProjectData;
+use crate::editor::util::get_meta_next_tick;
+use crate::midi::events::meta_event::{MetaEvent, MetaEventType};
 use eframe::egui::Vec2;
 use eframe::glow;
 use eframe::glow::HasContext;
-use std::sync::{Arc, Mutex};
-use crate::app::main_window::GhostNote;
+use std::sync::{Arc, Mutex, RwLock};
+use crate::editor::note_editing::GhostNote;
 use crate::app::rendering::{
     buffers::*,
     shaders::*
@@ -54,6 +58,7 @@ pub struct PianoRollRenderer {
     pub navigation: Arc<Mutex<PianoRollNavigation>>,
     pub playback_manager: Arc<Mutex<PlaybackManager>>,
     pub view_settings: Arc<Mutex<ViewSettings>>,
+    pub bar_cacher: Arc<Mutex<BarCacher>>,
     pub window_size: Vec2<>,
     pub ppq: u16,
 
@@ -73,7 +78,7 @@ pub struct PianoRollRenderer {
 
     bars_render: Vec<RenderPianoRollBar>,
     notes_render: Vec<RenderPianoRollNote>,
-    render_notes: Arc<Mutex<Vec<Vec<Vec<Note>>>>>,
+    render_notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
     note_colors: Vec<[f32; 3]>,
     // per channel per track
     last_note_start: Vec<Vec<usize>>,
@@ -82,11 +87,21 @@ pub struct PianoRollRenderer {
 
     pub ghost_notes: Option<Arc<Mutex<Vec<GhostNote>>>>,
     pub selected: Arc<Mutex<Vec<usize>>>,
-    render_active: bool
+    render_active: bool,
+    started_playing: bool,
+    last_view_offset: f32,
+    last_zoom: f32
 }
 
 impl PianoRollRenderer {
-    pub unsafe fn new(notes: Arc<Mutex<Vec<Vec<Vec<Note>>>>>, view_settings: Arc<Mutex<ViewSettings>>, nav: Arc<Mutex<PianoRollNavigation>>, gl: Arc<glow::Context>, playback_manager: Arc<Mutex<PlaybackManager>>) -> Self {
+    pub unsafe fn new(
+        project_data: &Arc<Mutex<ProjectData>>,
+        view_settings: Arc<Mutex<ViewSettings>>,
+        nav: Arc<Mutex<PianoRollNavigation>>,
+        gl: Arc<glow::Context>,
+        playback_manager: &Arc<Mutex<PlaybackManager>>,
+        bar_cacher: &Arc<Mutex<BarCacher>>
+    ) -> Self {
         let pr_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/piano_roll_bg");
         let pr_notes_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/piano_roll_note");
 
@@ -124,7 +139,7 @@ impl PianoRollRenderer {
         gl.vertex_attrib_divisor(3, 1);
 
         // -------- PIANO ROLL NOTES --------
-
+        
         let pr_notes_vbo = Buffer::new(gl.clone(), glow::ARRAY_BUFFER);
         pr_notes_vbo.set_data(&QUAD_VERTICES, glow::STATIC_DRAW);
 
@@ -136,7 +151,7 @@ impl PianoRollRenderer {
         set_attribute!(glow::FLOAT, pr_notes_vao, 0, Vertex::0);
 
         let pr_notes_ibo = Buffer::new(gl.clone(), glow::ARRAY_BUFFER);
-        let pr_notes_render = [
+        let pr_notes_render = vec![
             RenderPianoRollNote {
                 0: [0.0, 1.0, 0.0, 1.0],
                 1: [1.0, 0.0, 0.0],
@@ -156,20 +171,26 @@ impl PianoRollRenderer {
         gl.vertex_attrib_divisor(2, 1);
         gl.vertex_attrib_divisor(3, 1);
 
+        let (notes, global_metas) = {
+            let project_data = project_data.lock().unwrap();
+            (project_data.notes.clone(), project_data.global_metas.clone())
+        };
+
         let last_note_start = {
-            let notes = notes.lock().unwrap();
+            let notes = notes.read().unwrap();
             vec![vec![0usize; 16]; notes.len()]
         };
 
         let first_render_note = {
-            let notes = notes.lock().unwrap();
+            let notes = notes.read().unwrap();
             vec![vec![0usize; 16]; notes.len()]
         };
 
         Self {
-            playback_manager,
-            navigation: nav,
-            view_settings: view_settings,
+            playback_manager: playback_manager.clone(),
+            navigation: nav.clone(),
+            view_settings: view_settings.clone(),
+            bar_cacher: bar_cacher.clone(),
             window_size: Vec2::new(0.0, 0.0),
             pr_program,
             pr_vertex_buffer,
@@ -186,7 +207,7 @@ impl PianoRollRenderer {
             gl,
             bars_render: pr_bars_render.to_vec(),
             notes_render: pr_notes_render.to_vec(),
-            render_notes: notes.clone(),
+            render_notes: notes,
 
             ppq: 960,
             note_colors: vec![
@@ -214,8 +235,31 @@ impl PianoRollRenderer {
             last_time: 0.0,
             ghost_notes: None,
             selected: Arc::new(Mutex::new(Vec::new())),
-            render_active: false
+            render_active: false,
+            started_playing: false,
+            last_view_offset: 0.0,
+            last_zoom: 0.0
         }
+    }
+
+    fn get_time(&self) -> f32 {
+        let nav = self.navigation.lock().unwrap();
+
+        let is_playing = {
+            let playback_manager = self.playback_manager.lock().unwrap();
+            playback_manager.playing
+        };
+
+        let nav_ticks = {
+            let mut playback_manager = self.playback_manager.lock().unwrap();
+            if is_playing {
+                playback_manager.get_playback_ticks() as f32
+            } else {
+                nav.tick_pos_smoothed
+            }
+        };
+
+        nav_ticks
     }
 }
 
@@ -224,36 +268,42 @@ impl Renderer for PianoRollRenderer {
         if !self.render_active { return; }
 
         unsafe {
-            let nav = self.navigation.lock().unwrap();
+            let tick_pos = self.get_time();
 
-            let is_playing = {
+            let (zoom_ticks, key_pos, zoom_keys) = {
+                let nav = self.navigation.lock().unwrap();
+                (nav.zoom_ticks_smoothed, nav.key_pos_smoothed, nav.zoom_keys_smoothed)
+            };
+            
+            let (nav_curr_track, nav_curr_channel) = {
+                let nav = self.navigation.lock().unwrap();
+                (nav.curr_track, nav.curr_channel)
+            };
+
+            let (is_playing, view_offset) = {
                 let playback_manager = self.playback_manager.lock().unwrap();
-                playback_manager.playing
-            };
-
-            // only used for when playing the midi
-            let view_offset = {
-                if is_playing {
-                    -nav.zoom_ticks_smoothed / 2.0
-                } else {
-                    0.0
+                let mut view_offset = self.last_view_offset;
+                if playback_manager.playing && !self.started_playing {
+                    let nav = self.navigation.lock().unwrap();
+                    view_offset = nav.tick_pos_smoothed - playback_manager.playback_start_pos as f32;
+                    self.last_view_offset = view_offset;
+                    self.last_zoom = zoom_ticks;
+                    self.started_playing = true;
+                } else if !playback_manager.playing {
+                    self.started_playing = false;
+                    self.last_view_offset = 0.0;
                 }
-            };
 
-            let nav_ticks = {
-                let playback_manager = self.playback_manager.lock().unwrap();
-                if is_playing {
-                    playback_manager.get_playback_ticks() as f32
+                view_offset = if self.last_zoom > 0.0 {
+                    view_offset * (zoom_ticks / self.last_zoom)
                 } else {
-                    nav.tick_pos_smoothed
-                }
+                    view_offset
+                };
+                
+                (playback_manager.playing, view_offset)
             };
 
-            let nav_ticks_offs = {
-                let nav_ticks_offs = nav_ticks + view_offset;
-                if nav_ticks_offs < 0.0 { 0.0 }
-                else { nav_ticks_offs }
-            };
+            let tick_pos_offs = tick_pos + view_offset;
 
             // RENDER BARS
             {
@@ -263,24 +313,33 @@ impl Renderer for PianoRollRenderer {
                 let mut bar_id = 0;
                 let mut bar_num = 0;
                 {
-                    let key_start = nav.key_pos_smoothed;
-                    let key_end = nav.key_pos_smoothed + nav.zoom_keys_smoothed;
+                    let key_start = key_pos;
+                    let key_end = key_pos + zoom_keys;
 
                     self.pr_program.set_float("prBarBottom", -key_start / (key_end - key_start));
                     self.pr_program.set_float("prBarTop", (128.0 - key_start) / (key_end - key_start));
                     self.pr_program.set_float("width", self.window_size.x);
                     self.pr_program.set_float("height", self.window_size.y);
+                    self.pr_program.set_float("ppqNorm", self.ppq as f32 / zoom_ticks);
 
-                    while curr_bar_tick < nav.zoom_ticks_smoothed + nav_ticks_offs {
-                        bar_num += 1;
-                        if (bar_num as f32) * ((self.ppq as f32) * 4.0) < nav_ticks_offs {
-                            curr_bar_tick += self.ppq as f32 * 4.0;
+                    while curr_bar_tick < zoom_ticks + tick_pos_offs {
+                        let (bar_tick, bar_length) = {
+                            let mut bar_cacher = self.bar_cacher.lock().unwrap();
+                            let interval = bar_cacher.get_bar_interval(bar_num);
+                            interval
+                        };
+                        // let (bar_tick, bar_length) = (bar_num * self.ppq as u32 * 4, self.ppq as u32 * 4);
+
+                        if ((bar_tick + bar_length) as f32) < tick_pos_offs {
+                            curr_bar_tick += bar_length as f32;
+                            bar_num += 1;
                             continue;
                         }
+
                         self.bars_render[bar_id] = RenderPianoRollBar {
-                            0: ((curr_bar_tick - nav_ticks_offs) / nav.zoom_ticks_smoothed),
-                            1: ((self.ppq as f32 * 4.0) / nav.zoom_ticks_smoothed),
-                            2: bar_num as u32 - 1
+                            0: ((curr_bar_tick - tick_pos_offs) / zoom_ticks),
+                            1: (bar_length as f32 / zoom_ticks),
+                            2: bar_num as u32
                         };
                         bar_id += 1;
                         if bar_id >= 32 {
@@ -293,7 +352,9 @@ impl Renderer for PianoRollRenderer {
                                 glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, 32);
                             bar_id = 0;
                         }
-                        curr_bar_tick += self.ppq as f32 * 4.0;
+
+                        curr_bar_tick += bar_length as f32;
+                        bar_num += 1;
                     }
                 }
 
@@ -317,7 +378,7 @@ impl Renderer for PianoRollRenderer {
                 self.gl.use_program(Some(self.pr_notes_program.program));
 
                 {
-                    let all_render_notes = self.render_notes.lock().unwrap();
+                    let all_render_notes = self.render_notes.read().unwrap();
                     // resize last_note_start and first_render_note if notes changed size
                     if self.last_note_start.len() != all_render_notes.len() {
                         self.last_note_start = vec![vec![0usize; 16]; all_render_notes.len()];
@@ -335,7 +396,7 @@ impl Renderer for PianoRollRenderer {
                         
                         let tracks_to_iter = match view_settings.pr_onion_state {
                             VS_PianoRoll_OnionState::NoOnion => {
-                                &all_render_notes[nav.curr_track as usize..nav.curr_track as usize]
+                                &all_render_notes[nav_curr_track as usize..nav_curr_track as usize]
                             },
                             VS_PianoRoll_OnionState::ViewAll => {
                                 //view_all_tracks = true;
@@ -343,12 +404,12 @@ impl Renderer for PianoRollRenderer {
                             },
                             VS_PianoRoll_OnionState::ViewPrevious => {
                                 //view_all_tracks = false;
-                                if nav.curr_track == 0 { &all_render_notes[nav.curr_track as usize..nav.curr_track as usize] }
-                                else { &all_render_notes[(nav.curr_track - 1) as usize..(nav.curr_track as usize)] }
+                                if nav_curr_track == 0 { &all_render_notes[nav_curr_track as usize..nav_curr_track as usize] }
+                                else { &all_render_notes[(nav_curr_track - 1) as usize..(nav_curr_track as usize)] }
                             },
                             VS_PianoRoll_OnionState::ViewNext => {
-                                if nav.curr_track == (all_render_notes.len() - 1) as u16 { &all_render_notes[nav.curr_track as usize..nav.curr_track as usize] }
-                                else { &all_render_notes[(nav.curr_track) as usize..(nav.curr_track + 1) as usize] }
+                                if nav_curr_track == (all_render_notes.len() - 1) as u16 { &all_render_notes[nav_curr_track as usize..nav_curr_track as usize] }
+                                else { &all_render_notes[(nav_curr_track) as usize..(nav_curr_track + 1) as usize] }
                             }
                         };
 
@@ -361,7 +422,7 @@ impl Renderer for PianoRollRenderer {
                             // 1. draw all notes that is not the current track
                             for note_track in tracks_to_iter {
                                 // skip track if it has nothing or its the navigation's current track
-                                if note_track.is_empty() || curr_track == nav.curr_track {
+                                if note_track.is_empty() || curr_track == nav_curr_track {
                                     curr_track += 1;
                                     continue;
                                 }
@@ -374,22 +435,22 @@ impl Renderer for PianoRollRenderer {
                                     let mut curr_note = 0;
 
                                     let mut n_off = self.first_render_note[curr_track as usize][curr_channel];
-                                    if self.last_time > nav_ticks_offs {
+                                    if self.last_time > tick_pos_offs {
                                         if n_off == 0 {
                                             for note in &notes[0..notes.len()] {
-                                                if (note.start + note.length) as f32 > nav_ticks_offs { break; }
+                                                if (note.start + note.length) as f32 > tick_pos_offs { break; }
                                                 n_off += 1;
                                             }
                                         } else {
                                             for note in notes[0..n_off].iter().rev() {
-                                                if ((note.start + note.length) as f32) <= nav_ticks_offs { break; }
+                                                if ((note.start + note.length) as f32) <= tick_pos_offs { break; }
                                                 n_off -= 1;
                                             }
                                         }
                                         self.first_render_note[curr_track as usize][curr_channel] = n_off;
-                                    } else if self.last_time < nav_ticks_offs {
+                                    } else if self.last_time < tick_pos_offs {
                                         for note in &notes[n_off..notes.len()] {
-                                            if (note.start + note.length) as f32 > nav_ticks_offs { break; }
+                                            if (note.start + note.length) as f32 > tick_pos_offs { break; }
                                             n_off += 1;
                                         }
                                         self.first_render_note[curr_track as usize][curr_channel] = n_off;
@@ -400,7 +461,7 @@ impl Renderer for PianoRollRenderer {
                                     let note_end = {
                                         let mut e = n_off;
                                         for note in &notes[n_off..notes.len()] {
-                                            if (note.start as f32) > nav_ticks_offs + nav.zoom_ticks_smoothed { break; }
+                                            if (note.start as f32) > tick_pos_offs + zoom_ticks { break; }
                                             e += 1;
                                         }
                                         e
@@ -410,23 +471,26 @@ impl Renderer for PianoRollRenderer {
                                         //n_off += 1;
                                         //if n_off == notes.len() { break; }
 
-                                        if note.key as f32 + 1.0 < nav.key_pos_smoothed || (note.key as f32) > nav.key_pos_smoothed + nav.zoom_keys_smoothed {
+                                        if note.key as f32 + 1.0 < key_pos || (note.key as f32) > key_pos + zoom_keys {
                                             curr_note += 1;
+                                            note_idx += 1;
                                             continue;
                                         }
 
                                         // if note.start as f32 > nav.tick_pos_smoothed + nav.zoom_ticks_smoothed { break; }
                                         {
                                             let sel_lock = self.selected.lock().unwrap();
-                                            let note_bottom = (note.key as f32 - nav.key_pos_smoothed) / nav.zoom_keys_smoothed;
-                                            let note_top = ((note.key as f32 + 1.0) - nav.key_pos_smoothed) / nav.zoom_keys_smoothed;
+                                            let note_bottom = (note.key as f32 - key_pos) / zoom_keys;
+                                            let note_top = ((note.key as f32 + 1.0) - key_pos) / zoom_keys;
 
-                                            let highlight_note_play_size = nav.zoom_ticks_smoothed * 0.001;
-                                            let note_playing = (note.start as f32) < nav_ticks + highlight_note_play_size && (note.start as f32 + note.length as f32) > nav_ticks - highlight_note_play_size && is_playing;
+                                            let highlight_note_play_size = zoom_ticks * 0.001;
+                                            let note_playing = (note.start as f32) < tick_pos + highlight_note_play_size
+                                                && (note.start as f32 + note.length as f32) > tick_pos - highlight_note_play_size
+                                                && is_playing;
 
                                             self.notes_render[note_id] = RenderPianoRollNote {
-                                                0: [(note.start as f32 - nav_ticks_offs) / nav.zoom_ticks_smoothed,
-                                                    (note.length as f32) / nav.zoom_ticks_smoothed,
+                                                0: [(note.start as f32 - tick_pos_offs) / zoom_ticks,
+                                                    (note.length as f32) / zoom_ticks,
                                                     (note_bottom),
                                                     (note_top)],
                                                 1: {
@@ -477,13 +541,15 @@ impl Renderer for PianoRollRenderer {
                                             }
                                         }
                                     }
+
+                                    curr_channel += 1;
                                 }
 
                                 curr_track += 1;
                             }
 
                             // 2. draw current track on top
-                            let notes_curr_track = &all_render_notes[nav.curr_track as usize];
+                            let notes_curr_track = &all_render_notes[nav_curr_track as usize];
 
                             let mut curr_channel = 0;
                             for notes in notes_curr_track {
@@ -492,26 +558,26 @@ impl Renderer for PianoRollRenderer {
 
                                 let mut curr_note = 0;
 
-                                let mut n_off = self.first_render_note[nav.curr_track as usize][curr_channel];
-                                if self.last_time > nav_ticks_offs {
+                                let mut n_off = self.first_render_note[nav_curr_track as usize][curr_channel];
+                                if self.last_time > tick_pos_offs {
                                     if n_off == 0 {
                                         for note in &notes[0..notes.len()] {
-                                            if (note.start + note.length) as f32 > nav_ticks_offs { break; }
+                                            if (note.start + note.length) as f32 > tick_pos_offs { break; }
                                             n_off += 1;
                                         }
                                     } else { // backwards instead of forwards
                                         for note in notes[0..n_off].iter().rev() {
-                                            if ((note.start + note.length) as f32) <= nav_ticks_offs { break; }
+                                            if ((note.start + note.length) as f32) <= tick_pos_offs { break; }
                                             n_off -= 1;
                                         }
                                     }
-                                    self.first_render_note[nav.curr_track as usize][curr_channel] = n_off;
-                                } else if self.last_time < nav_ticks_offs {
+                                    self.first_render_note[nav_curr_track as usize][curr_channel] = n_off;
+                                } else if self.last_time < tick_pos_offs {
                                     for note in &notes[n_off..notes.len()] {
-                                        if (note.start + note.length) as f32 > nav_ticks_offs { break; }
+                                        if (note.start + note.length) as f32 > tick_pos_offs { break; }
                                         n_off += 1;
                                     }
-                                    self.first_render_note[nav.curr_track as usize][curr_channel] = n_off;
+                                    self.first_render_note[nav_curr_track as usize][curr_channel] = n_off;
                                 }
 
                                 let mut note_idx = n_off;
@@ -519,7 +585,7 @@ impl Renderer for PianoRollRenderer {
                                 let note_end = {
                                     let mut e = n_off;
                                     for note in &notes[n_off..notes.len()] {
-                                        if (note.start as f32) > nav_ticks_offs + nav.zoom_ticks_smoothed { break; }
+                                        if (note.start as f32) > tick_pos_offs + zoom_ticks { break; }
                                         e += 1;
                                     }
                                     e
@@ -529,28 +595,42 @@ impl Renderer for PianoRollRenderer {
                                     //n_off += 1;
                                     //if n_off == notes.len() { break; }
 
-                                    if note.key as f32 + 1.0 < nav.key_pos_smoothed || (note.key as f32) > nav.key_pos_smoothed + nav.zoom_keys_smoothed {
+                                    if note.key as f32 + 1.0 < key_pos || (note.key as f32) > key_pos + zoom_keys {
                                         curr_note += 1;
+                                        note_idx += 1;
                                         continue;
                                     }
 
                                     // if note.start as f32 > nav.tick_pos_smoothed + nav.zoom_ticks_smoothed { break; }
                                     {
                                         let sel_lock = self.selected.lock().unwrap();
-                                        let note_bottom = (note.key as f32 - nav.key_pos_smoothed) / nav.zoom_keys_smoothed;
-                                        let note_top = ((note.key as f32 + 1.0) - nav.key_pos_smoothed) / nav.zoom_keys_smoothed;
+                                        let note_bottom = (note.key as f32 - key_pos) / zoom_keys;
+                                        let note_top = ((note.key as f32 + 1.0) - key_pos) / zoom_keys;
+
+                                        let highlight_note_play_size = zoom_ticks * 0.001;
+                                        let note_playing = (note.start as f32) < tick_pos + highlight_note_play_size
+                                            && (note.start as f32 + note.length as f32) > tick_pos - highlight_note_play_size
+                                            && is_playing;
+                
+
                                         self.notes_render[note_id] = RenderPianoRollNote {
-                                            0: [(note.start as f32 - nav_ticks_offs) / nav.zoom_ticks_smoothed,
-                                                (note.length as f32) / nav.zoom_ticks_smoothed,
+                                            0: [(note.start as f32 - tick_pos_offs) / zoom_ticks,
+                                                (note.length as f32) / zoom_ticks,
                                                 (note_bottom),
                                                 (note_top)],
                                             1: {
-                                                let color = self.note_colors[curr_channel as usize % self.note_colors.len()];
+                                                let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
                                                 if sel_lock.contains(&note_idx) {
-                                                    [1.0, 0.5, 0.5]
+                                                    color = [1.0, 0.5, 0.5];
                                                 } else {
-                                                    [color[0] / 128.0 * note.velocity as f32, color[1] / 128.0 * note.velocity as f32, color[2] / 128.0 * note.velocity as f32]
+                                                    color = [color[0] / 128.0 * note.velocity as f32, color[1] / 128.0 * note.velocity as f32, color[2] / 128.0 * note.velocity as f32];
                                                 }
+
+                                                if note_playing {
+                                                    color = [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5];
+                                                }
+
+                                                color
                                             },
                                             2: {
                                                 let color = self.note_colors[curr_channel as usize % self.note_colors.len()];
@@ -609,20 +689,20 @@ impl Renderer for PianoRollRenderer {
                         let notes = ghost_notes.lock().unwrap();
                         for note in notes.iter() {
                             let note = note.get_note();
-                            let note_bottom = (note.key as f32 - nav.key_pos_smoothed) / (nav.zoom_keys_smoothed);
-                            let note_top = ((note.key as f32 + 1.0) - nav.key_pos_smoothed) / (nav.zoom_keys_smoothed);
+                            let note_bottom = (note.key as f32 - key_pos) / zoom_keys;
+                            let note_top = ((note.key as f32 + 1.0) - key_pos) / zoom_keys;
 
                             self.notes_render[note_id] = RenderPianoRollNote {
-                                0: [(note.start as f32 - nav_ticks_offs) / nav.zoom_ticks_smoothed,
-                                    (note.length as f32) / nav.zoom_ticks_smoothed,
+                                0: [(note.start as f32 - tick_pos) / zoom_ticks,
+                                    (note.length as f32) / zoom_ticks,
                                     (note_bottom),
                                     (note_top)],
                                 1: {
-                                    let color = self.note_colors[nav.curr_track as usize * 16 + nav.curr_channel as usize % self.note_colors.len()];
+                                    let color = self.note_colors[nav_curr_track as usize * 16 + nav_curr_channel as usize % self.note_colors.len()];
                                     [color[0] / 128.0 * note.velocity as f32, color[1] / 128.0 * note.velocity as f32, color[2] / 128.0 * note.velocity as f32]
                                 },
                                 2: {
-                                        let color = self.note_colors[nav.curr_track as usize * 16 + nav.curr_channel as usize % self.note_colors.len()];
+                                        let color = self.note_colors[nav_curr_track as usize * 16 + nav_curr_channel as usize % self.note_colors.len()];
                                     [color[0] / 128.0 * (127 - note.velocity) as f32, color[1] / 128.0 * (127 - note.velocity) as f32, color[2] / 128.0 * (127 - note.velocity) as f32]
                                 }
                             };
@@ -652,7 +732,7 @@ impl Renderer for PianoRollRenderer {
                         }
                     }
 
-                    self.last_time = nav_ticks_offs;
+                    self.last_time = tick_pos_offs;
                 }
 
                 self.gl.use_program(None);
@@ -670,6 +750,10 @@ impl Renderer for PianoRollRenderer {
 
     fn window_size(&mut self, size: Vec2) {
         self.window_size = size;
+    }
+
+    fn update_ppq(&mut self, ppq: u16) {
+        self.ppq = ppq;
     }
 
     /*fn time_changed(&mut self, time: u64) {

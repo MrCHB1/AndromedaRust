@@ -1,59 +1,102 @@
-use crate::midi::events::note::Note;
-use std::{cmp::Ordering, collections::{HashMap, VecDeque}};
+use crate::midi::events::{meta_event::{MetaEvent, MetaEventType}, note::Note};
+use std::{cmp::Ordering, collections::{HashMap, HashSet, VecDeque}};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
+
+pub type MIDITick = u32;
+pub type SignedMIDITick = i32;
+
+pub trait AtomicMIDITick: Copy + Send + Sync + 'static {
+    type Atomic: Send + Sync;
+
+    fn new(val: Self) -> Self::Atomic;
+    fn load(atom: &Self::Atomic, ord: AtomicOrdering) -> Self;
+    fn store(atom: &Self::Atomic, val: Self, ord: AtomicOrdering);
+}
+
+impl AtomicMIDITick for u32 {
+    type Atomic = AtomicU32;
+
+    fn new(val: Self) -> Self::Atomic {
+        AtomicU32::new(val)
+    }
+
+    fn load(atom: &Self::Atomic, ord: AtomicOrdering) -> Self {
+        atom.load(ord)
+    }
+
+    fn store(atom: &Self::Atomic, val: Self, ord: AtomicOrdering) {
+        atom.store(val, ord)
+    }
+}
+
+impl AtomicMIDITick for u64 {
+    type Atomic = AtomicU64;
+
+    fn new(val: Self) -> Self::Atomic {
+        AtomicU64::new(val)
+    }
+
+    fn load(atom: &Self::Atomic, ord: AtomicOrdering) -> Self {
+        atom.load(ord)
+    }
+
+    fn store(atom: &Self::Atomic, val: Self, ord: AtomicOrdering) {
+        atom.store(val, ord)
+    }
+}
+
+pub type MIDITickAtomic = <MIDITick as AtomicMIDITick>::Atomic;
 
 // binary searches within a given channel and track, returns an index
-pub fn bin_search_notes(notes: &Vec<Note>, tick: u32) -> usize {
-    let sel_notes = notes;
-    if sel_notes.is_empty() { return 0; }
+pub fn bin_search_notes(notes: &Vec<Note>, tick: MIDITick) -> usize {
+    if notes.is_empty() { return 0; }
     
     let mut low = 0;
-    let mut high = sel_notes.len();
+    let mut high = notes.len();
 
-    if tick < notes[low].start { return 0; }
-    if tick > notes[high - 1].start { return high; }
+    if tick <= notes[low].start { return 0; }
+    if tick >= notes[high - 1].start { return high; }
 
     while low < high {
         let mid = (low + high) / 2;
-        if sel_notes[mid].start < tick {
+        if notes[mid].start <= tick {
             low = mid + 1;
         } else {
             high = mid;
         }
     }
 
-    if low == sel_notes.len() {
-        sel_notes.len() - 1
+    low
+    /*if low == notes.len() {
+        notes.len() - 1
     } else {
         low
-    }
+    }*/
 }
 
 // used for getting the exact index of the nearest/last note
-pub fn bin_search_notes_exact(notes: &Vec<Note>, tick: u32) -> usize {
+pub fn bin_search_notes_exact(notes: &Vec<Note>, tick: MIDITick) -> usize {
     if notes.is_empty() { return 0; }
 
     let mut low = 0;
     let mut high = notes.len() - 1;
 
-    if tick < notes[low].start { return 0; }
-    if tick > notes[high].start { return high; }
+    if tick <= notes[low].start { return 0; }
+    if tick >= notes[high].start { return high; }
 
     while low < high {
         let mid = (low + high) / 2;
         if notes[mid].start < tick {
             low = mid + 1;
-        } else if notes[mid].start > tick {
-            if mid == 0 { break; }
-            high = mid - 1;
-        } else {
-            return mid;
+        } else  {
+            high = mid;
         }
     }
 
-    high
+    low
 }
 
-pub fn get_notes_in_range(notes: &Vec<Note>, min_tick: u32, max_tick: u32, min_key: u8, max_key: u8, include_ends: bool) -> Vec<usize> {
+pub fn get_notes_in_range(notes: &Vec<Note>, min_tick: MIDITick, max_tick: MIDITick, min_key: u8, max_key: u8, include_ends: bool) -> Vec<usize> {
     let mut note_ids = Vec::new();
     // skip selecting entirely if sel_notes is blank
     if notes.is_empty() { return note_ids; }
@@ -80,19 +123,56 @@ pub fn get_notes_in_range(notes: &Vec<Note>, min_tick: u32, max_tick: u32, min_k
     note_ids
 }
 
-pub fn find_note_at(notes: &Vec<Note>, tick_pos: u32, key_pos: u8) -> Option<usize> {
+pub fn find_note_at(notes: &Vec<Note>, tick_pos: MIDITick, key_pos: u8) -> Option<usize> {
     if notes.is_empty() { return None; }
 
     let mut low = 0;
+    let mut high = notes.len();
+
+    // early checks
+    {
+        let lower = &notes[low];
+        let upper = &notes[high - 1];
+        if tick_pos < lower.start { return None; }
+        if tick_pos > upper.start + upper.length && tick_pos > lower.start + lower.length { return None; }
+    }
+
+    while low < high {
+        let mid = (low + high) / 2;
+        if notes[mid].start <= tick_pos {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    //if low == 0 { return None; }
+
+    for (i, note) in notes[0..low].iter().enumerate().rev() {
+        if note.key == key_pos && note.start <= tick_pos && note.start + note.length >= tick_pos {
+            return Some(i);
+        }
+    }
+
+    for (i, note) in notes[low..notes.len()].iter().enumerate() {
+        if note.key == key_pos && note.start <= tick_pos && note.start + note.length >= tick_pos {
+            return Some(i + low);
+        }
+    }
+    /*let mut low = 0;
     let mut high = notes.len() - 1;
     
     // early checks
     {
         let lower = &notes[low];
         let upper = &notes[high];
-        if lower.start > tick_pos && lower.start + lower.length > tick_pos { return None; } // note is too late to search
-        if upper.start < tick_pos && upper.start + upper.length < tick_pos { return None; } // last note is too early to search
+        if tick_pos < lower.start { return None; } // tick pos is too low
+        if tick_pos > upper.start && tick_pos > upper.start + upper.length { return None; } // tick pos is too high
+        //if lower.start > tick_pos && lower.start + lower.length > tick_pos { return None; } // note is too late to search
+        //if upper.start < tick_pos && upper.start + upper.length < tick_pos { return None; } // last note is too early to search
     }
+
+    // let mut possible_overlaps: Vec<usize> = Vec::with_capacity(notes.len());
 
     // pass 1: tick-wise
     while low <= high {
@@ -105,28 +185,26 @@ pub fn find_note_at(notes: &Vec<Note>, tick_pos: u32, key_pos: u8) -> Option<usi
             continue;
         }
 
-        // start AND end of note is high than tick pos
+        // start AND end of note is higher
         if note.start > tick_pos && note.start + note.length > tick_pos {
             high = mid - 1;
             continue;
         }
 
-        // start is lower than tick pos but end is high than tick pos
         if note.start <= tick_pos && note.start + note.length >= tick_pos {
             if note.key == key_pos { return Some(mid); } // note found!
-            break; // break early to linearly search between low and high
+            println!("possible overlap at {}", mid);
+            break;
         }
     }
 
-    if low > high { return None; }
-
-    // pass 2: regular linear search because order of note key isn't kept in mind
-    for (i, note) in notes[low..=high].iter().enumerate() {
-        if note.key == key_pos {
-            if note.start > tick_pos && note.start + note.length > tick_pos { continue; }
+    // pass 2: linear search
+    for (i, note) in notes[low..].iter().enumerate() {
+        if note.start > tick_pos { break; } // we searched too far, break early
+        if note.key == key_pos && note.start + note.length >= tick_pos {
             return Some(i + low);
         }
-    }
+    }*/
 
     None
 }
@@ -145,7 +223,7 @@ pub fn get_min_max_keys_in_selection(notes: &Vec<Note>, ids: &Vec<usize>) -> Opt
     }
 }
 
-pub fn get_min_max_ticks_in_selection(notes: &Vec<Note>, ids: &Vec<usize>) -> Option<(u32, u32)> {
+pub fn get_min_max_ticks_in_selection(notes: &Vec<Note>, ids: &Vec<usize>) -> Option<(MIDITick, MIDITick)> {
     if ids.is_empty() { return None; }
 
     let min_tick = notes[ids[0]].start;
@@ -154,7 +232,7 @@ pub fn get_min_max_ticks_in_selection(notes: &Vec<Note>, ids: &Vec<usize>) -> Op
     Some((min_tick, max_tick))
 }
 
-pub fn get_absolute_max_tick_from_ids(notes: &Vec<Note>, ids: &Vec<usize>) -> Option<u32> {
+pub fn get_absolute_max_tick_from_ids(notes: &Vec<Note>, ids: &Vec<usize>) -> Option<MIDITick> {
     if ids.is_empty() { return None; }
 
     let last_idx = ids.len() - 1;
@@ -171,46 +249,37 @@ pub fn get_absolute_max_tick_from_ids(notes: &Vec<Note>, ids: &Vec<usize>) -> Op
 }
 
 // helper function for moving/modifying the ticks of notes lol
-pub fn manipulate_note_ticks(notes: &mut Vec<Note>, ids: &Vec<usize>, start_fn: impl Fn(u32) -> u32) -> (Vec<usize>, Vec<usize>, Vec<(i32, i32)>) {
-    let mut changed_positions = Vec::new();
+pub fn manipulate_note_ticks(notes: &mut Vec<Note>, ids: &Vec<usize>, start_fn: impl Fn(MIDITick) -> MIDITick) -> (Vec<usize>, Vec<usize>, Vec<(SignedMIDITick, i16)>) {
+    let mut updates: Vec<(usize, Note, SignedMIDITick, MIDITick)> = ids.iter().rev().map(|&id| {
+        let mut note = notes.remove(id);
+        let new_start = start_fn(note.start);
+        let start_change = new_start as SignedMIDITick - note.start as SignedMIDITick;
+        note.start = new_start;
+        (id, note, start_change, new_start)
+    }).collect();
 
-    let mut id_updates = Vec::new();
-    let (mut old_ids, mut new_ids) = (Vec::new(), Vec::new());
+    updates.sort_by_key(|&(_, _, _, new_start)| new_start);
 
-    for id in ids.iter() {
-        let note = &mut notes[*id];
-        let old_start = note.start;
-        let new_start = start_fn(old_start);
+    let mut ids_with_pos = Vec::new();
 
-        changed_positions.push((new_start as i32 - old_start as i32, 0));
-        old_ids.push(*id);
-        id_updates.push((*id, new_start));
-    }
-
-    let mut notes_to_move = VecDeque::new();
-    let mut rem_offset = 0;
-    for (i, id) in ids.iter().enumerate() {
-        let mut note = notes.remove(id - rem_offset);
-        rem_offset += 1;
-        note.start = id_updates[i].1;
-        notes_to_move.push_front(note);
-    }
-
-    let mut id_compensation: HashMap<usize, usize> = HashMap::new();
-    for &(_, new_start) in id_updates.iter() {
-        let insert_idx = bin_search_notes(notes, new_start);
+    let mut id_compensation = HashMap::new();
+    for (i, (old_id, note, start_change, _)) in updates.into_iter().enumerate() {
+        let insert_idx = bin_search_notes(notes, note.start);
         let offset = id_compensation.entry(insert_idx).or_insert(0);
         let real_idx = insert_idx + *offset;
-
-        new_ids.push(real_idx);
-        notes.insert(insert_idx, notes_to_move.pop_back().unwrap());
+        ids_with_pos.push(((old_id, real_idx), (start_change, 0)));
+        notes.insert(insert_idx, note);
         *offset += 1;
     }
 
+    ids_with_pos.sort_by_key(|(ids, _)| ids.1);
+    let ((old_ids, new_ids), changed_positions) = ids_with_pos.into_iter().unzip();
+    //let (old_ids, new_ids, changed_posiitons) = ids_with_pos.into_iter().unzip();
+    
     (old_ids, new_ids, changed_positions)
 }
 
-pub fn manipulate_note_lengths(notes: &mut Vec<Note>, ids: &Vec<usize>, length_fn: impl Fn(u32) -> u32) -> Vec<i32> {
+pub fn manipulate_note_lengths(notes: &mut Vec<Note>, ids: &Vec<usize>, length_fn: impl Fn(MIDITick) -> MIDITick) -> Vec<SignedMIDITick> {
     let mut changed_lengths = Vec::new();
 
     for id in ids.iter() {
@@ -218,7 +287,7 @@ pub fn manipulate_note_lengths(notes: &mut Vec<Note>, ids: &Vec<usize>, length_f
         let old_length = note.length;
         let new_length = length_fn(old_length);
 
-        changed_lengths.push(new_length as i32 - old_length as i32);
+        changed_lengths.push(new_length as SignedMIDITick - old_length as SignedMIDITick);
         note.length = new_length;
     }
 
@@ -242,4 +311,14 @@ pub fn mul_rgb(rgb: u32, val: f32) -> u32 {
     let g = ((rgb & 0xFF00) >> 8) as f32 * val;
     let b = (rgb & 0xFF) as f32 * val;
     return (((r as u32) & 0xFF) << 16) | (((g as u32) & 0xFF) << 8) | ((b as u32) & 0xFF);
+}
+
+pub fn get_meta_next_tick(metas: &Vec<MetaEvent>, meta_type: MetaEventType, tick: MIDITick) -> Option<&MetaEvent> {
+    for meta in metas.iter() {
+        if meta.event_type == meta_type {
+            if meta.tick < tick { continue; }
+            return Some(meta);
+        }
+    }
+    None
 }

@@ -1,4 +1,6 @@
-#[derive(Copy, Clone, PartialEq)]
+use crate::editor::util::MIDITick;
+
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum MetaEventType {
     SequenceNumber = 0x00,
     Text = 0x01,
@@ -21,7 +23,18 @@ pub enum MetaEventType {
 }
 
 pub struct MetaEvent {
-    pub tick: u64,
+    pub tick: MIDITick,
     pub event_type: MetaEventType,
     pub data: Vec<u8>
+}
+
+impl ToString for MetaEventType {
+    fn to_string(&self) -> String {
+        match self {
+            MetaEventType::TimeSignature => "Time Signature",
+            MetaEventType::Tempo => "Tempo",
+            MetaEventType::KeySignature => "Key Signature",
+            _ => ""
+        }.to_string()
+    }
 }

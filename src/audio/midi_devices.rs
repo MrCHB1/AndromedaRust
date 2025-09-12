@@ -1,4 +1,4 @@
-use midir::{MidiIO, MidiInput, MidiInputPort, MidiOutput, MidiInputConnection, MidiOutputConnection, MidiOutputPort};
+use midir::{MidiInputPort, MidiInputConnection, MidiOutputConnection, MidiOutputPort};
 use rfd::MessageDialog;
 use std::sync::{Arc, Mutex};
 
@@ -53,6 +53,11 @@ impl MIDIDevices {
     }
 
     pub fn connect_out_port(&mut self, idx: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if self.midi_out_ports.len() == 0 {
+            println!("No MIDI outputs to connect to.");
+            return Ok(());
+        }
+
         if idx >= self.midi_out_ports.len() {
             return Err("Invalid output port index".into());
         }
@@ -67,6 +72,11 @@ impl MIDIDevices {
     }
 
     pub fn connect_in_port(&mut self, idx: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if self.midi_in_ports.len() == 0 {
+            println!("No MIDI inputs to connect to.");
+            return Ok(());
+        }
+
         if idx >= self.midi_in_ports.len() {
             return Err("Invalid input port index".into());
         }
@@ -88,13 +98,6 @@ impl MIDIDevices {
         self.curr_midi_in_port = Some(idx);
         Ok(())
     }
-
-    /*pub fn send_note_on(&mut self, note: u8, vel: u8) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(conn) = self.out_connection.as_mut() {
-            conn.send(&[0x90, note, vel])?;
-        }
-        Ok(())
-    }*/
 
     pub fn send_event(&mut self, raw_event: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(conn) = self.out_connection.as_mut() {

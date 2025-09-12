@@ -13,6 +13,25 @@ pub struct PianoRollNavigation {
     pub zoom_keys_smoothed: f32
 }
 
+impl Default for PianoRollNavigation {
+    fn default() -> Self {
+        Self {
+            tick_pos: 0.0,
+            key_pos: 21.0,
+            zoom_ticks: 7680.0,
+            zoom_keys: 88.0,
+
+            curr_track: 0,
+            curr_channel: 0,
+
+            tick_pos_smoothed: 0.0,
+            key_pos_smoothed: 21.0,
+            zoom_ticks_smoothed: 7680.0,
+            zoom_keys_smoothed: 88.0,
+        }
+    }
+}
+
 impl PianoRollNavigation {
     pub fn new() -> Self {
         Self {

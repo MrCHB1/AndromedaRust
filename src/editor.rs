@@ -4,3 +4,7 @@ pub mod util;
 pub mod actions;
 pub mod edit_functions;
 pub mod settings;
+pub mod note_editing;
+pub mod meta_editing;
+pub mod midi_bar_cacher;
+pub mod playhead;

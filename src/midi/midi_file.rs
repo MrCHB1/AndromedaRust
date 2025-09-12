@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{Read, Result, Seek, Write};
 use std::sync::{Arc, Mutex};
 
+use crate::editor::util::MIDITick;
 use crate::midi::events::channel_event::ChannelEvent;
 use crate::midi::events::meta_event::{MetaEvent, MetaEventType};
 use crate::midi::events::note::Note;
@@ -195,7 +196,7 @@ impl MIDIFile {
 }
 
 pub struct MIDIEvent {
-    pub delta: u32, // not VLQ
+    pub delta: MIDITick, // not VLQ
     pub data: Vec<u8>
 }
 
@@ -254,12 +255,12 @@ impl MIDIFileWriter {
         for meta_event in meta_events.iter() {
             let meta_ev_code = &meta_event.event_type;
             seq.push(MIDIEvent {
-                delta: meta_event.tick as u32 - prev_time,
+                delta: meta_event.tick - prev_time,
                 data: [vec![
                     0xFF, *meta_ev_code as u8, meta_event.data.len() as u8, 
                 ], meta_event.data.clone()].concat()
             });
-            prev_time = meta_event.tick as u32;
+            prev_time = meta_event.tick;
         }
         println!("{}", seq.len());
         self.flush_evs_to_track(seq);
@@ -282,7 +283,7 @@ impl MIDIFileWriter {
 
     fn notes_to_events(&self, notes: Vec<&Note>, channel: u8) -> Vec<MIDIEvent> {
         let mut seq: Vec<MIDIEvent> = Vec::new();
-        let mut note_off_times: VecDeque<(MIDIEvent, u32)> = VecDeque::new();
+        let mut note_off_times: VecDeque<(MIDIEvent, MIDITick)> = VecDeque::new();
         let mut prev_time = 0;
 
         for note in notes.iter() {

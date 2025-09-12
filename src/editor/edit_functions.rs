@@ -6,7 +6,7 @@ use eframe::{
     glow::HasContext,
 };
 
-use crate::{app::{custom_widgets::{DecimalField, IntegerField}, main_window::MainWindow}, editor::{actions::{EditorAction, EditorActions}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks, move_element}}, midi::events::note::Note};
+use crate::{app::{custom_widgets::{DecimalField, IntegerField}, main_window::MainWindow}, editor::{actions::{EditorAction, EditorActions}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks, move_element, MIDITick}}, midi::events::note::Note};
 
 // modular edit_function
 pub enum EditFunction {
@@ -31,16 +31,22 @@ impl EditFunctions {
     pub fn apply_function(&mut self, notes: &mut Vec<Note>, sel_note_ids: &mut Vec<usize>, func: EditFunction, curr_track: u16, curr_channel: u8, editor_actions: &mut EditorActions) {
         match func {
             EditFunction::FlipX(note_ids) => {
-                let (min_tick, max_tick) = get_min_max_ticks_in_selection(notes, &note_ids).unwrap();
+                let (min_tick, max_tick) = {
+                    let first_note = notes[sel_note_ids[0]];
+                    let last_note = notes[sel_note_ids[sel_note_ids.len() - 1]];
+                    (first_note.start, last_note.start)
+                };
 
                 let (old_ids, new_ids, changed_positions) = manipulate_note_ticks(notes, &note_ids, |note_start| {
                     max_tick - note_start + min_tick
                 });
 
                 // update selected note ids to the new ids to prevent index invalidation
+                // *sel_note_ids = new_ids.clone();
+                println!("{:?}", new_ids);
                 *sel_note_ids = new_ids.clone();
 
-                editor_actions.register_action(EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track as u32 * 16 + curr_channel as u32));
+                editor_actions.register_action(EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track as u32 * 16 + curr_channel as u32, true));
             },
             EditFunction::FlipY(note_ids) => {
                 let mut changed_positions = Vec::new();
@@ -52,7 +58,7 @@ impl EditFunctions {
                     let new_key = max_key - old_key + min_key;
 
                     note.key = new_key;
-                    changed_positions.push((0, new_key as i32 - old_key as i32));
+                    changed_positions.push((0, new_key as i16 - old_key as i16));
                 }
                 editor_actions.register_action(EditorAction::NotesMoveImmediate(note_ids, changed_positions, curr_track as u32 * 16 + curr_channel as u32));
             },
@@ -61,18 +67,18 @@ impl EditFunctions {
 
                 // and because im lazy we change the lengths first
                 let changed_lengths = manipulate_note_lengths(notes, &note_ids, |note_length| {
-                    (note_length as f32 * factor).round() as u32
+                    (note_length as f32 * factor).round() as MIDITick
                 });
 
                 let (old_ids, new_ids, changed_positions) = manipulate_note_ticks(notes, &note_ids, |note_start| {
-                    (note_start as f32 * factor).round() as u32
+                    (note_start as f32 * factor).round() as MIDITick
                 });
 
                 // update selected note ids to the new ids to prevent index invalidation
                 *sel_note_ids = new_ids.clone();
 
                 editor_actions.register_action(EditorAction::Bulk(vec![
-                    EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track as u32 * 16 + curr_channel as u32),
+                    EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track as u32 * 16 + curr_channel as u32, true),
                     EditorAction::LengthChange(note_ids, changed_lengths, curr_track as u32 * 16 + curr_channel as u32),
                 ]));
             },

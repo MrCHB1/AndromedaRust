@@ -1,6 +1,6 @@
 use eframe::egui::{self, RichText, Ui};
 
-use crate::{app::custom_widgets::IntegerField, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
+use crate::{app::custom_widgets::{IntegerField, EditField}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
 use std::sync::{Arc, Mutex};
 
 pub struct ESGeneralSettings {
@@ -148,8 +148,8 @@ impl ESSettingsWindow {
         }
     }
 
-    pub fn draw_window(&mut self, ctx: &egui::Context) {
-        if !self.is_shown { return; }
+    pub fn draw_window(&mut self, ctx: &egui::Context) -> bool {
+        if !self.is_shown { return false; }
         egui::Window::new(RichText::new("Editor Settings").size(10.0))
             .collapsible(false)
             .show(ctx, |ui| {
@@ -186,6 +186,7 @@ impl ESSettingsWindow {
                     });
                 })
             });
+        return true;
     }
 
     pub fn is_showing(&self) -> bool {

@@ -2,7 +2,7 @@
 // kinda like midi_file.rs but editable lol
 
 use crate::midi::{events::{channel_event::ChannelEvent, meta_event::{MetaEvent, MetaEventType}, note::Note}, midi_file};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub fn tempo_as_bytes(tempo: f32) -> [u8; 3] {
     let tempo_conv = (60000000.0 / tempo) as u32;
@@ -40,7 +40,7 @@ impl Default for ProjectInfo {
 pub struct ProjectData {
     pub project_info: ProjectInfo,
     // 16 channels per track. each channel contains vector of notes
-    pub notes: Arc<Mutex<Vec<Vec<Vec<Note>>>>>,
+    pub notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
     pub global_metas: Arc<Mutex<Vec<MetaEvent>>>,
     pub channel_events: Arc<Mutex<Vec<Vec<ChannelEvent>>>>
 }
@@ -77,7 +77,7 @@ impl ProjectData {
         let mut file = midi_file::MIDIFile::open(&path).unwrap();
         //self.notes = Arc::new(Mutex::new(std::mem::take(&mut file.notes)));
         {
-            let mut notes = self.notes.lock().unwrap();
+            let mut notes = self.notes.write().unwrap();
             let mut global_metas = self.global_metas.lock().unwrap();
             let mut channel_events = self.channel_events.lock().unwrap();
             file.preprocess_meta_events(); // will merge specific meta events into one track
@@ -101,7 +101,7 @@ impl ProjectData {
         project_info.ppq = 960;
         
         {
-            let mut notes = self.notes.lock().unwrap();
+            let mut notes = self.notes.write().unwrap();
             notes.clear();
             // initialize an empty track
             let mut track: Vec<Vec<Note>> = Vec::new();

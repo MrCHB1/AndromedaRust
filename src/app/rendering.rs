@@ -1,12 +1,14 @@
 use std::sync::{Arc, Mutex};
 use eframe::egui::Vec2;
 use eframe::glow;
-use crate::{app::{main_window::{GhostNote, MainWindow}, rendering::{piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
+use crate::{app::{main_window::MainWindow, rendering::{piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
+use crate::editor::note_editing::GhostNote;
 
 pub mod buffers;
 pub mod piano_roll;
 pub mod shaders;
 pub mod track_view;
+pub mod data_view;
 
 pub trait Renderer {
     fn draw(&mut self);
@@ -40,33 +42,47 @@ impl Default for RenderManager {
 }
 
 impl RenderManager {
-    pub fn init_renderers(&mut self, project_data: Arc<Mutex<ProjectData>>, gl: Option<Arc<glow::Context>>, nav: Arc<Mutex<PianoRollNavigation>>, track_view_nav: Arc<Mutex<TrackViewNavigation>>, view_settings: Arc<Mutex<ViewSettings>>, playback_manager: Arc<Mutex<PlaybackManager>>) {
+    pub fn init_renderers(
+        &mut self,
+        project_data: Arc<Mutex<ProjectData>>,
+        gl: Option<Arc<glow::Context>>,
+        nav: Arc<Mutex<PianoRollNavigation>>,
+        track_view_nav: Arc<Mutex<TrackViewNavigation>>,
+        view_settings: Arc<Mutex<ViewSettings>>,
+        playback_manager: Arc<Mutex<PlaybackManager>>,
+        bar_cacher: Arc<Mutex<BarCacher>>,
+    ) {
         // initialize piano roll renderer
         {
             let gl = gl.as_ref().unwrap();
-            let project_data = project_data.clone();
-            let project_data = project_data.lock().unwrap();
+            //let project_data = project_data.clone();
+            //let project_data = project_data.lock().unwrap();
 
-            let piano_roll_renderer = unsafe {
+            println!("init piano roll renderer");
+            let piano_roll_renderer = Arc::new(Mutex::new(unsafe {
                 PianoRollRenderer::new(
-                    project_data.notes.clone(),
+                    &project_data,
                     view_settings.clone(),
                     nav.clone(),
                     gl.clone(),
-                    playback_manager.clone()
+                    &playback_manager,
+                    &bar_cacher
                 )
-            };
+            }));
 
-            let track_view_renderer = unsafe {
+            println!("init track view renderer");
+            let track_view_renderer = Arc::new(Mutex::new(unsafe {
                 TrackViewRenderer::new(
-                    project_data.notes.clone(),
+                    &project_data,
                     track_view_nav.clone(),
-                    gl.clone()
+                    gl.clone(),
+                    &playback_manager,
+                    &bar_cacher
                 )
-            };
+            }));
 
-            self.renderers.push(Arc::new(Mutex::new(piano_roll_renderer)));
-            self.renderers.push(Arc::new(Mutex::new(track_view_renderer)));
+            self.renderers.push(piano_roll_renderer);
+            self.renderers.push(track_view_renderer);
         }
     }
 
@@ -83,6 +99,13 @@ impl RenderManager {
         }*/
 
         self.set_active(render_type);
+    }
+
+    pub fn set_ppq(&mut self, ppq: u16) {
+        for renderer in self.renderers.iter_mut() {
+            let mut renderer = renderer.lock().unwrap();
+            renderer.update_ppq(ppq);
+        }
     }
 
     pub fn get_active_renderer(&mut self) -> &mut Arc<std::sync::Mutex<(dyn Renderer + Send + Sync + 'static)>> {
