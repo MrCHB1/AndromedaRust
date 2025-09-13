@@ -2,6 +2,8 @@ use midir::{MidiInputPort, MidiInputConnection, MidiOutputConnection, MidiOutput
 use rfd::MessageDialog;
 use std::sync::{Arc, Mutex};
 
+use crate::audio::midi_audio_engine::MIDIAudioEngine;
+
 pub struct MIDIDevices {
     midi_in_ports: Vec<MidiInputPort>,
     midi_in_port_names: Vec<String>,
@@ -53,6 +55,9 @@ impl MIDIDevices {
     }
 
     pub fn connect_out_port(&mut self, idx: usize) -> Result<(), Box<dyn std::error::Error>> {
+        self.out_connection = None;
+        self.curr_midi_out_port = None;
+
         if self.midi_out_ports.len() == 0 {
             println!("No MIDI outputs to connect to.");
             return Ok(());
@@ -113,5 +118,21 @@ impl MIDIDevices {
 
     pub fn get_midi_out_port_names(&self) -> &Vec<String> {
         &self.midi_out_port_names
+    }
+}
+
+impl MIDIAudioEngine for MIDIDevices {
+    /// This will open the current MIDI port for sending events.
+    fn init_audio(&mut self) {
+        self.connect_out_port(self.curr_midi_out_port.unwrap());
+    }
+
+    fn close_stream(&mut self) {
+        self.out_connection = None;
+        self.curr_midi_out_port = None;
+    }
+
+    fn send_event(&mut self, raw_event: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        self.send_event(raw_event)
     }
 }

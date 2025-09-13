@@ -23,6 +23,18 @@ impl ToString for VS_PianoRoll_OnionState {
     }
 }
 
+pub enum VS_PianoRoll_OnionColoring {
+    GrayedOut,
+    PartialColor,
+    FullColor
+}
+
+impl Default for VS_PianoRoll_OnionColoring {
+    fn default() -> Self {
+        VS_PianoRoll_OnionColoring::PartialColor
+    }
+}
+
 // data view (for viewing note velocities, cc event stuff, etc.)
 #[derive(PartialEq, Clone, Copy)]
 pub enum VS_PianoRoll_DataViewState {

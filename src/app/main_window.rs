@@ -1,5 +1,5 @@
 // abstraction is NEEDED!!
-use crate::{app::{custom_widgets::{EditField, IntegerField}, rendering::{data_view::DataViewRenderer, RenderManager, RenderType, Renderer}, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}, editor::{edit_functions::EFChopDialog, meta_editing::{MetaEditing, MetaEventInsertDialog}, midi_bar_cacher::BarCacher, navigation::TrackViewNavigation, note_editing::NoteEditing, playhead::Playhead, settings::{editor_settings::ESSettingsWindow, project_settings::ProjectSettings}, util::MIDITick}, midi::events::meta_event::{MetaEvent, MetaEventType}};
+use crate::{app::{custom_widgets::{EditField, IntegerField}, rendering::{data_view::DataViewRenderer, RenderManager, RenderType, Renderer}, shared::NoteColors, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_devices::MIDIDevices}, editor::{edit_functions::EFChopDialog, meta_editing::{MetaEditing, MetaEventInsertDialog}, midi_bar_cacher::BarCacher, navigation::TrackViewNavigation, note_editing::NoteEditing, playhead::Playhead, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::MIDITick}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
 
 use eframe::{
     egui::{self, Color32, RichText, Stroke, Ui, Vec2},
@@ -7,6 +7,7 @@ use eframe::{
     glow::HasContext,
 };
 use egui_extras::StripBuilder;
+use rayon::prelude::*;
 use rounded_div::RoundedDiv;
 
 use crate::{
@@ -25,7 +26,7 @@ use crate::{
 use eframe::glow;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex}, time::Instant,
 };
 
 const TOOL_FLAGS_NONE: u8 = 0x0;
@@ -134,10 +135,13 @@ pub struct MainWindow {
     track_view_nav: Option<Arc<Mutex<TrackViewNavigation>>>,
     view_settings: Option<Arc<Mutex<ViewSettings>>>,
     playhead: Playhead,
+    note_colors: Arc<NoteColors>,
 
     mouse_over_ui: bool,
     editor_tool: Arc<Mutex<EditorToolSettings>>,
+    
     project_settings: ProjectSettings,
+    settings: Vec<Box<dyn Settings>>,
 
     // used for all tools
     tool_mouse_down: bool,
@@ -192,6 +196,7 @@ pub struct MainWindow {
     // tool dialogs popups
     tool_dialogs_any_open: bool,
     midi_devices: Option<Arc<Mutex<MIDIDevices>>>,
+    kdmapi: Option<Arc<Mutex<KDMAPI>>>,
     settings_window: ESSettingsWindow,
 
     last_midi_ev_key: u8,
@@ -201,15 +206,25 @@ pub struct MainWindow {
 impl MainWindow {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut s = Self::default();
+
+        // initialize settings
+        s.settings = vec![
+            Box::new(ESGeneralSettings::default()),
+            Box::new(ESAudioSettings::default())
+        ];
         s.midi_devices = Some(Arc::new(Mutex::new(
             MIDIDevices::new().unwrap()
+        )));
+
+        s.kdmapi = Some(Arc::new(Mutex::new(
+            KDMAPI::new()
         )));
 
         if let Some(midi_devices) = s.midi_devices.as_ref() {
             let project_data = s.project_data.lock().unwrap();
             let playback_manager = Arc::new(Mutex::new(
                 PlaybackManager::new(
-                    midi_devices.clone(),
+                    s.kdmapi.as_ref().unwrap().clone(),
                     project_data.notes.clone(),
                     project_data.global_metas.clone(),
                     project_data.channel_events.clone()
@@ -233,6 +248,7 @@ impl MainWindow {
             )));
         }
         s.editor_actions = Arc::new(Mutex::new(EditorActions::new(256)));
+        s.note_colors = Arc::new(NoteColors::new());
         s
     }
 
@@ -240,7 +256,11 @@ impl MainWindow {
         let mut project_data = self.project_data.lock().unwrap();
         let midi_fd = rfd::FileDialog::new().add_filter("MIDI Files", &["mid", "midi"]);
         if let Some(file) = midi_fd.pick_file() {
+            let import_timer = Instant::now();
+            let start = import_timer.elapsed().as_secs_f32();
             project_data.import_from_midi_file(String::from(file.to_str().unwrap()));
+            let end = import_timer.elapsed().as_secs_f32();
+            println!("Imported MIDI in {}s", end - start);
         }
 
         if let Some(playback_manager) = self.playback_manager.as_mut() {
@@ -255,15 +275,33 @@ impl MainWindow {
     }
 
     fn export_midi_file(&mut self) {
-        let mut project_data = self.project_data.lock().unwrap();
         let midi_fd = rfd::FileDialog::new().add_filter("MIDI Files", &["mid"]);
         if let Some(file) = midi_fd.save_file() {
-            let mut midi_writer = MIDIFileWriter::new(project_data.project_info.ppq);
+            let project_data = self.project_data.lock().unwrap();
+
+            // let mut midi_writer = MIDIFileWriter::new(project_data.project_info.ppq);
             let notes = project_data.notes.read().unwrap();
             let global_metas = project_data.global_metas.lock().unwrap();
+            let channel_evs = project_data.channel_events.lock().unwrap();
+
+            let ppq = project_data.project_info.ppq;
+
+            // build tracks in parallel
+            let per_track_chunks: Vec<Vec<MIDIEvent>> = notes.par_iter()
+                .zip(channel_evs.par_iter())
+                .map(|(notes, ch_evs)| {
+                    let mut writer = MIDIFileWriter::new(ppq);
+                    writer.new_track();
+                    writer.add_notes_with_other_events(notes, ch_evs);
+                    writer.end_track();
+                    writer.into_single_track()
+                })
+                .collect();
+
+            let mut midi_writer = MIDIFileWriter::new(ppq);
             midi_writer.flush_global_metas(&global_metas);
-            for note_track in notes.iter() {
-                midi_writer.add_notes_to_midi(note_track);
+            for chunk in per_track_chunks {
+                midi_writer.append_track(chunk);
             }
 
             midi_writer.write_midi(file.to_str().unwrap()).unwrap();
@@ -281,7 +319,16 @@ impl MainWindow {
         
         if let Some(playback_manager) = self.playback_manager.as_ref() {
             let mut render_manager = render_manager.lock().unwrap();
-            render_manager.init_renderers(self.project_data.clone(), Some(gl.clone()), nav.clone(), track_view_nav.clone(), view_settings.clone(), playback_manager.clone(), self.bar_cacher.clone());
+            render_manager.init_renderers(
+                self.project_data.clone(),
+                Some(gl.clone()),
+                nav.clone(),
+                track_view_nav.clone(),
+                view_settings.clone(),
+                playback_manager.clone(),
+                self.bar_cacher.clone(),
+                &self.note_colors
+            );
         
             self.data_view_renderer = Some(Arc::new(Mutex::new(unsafe { DataViewRenderer::new(
                 &self.project_data,
@@ -679,7 +726,7 @@ impl MainWindow {
         if let Some(nav) = &self.nav {
             let project_data = self.project_data.lock().unwrap();
             let notes = project_data.notes.read().unwrap();
-            let curr_notes = &notes[curr_track as usize][curr_channel as usize];
+            let curr_notes = &notes[curr_track as usize];
             let clicked_note = &curr_notes[clicked_idx];
 
             let nav = nav.lock().unwrap();
@@ -1359,7 +1406,7 @@ impl MainWindow {
         let mut notes = project_data.notes.write().unwrap();
 
         if let Some((curr_track, curr_chan)) = self.get_current_track_and_channel() {
-            let notes = &mut notes[curr_track as usize][curr_chan as usize];
+            let notes = &mut notes[curr_track as usize];
             let mut applied_ids = Vec::new();
 
             for id_sel in tmp_sel.drain(..).rev() {
@@ -1562,36 +1609,24 @@ impl MainWindow {
     }
 
     /// Returns the IDs of newly duplicated notes. The IDs belong to [`note_group_dst`].
-    fn duplicate_notes(&mut self, note_ids: Vec<usize>, paste_tick: MIDITick, note_group_src: u32, note_group_dst: u32, select_duplicate: bool) -> Vec<usize> {
+    fn duplicate_notes(&mut self, note_ids: Vec<usize>, paste_tick: MIDITick, track_src: u32, track_dst: u32, select_duplicate: bool) -> Vec<usize> {
         let project_data = self.project_data.lock().unwrap();
         let mut notes = project_data.notes.write().unwrap();
 
-        let (src_track, src_channel) = decode_note_group(note_group_src);
-        let (dst_track, dst_channel) = decode_note_group(note_group_dst);
+        // let (src_track, src_channel) = decode_note_group(note_group_src);
+        // let (dst_track, dst_channel) = decode_note_group(note_group_dst);
 
         let (mut notes_src, mut notes_dst) =
-            if src_track == dst_track && src_channel == dst_channel {
-                (&mut notes[src_track as usize][src_channel as usize], None)
+            if track_src == track_dst {
+                (&mut notes[track_src as usize], None)
             } else {
-                if src_track != dst_track {
-                    let (low, high) = notes.split_at_mut(std::cmp::max(src_track, dst_track) as usize);
-                    if src_track < dst_track {
-                        (&mut low[src_track as usize][src_channel as usize],
-                        Some(&mut high[0][dst_channel as usize]))
-                    } else {
-                        (&mut high[0][src_channel as usize],
-                        Some(&mut low[dst_track as usize][dst_channel as usize]))
-                    }
-                } else {
-                    let track_notes = &mut notes[src_track as usize];
-                    let (low, high) = track_notes.split_at_mut(std::cmp::max(src_channel, dst_channel) as usize);
-                    if src_channel < dst_channel {
-                        (&mut low[src_channel as usize],
+                let (low, high) = notes.split_at_mut(std::cmp::max(track_src, track_dst) as usize);
+                if track_src < track_dst {
+                    (&mut low[track_src as usize],
                         Some(&mut high[0]))
-                    } else {
-                        (&mut high[0],
-                        Some(&mut low[dst_channel as usize]))
-                    }
+                } else {
+                    (&mut high[0],
+                        Some(&mut low[track_dst as usize]))
                 }
             };
 
@@ -1616,7 +1651,8 @@ impl MainWindow {
                         start: note.start - first_tick + paste_tick,
                         length: note.length,
                         key: note.key,
-                        velocity: note.velocity
+                        velocity: note.velocity,
+                        channel: note.channel
                     }
                 };
 
@@ -1645,7 +1681,8 @@ impl MainWindow {
                         start: note.start - first_tick + paste_tick,
                         length: note.length,
                         key: note.key,
-                        velocity: note.velocity
+                        velocity: note.velocity,
+                        channel: note.channel()
                     }
                 };
 
@@ -1669,7 +1706,7 @@ impl MainWindow {
         let pasted_ids = { let mut ids = paste_ids.clone(); ids.reverse(); ids };
 
         let mut editor_actions = self.editor_actions.lock().unwrap();
-        editor_actions.register_action(EditorAction::Duplicate(pasted_ids, paste_tick, note_group_src, note_group_dst));
+        editor_actions.register_action(EditorAction::Duplicate(pasted_ids, paste_tick, track_src as u32, track_dst as u32));
         paste_ids
     }
 
@@ -2189,7 +2226,7 @@ impl eframe::App for MainWindow {
                                 if let Some((curr_track, curr_channel)) = self.get_current_track_and_channel() {
                                     let mut editor_actions = self.editor_actions.lock().unwrap();
                                     self.editor_functions.apply_function(
-                                        &mut notes[curr_track as usize][curr_channel as usize],
+                                        &mut notes[curr_track as usize],
                                         &mut sel_notes,
                                         EditFunction::FlipX(sel_notes_clone),
                                         curr_track,
@@ -2209,7 +2246,7 @@ impl eframe::App for MainWindow {
 
                                 if let Some((curr_track, curr_channel)) = self.get_current_track_and_channel() {
                                     let mut editor_actions = self.editor_actions.lock().unwrap();
-                                    self.editor_functions.apply_function(&mut notes[curr_track as usize][curr_channel as usize], &mut sel_notes, EditFunction::FlipY(sel_notes_copy), curr_track, curr_channel, &mut editor_actions);
+                                    self.editor_functions.apply_function(&mut notes[curr_track as usize], &mut sel_notes, EditFunction::FlipY(sel_notes_copy), curr_track, curr_channel, &mut editor_actions);
                                 }
                                 should_close = true;
                             }
@@ -2457,7 +2494,7 @@ impl eframe::App for MainWindow {
                             if let Some((curr_track, curr_channel)) = self.get_current_track_and_channel() {
                                 let project_data = self.project_data.lock().unwrap();
                                 let mut notes = project_data.notes.write().unwrap();
-                                let notes = &mut notes[curr_track as usize][curr_channel as usize];
+                                let notes = &mut notes[curr_track as usize];
 
                                 let mut sel_notes = self.temp_selected_notes.lock().unwrap();
                                 let sel_notes_copy = sel_notes.clone();
@@ -2509,7 +2546,7 @@ impl eframe::App for MainWindow {
                             if let Some((curr_track, curr_channel)) = self.get_current_track_and_channel() {
                                 let project_data = self.project_data.lock().unwrap();
                                 let mut notes = project_data.notes.write().unwrap();
-                                let notes = &mut notes[curr_track as usize][curr_channel as usize];
+                                let notes = &mut notes[curr_track as usize];
 
                                 let mut sel_notes = self.temp_selected_notes.lock().unwrap();
                                 let sel_notes_copy = sel_notes.clone();

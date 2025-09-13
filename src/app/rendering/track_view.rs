@@ -1,3 +1,4 @@
+use crate::app::shared::NoteColors;
 use crate::audio::event_playback::PlaybackManager;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::navigation::TrackViewNavigation;
@@ -76,13 +77,13 @@ pub struct TrackViewRenderer {
 
     bars_render: Vec<RenderTrackViewBar>,
     notes_render: Vec<RenderTrackViewNote>,
-    render_notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
+    render_notes: Arc<RwLock<Vec<Vec<Note>>>>,
     global_metas: Arc<Mutex<Vec<MetaEvent>>>,
-    note_colors: Vec<[f32; 3]>,
+    note_colors: Arc<NoteColors>,
 
     // per channel per track
-    last_note_start: Vec<Vec<usize>>,
-    first_render_note: Vec<Vec<usize>>,
+    last_note_start: Vec<usize>,
+    first_render_note: Vec<usize>,
     last_time: f32,
 
     render_active: bool
@@ -94,7 +95,8 @@ impl TrackViewRenderer {
         nav: Arc<Mutex<TrackViewNavigation>>,
         gl: Arc<glow::Context>,
         playback_manager: &Arc<Mutex<PlaybackManager>>,
-        bar_cacher: &Arc<Mutex<BarCacher>>
+        bar_cacher: &Arc<Mutex<BarCacher>>,
+        colors: &Arc<NoteColors>
     ) -> Self {
         let tv_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/track_view_bg");
         let tv_notes_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/track_view_note");
@@ -168,12 +170,12 @@ impl TrackViewRenderer {
 
         let last_note_start = {
             let notes = notes.read().unwrap();
-            vec![vec![0usize; 16]; notes.len()]
+            vec![0; notes.len()]
         };
 
         let first_render_note = {
             let notes = notes.read().unwrap();
-            vec![vec![0usize; 16]; notes.len()]
+            vec![0; notes.len()]
         };
 
         Self {
@@ -200,25 +202,7 @@ impl TrackViewRenderer {
             global_metas,
 
             ppq: 960,
-            note_colors: vec![
-                [1.0, 0.0, 0.0],
-                [1.0, 0.25, 0.0],
-                [1.0, 0.5, 0.0],
-                [1.0, 0.75, 0.0],
-                [1.0, 1.0, 0.0],
-                [0.5, 1.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 1.0, 0.5],
-                [0.0, 1.0, 1.0],
-                [0.0, 0.75, 1.0],
-                [0.0, 0.5, 1.0],
-                [0.0, 0.25, 1.0],
-                [0.0, 0.0, 1.0],
-                [0.25, 0.0, 1.0],
-                [0.5, 0.0, 1.0],
-                [0.75, 0.0, 1.0],
-                [1.0, 0.0, 1.0]
-            ],
+            note_colors: colors.clone(),
 
             last_note_start,
             first_render_note,
@@ -236,7 +220,7 @@ impl TrackViewRenderer {
         };
 
         let nav_ticks = {
-            let mut playback_manager = self.playback_manager.lock().unwrap();
+            let playback_manager = self.playback_manager.lock().unwrap();
             if is_playing {
                 playback_manager.get_playback_ticks() as f32
             } else {
@@ -345,8 +329,8 @@ impl Renderer for TrackViewRenderer {
                 let all_render_notes = self.render_notes.read().unwrap();
 
                 if self.last_note_start.len() != all_render_notes.len() {
-                    self.last_note_start = vec![vec![0usize; 16]; all_render_notes.len()];
-                    self.first_render_note = vec![vec![0usize; 16]; all_render_notes.len()];
+                    self.last_note_start = vec![0; all_render_notes.len()];
+                    self.first_render_note = vec![0; all_render_notes.len()];
                 }
                 
                 let track_start = {
@@ -370,83 +354,82 @@ impl Renderer for TrackViewRenderer {
                 let mut note_id = 0;
                 let mut curr_track = track_start;
 
-                for note_track in &all_render_notes[track_start..track_end] {
-                    if note_track.is_empty() {
+                for notes in &all_render_notes[track_start..track_end] {
+                    if notes.is_empty() {
                         curr_track += 1;
                         continue;
                     }
 
                     let mut curr_channel = 0;
 
-                    for notes in note_track.iter() {
-                        if notes.is_empty() { curr_channel += 1; continue; }
+                    let mut curr_note = 0;
 
-                        let mut curr_note = 0;
-
-                        let mut n_off = self.first_render_note[curr_track as usize][curr_channel];
-                        if self.last_time > tick_pos {
-                            if n_off == 0 {
-                                for note in &notes[0..notes.len()] {
-                                    if (note.start + note.length) as f32 > tick_pos { break; }
-                                    n_off += 1;
-                                }
-                            } else {
-                                for note in notes[0..n_off].iter().rev() {
-                                    if ((note.start + note.length) as f32) <= tick_pos { break; }
-                                    n_off -= 1;
-                                }
-                            }
-                            self.first_render_note[curr_track as usize][curr_channel] = n_off;
-                        } else if self.last_time < tick_pos {
-                            for note in &notes[n_off..notes.len()] {
-                                if (note.start + note.length) as f32 > tick_pos { break; }
+                    let mut n_off = self.first_render_note[curr_track as usize];
+                    if self.last_time > tick_pos {
+                        if n_off == 0 {
+                            for note in &notes[0..notes.len()] {
+                                if note.end() as f32 > tick_pos { break; }
                                 n_off += 1;
                             }
-                            self.first_render_note[curr_track as usize][curr_channel] = n_off;
-                        }
-
-                        let mut note_idx = n_off;
-
-                        let note_end = {
-                            let mut e = n_off;
-                            for note in &notes[n_off..notes.len()] {
-                                if (note.start as f32) > tick_pos + zoom_ticks { break; }
-                                e += 1;
+                        } else {
+                            for note in notes[0..n_off].iter().rev() {
+                                if (note.end() as f32) <= tick_pos { break; }
+                                n_off -= 1;
                             }
-                            e
-                        };
+                        }
+                        self.first_render_note[curr_track as usize] = n_off;
+                    } else if self.last_time < tick_pos {
+                        for note in &notes[n_off..notes.len()] {
+                            if note.end() as f32 > tick_pos { break; }
+                            n_off += 1;
+                        }
+                        self.first_render_note[curr_track as usize] = n_off;
+                    }
 
-                        for note in &notes[n_off..note_end] {
-                            {
-                                let note_top =    (zoom_tracks - curr_track as f32 - (1.0 - ((note.key as f32 + 1.0) / 128.0))) + track_pos;
-                                let note_bottom = (zoom_tracks - curr_track as f32 - (1.0 - ((note.key as f32 - 1.0) / 128.0))) + track_pos;
-                                self.notes_render[note_id] = RenderTrackViewNote {
-                                    0: [(note.start as f32 - tick_pos) / zoom_ticks,
-                                        (note.length as f32) / zoom_ticks,
-                                        note_bottom / zoom_tracks,
-                                        note_top / zoom_tracks],
-                                    1: {
-                                        let color = self.note_colors[curr_channel as usize % self.note_colors.len()];
-                                        [color[0], color[1], color[2]]
-                                    }
-                                };
+                    let mut note_idx = n_off;
 
-                                note_id += 1;
+                    let note_end = {
+                        let mut e = n_off;
+                        for note in &notes[n_off..notes.len()] {
+                            if note.start() as f32 > tick_pos + zoom_ticks { break; }
+                            e += 1;
+                        }
+                        e
+                    };
 
-                                if note_id >= NOTE_BUFFER_SIZE {
-                                    self.tv_notes_vao.bind();
-                                    self.tv_notes_ibo.bind();
-                                    self.tv_notes_vbo.bind();
-                                    self.tv_notes_ebo.bind();
-                                    self.tv_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
-                                    self.gl.draw_elements_instanced(
-                                        glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
-                                    note_id = 0;
+                    for note in &notes[n_off..note_end] {
+                        // if notes.is_empty() { curr_channel += 1; continue; }
+                        {
+                            let note_top =    (zoom_tracks - curr_track as f32 - (1.0 - ((note.key as f32 + 1.0) / 128.0))) + track_pos;
+                            let note_bottom = (zoom_tracks - curr_track as f32 - (1.0 - ((note.key as f32 - 1.0) / 128.0))) + track_pos;
+
+                            let trk_chan = ((curr_track as usize) << 4) | (note.channel() as usize);
+                            
+                            self.notes_render[note_id] = RenderTrackViewNote {
+                                0: [(note.start as f32 - tick_pos) / zoom_ticks,
+                                    (note.length as f32) / zoom_ticks,
+                                    note_bottom / zoom_tracks,
+                                    note_top / zoom_tracks],
+                                1: {
+                                    //let color = self.note_colors[curr_channel as usize % self.note_colors.len()];
+                                    //[color[0], color[1], color[2]]
+                                    *self.note_colors.get(trk_chan)
                                 }
+                            };
+
+                            note_id += 1;
+
+                            if note_id >= NOTE_BUFFER_SIZE {
+                                self.tv_notes_vao.bind();
+                                self.tv_notes_ibo.bind();
+                                self.tv_notes_vbo.bind();
+                                self.tv_notes_ebo.bind();
+                                self.tv_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
+                                self.gl.draw_elements_instanced(
+                                    glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
+                                note_id = 0;
                             }
                         }
-
-                        curr_channel += 1;
                     }
 
                     curr_track += 1;

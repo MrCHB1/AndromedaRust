@@ -3,6 +3,7 @@ use crate::editor::util::MIDITick;
 // channel and track is implied
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Note {
+    pub channel: u8,
     pub start: MIDITick,
     pub length: MIDITick,
     pub key: u8,
@@ -48,6 +49,16 @@ impl Note {
     #[inline(always)]
     pub fn velocity_mut(&mut self) -> &mut u8 {
         &mut self.velocity
+    }
+
+    #[inline(always)]
+    pub fn channel(&self) -> u8 {
+        self.channel
+    }
+
+    #[inline(always)]
+    pub fn channel_mut(&mut self) -> &mut u8 {
+        &mut self.channel
     }
 
     // extra stuff

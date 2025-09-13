@@ -14,12 +14,12 @@ pub struct BufferedByteReader {
 }
 
 impl BufferedByteReader {
-    pub fn new(stream: Arc<Mutex<File>>, start: usize, len: usize, buf_size: usize) -> Result<Self, ()> {
+    pub fn new(stream: &Arc<Mutex<File>>, start: usize, len: usize, buf_size: usize) -> Result<Self, ()> {
         let mut buffer_length = buf_size;
         if buffer_length > len { buffer_length = len; }
         
         let mut bbr = Self {
-            file_stream: stream,
+            file_stream: stream.clone(),
             start,
             len,
             buf_size,
@@ -111,6 +111,22 @@ impl BufferedByteReader {
         let mut ret: [u8; 1] = [0];
         self.read(&mut ret, 1).unwrap();
         Ok(ret[0])
+    }
+
+    // man i love batching reading
+    pub fn read_u8x2(&mut self) -> Result<(u8, u8),()> {
+        let mut ret: [u8; 2] = [0u8; 2];
+        self.read(&mut ret, 2).unwrap();
+        let (a, b) = ret.split_at(1);
+        Ok((a[0], b[0]))
+    }
+
+    pub fn read_u8x3(&mut self) -> Result<(u8, u8, u8),()> {
+        let mut ret: [u8; 3] = [0u8; 3];
+        self.read(&mut ret, 3).unwrap();
+        let (a, bc) = ret.split_at(1);
+        let (b, c) = bc.split_at(1);
+        Ok((a[0], b[0], c[0]))
     }
 
     pub fn skip_bytes(&mut self, size: usize) -> Result<(),()> {

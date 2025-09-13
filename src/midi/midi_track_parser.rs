@@ -1,11 +1,11 @@
-use std::{collections::{HashMap, HashSet}, fs::File, sync::{Arc, Mutex}};
+use std::{collections::{HashMap, HashSet, VecDeque}, fs::File, sync::{Arc, Mutex}};
 
 use crate::{editor::util::MIDITick, midi::{events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::{MetaEvent, MetaEventType}, note::Note}, io::buffered_reader::BufferedByteReader}};
 
 pub struct MIDITrackParser {
     pub reader: BufferedByteReader,
     // channels are separate
-    pub note_events: Vec<Vec<Note>>,
+    pub note_events: Vec<Note>,
     pub channel_events: Vec<ChannelEvent>,
     pub meta_events: Vec<MetaEvent>,
     pub parse_success: bool,
@@ -13,28 +13,21 @@ pub struct MIDITrackParser {
 
     prev_cmd: u8,
     curr_tick: MIDITick,
-    unended_notes: HashMap<usize, Vec<usize>>,
-    curr_note_id: [usize; 16],
-
-    pub note_count: usize,
-    pub cc_event_count: usize,
+    unended_notes: HashMap<usize, VecDeque<usize>>,
+    curr_note_id: usize,
 }
 
 impl MIDITrackParser {
-    pub fn new(stream: Arc<Mutex<File>>, start: usize, length: usize) -> Self {
-        let mut note_events: Vec<Vec<Note>> = Vec::with_capacity(16);
-        for _ in 0..16 {
-            note_events.push(Vec::new());
-        }
+    pub fn new(stream: &Arc<Mutex<File>>, start: usize, length: usize) -> Self {
         /*let mut unended_notes: Vec<Vec<usize>> = Vec::with_capacity(256 << 4);
         for _ in 0..256<<4 { 
             unended_notes.push(Vec::new());
         }*/
-        let mut unended_notes = HashMap::with_capacity(256 << 4);
+        let unended_notes = HashMap::with_capacity(128 << 4);
 
         Self {
             reader: BufferedByteReader::new(stream, start, length, 100000).unwrap(),
-            note_events: note_events,
+            note_events: Vec::new(),
             channel_events: Vec::new(),
             meta_events: Vec::new(),
             prev_cmd: 0x00,
@@ -42,9 +35,7 @@ impl MIDITrackParser {
             parse_success: true,
             track_ended: false,
             unended_notes,
-            curr_note_id: [0; 16],
-            note_count: 0,
-            cc_event_count: 0
+            curr_note_id: 0,
         }
     }
 
@@ -70,29 +61,31 @@ impl MIDITrackParser {
         let channel = command & 0x0F;
         match command & 0xF0 {
             0x80 => {
-                let key = self.reader.read_byte().unwrap();
-                let _ = self.reader.read_byte().unwrap();
+                // let key = self.reader.read_byte().unwrap();
+                // let _ = self.reader.read_byte().unwrap();
+                let (key, _) = self.reader.read_u8x2().unwrap();
                 
                 // set the end of the last note
                 let un = self.unended_notes
                     .entry(((key as usize) << 4) | channel as usize)
-                    .or_insert(Vec::new());
+                    .or_insert(VecDeque::new());
 
                 if un.len() > 0 {
-                    let n = un.pop().unwrap();
-                    let note = &mut self.note_events[channel as usize][n];
+                    let n = un.pop_front().unwrap();
+                    let note = &mut self.note_events[n];
                     note.set_length(self.curr_tick - note.start());
                 }
             },
             0x90 => {
-                let key = self.reader.read_byte().unwrap();
-                let vel = self.reader.read_byte().unwrap();
+                // let key = self.reader.read_byte().unwrap();
+                // let vel = self.reader.read_byte().unwrap();
+                let (key, vel) = self.reader.read_u8x2().unwrap();
 
                 let un = self.unended_notes
                     .entry(((key as usize) << 4) | channel as usize)
-                    .or_insert(Vec::new());
+                    .or_insert(VecDeque::new());
 
-                let note_evs_chn = &mut self.note_events[channel as usize];
+                let note_evs_chn = &mut self.note_events;
 
                 if vel > 0 {
                     // push a new note without a specified end
@@ -100,18 +93,17 @@ impl MIDITrackParser {
                         start: self.curr_tick,
                         length: MIDITick::MAX,
                         key,
-                        velocity: vel
+                        velocity: vel,
+                        channel: channel
                     });
 
                     //self.unended_notes[((key as usize) << 4) | channel as usize].push(self.curr_note_id[channel as usize]);
-                    un.push(self.curr_note_id[channel as usize]);
-                    self.curr_note_id[channel as usize] += 1;
-
-                    self.note_count += 1;
+                    un.push_back(self.curr_note_id);
+                    self.curr_note_id += 1;
                 } else {
                     //let un = &mut self.unended_notes[((key as usize) << 4) | channel as usize];
                     if un.len() > 0 {
-                        let n = un.pop().unwrap();
+                        let n = un.pop_front().unwrap();
                         let note = &mut note_evs_chn[n];
                         note.set_length(self.curr_tick - note.start());
                     }
@@ -119,8 +111,10 @@ impl MIDITrackParser {
             },
             // Note Aftertouch
             0xA0 => {
-                let key = self.reader.read_byte().unwrap();
-                let pressure = self.reader.read_byte().unwrap();
+                // let key = self.reader.read_byte().unwrap();
+                // let pressure = self.reader.read_byte().unwrap();
+                let (key, pressure) = self.reader.read_u8x2().unwrap();
+
                 self.channel_events.push(
                     ChannelEvent {
                         channel: channel,
@@ -131,8 +125,10 @@ impl MIDITrackParser {
             },
             // Controller
             0xB0 => {
-                let controller = self.reader.read_byte().unwrap();
-                let value = self.reader.read_byte().unwrap();
+                // let controller = self.reader.read_byte().unwrap();
+                // let value = self.reader.read_byte().unwrap();
+                let (controller, value) = self.reader.read_u8x2().unwrap();
+
                 self.channel_events.push(
                     ChannelEvent {
                         channel: channel,
@@ -140,7 +136,6 @@ impl MIDITrackParser {
                         event_type: ChannelEventType::Controller(controller, value)
                     }
                 );
-                self.cc_event_count += 1;
             },
             // Program change
             0xC0 => {
@@ -166,8 +161,10 @@ impl MIDITrackParser {
             },
             // Pitch bend
             0xE0 => {
-                let lsb = self.reader.read_byte().unwrap();
-                let msb = self.reader.read_byte().unwrap();
+                // let lsb = self.reader.read_byte().unwrap();
+                // let msb = self.reader.read_byte().unwrap();
+                let (lsb, msb) = self.reader.read_u8x2().unwrap();
+
                 self.channel_events.push(
                     ChannelEvent {
                         channel: channel,

@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use eframe::egui::Vec2;
 use eframe::glow;
-use crate::{app::{main_window::MainWindow, rendering::{piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
+use crate::{app::{main_window::MainWindow, rendering::{piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
 use crate::editor::note_editing::GhostNote;
 
 pub mod buffers;
@@ -51,6 +51,7 @@ impl RenderManager {
         view_settings: Arc<Mutex<ViewSettings>>,
         playback_manager: Arc<Mutex<PlaybackManager>>,
         bar_cacher: Arc<Mutex<BarCacher>>,
+        colors: &Arc<NoteColors>
     ) {
         // initialize piano roll renderer
         {
@@ -66,7 +67,8 @@ impl RenderManager {
                     nav.clone(),
                     gl.clone(),
                     &playback_manager,
-                    &bar_cacher
+                    &bar_cacher,
+                    colors
                 )
             }));
 
@@ -77,7 +79,8 @@ impl RenderManager {
                     track_view_nav.clone(),
                     gl.clone(),
                     &playback_manager,
-                    &bar_cacher
+                    &bar_cacher,
+                    colors
                 )
             }));
 

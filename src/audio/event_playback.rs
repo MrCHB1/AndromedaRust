@@ -1,6 +1,6 @@
 use std::{collections::{BinaryHeap, LinkedList, VecDeque}, sync::{atomic::{AtomicBool, AtomicU32, Ordering}, Arc, Mutex, RwLock}, thread::JoinHandle, time::{Duration, Instant}};
 
-use crate::{audio::midi_devices::MIDIDevices, editor::{project_data::bytes_as_tempo, util::{bin_search_notes_exact, AtomicMIDITick, MIDITick, MIDITickAtomic}}, midi::events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::{MetaEvent, MetaEventType}, note::Note}};
+use crate::{audio::{midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices}, editor::{project_data::bytes_as_tempo, util::{bin_search_notes_exact, AtomicMIDITick, MIDITick, MIDITickAtomic}}, midi::events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::{MetaEvent, MetaEventType}, note::Note}};
 use crossbeam::channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use ordered_float::NotNan;
@@ -116,10 +116,10 @@ impl Default for MidiEventBatchSize {
 }
 
 pub struct PlaybackManager {
-    pub notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
+    pub notes: Arc<RwLock<Vec<Vec<Note>>>>,
     pub meta_events: Arc<Mutex<Vec<MetaEvent>>>,
     pub channel_events: Arc<Mutex<Vec<Vec<ChannelEvent>>>>,
-    pub midi_devices: Arc<Mutex<MIDIDevices>>,
+    pub device: Arc<Mutex<dyn MIDIAudioEngine + Send>>,
     pub ppq: u16,
 
     tx: Sender<MidiEvent>,
@@ -139,8 +139,8 @@ pub struct PlaybackManager {
 
 impl PlaybackManager {
     pub fn new(
-        midi_devices: Arc<Mutex<MIDIDevices>>,
-        notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
+        device: Arc<Mutex<dyn MIDIAudioEngine + Send>>,
+        notes: Arc<RwLock<Vec<Vec<Note>>>>,
         meta_events: Arc<Mutex<Vec<MetaEvent>>>,
         channel_events: Arc<Mutex<Vec<Vec<ChannelEvent>>>>,
     ) -> Self {
@@ -148,7 +148,7 @@ impl PlaybackManager {
         let (notify_tx, notify_rx) = bounded::<()>(1);
         
         Self {
-            midi_devices, notes, meta_events, channel_events,
+            device, notes, meta_events, channel_events,
             tx, rx,
             notify_tx: Arc::new(notify_tx),
             notify_rx: Arc::new(notify_rx),
@@ -271,7 +271,7 @@ impl PlaybackManager {
         while let Ok(_) = self.rx.try_recv() {}
         while let Ok(_) = self.notify_rx.try_recv() {}
 
-        let mut devices = self.midi_devices.lock().unwrap();
+        let mut devices = self.device.lock().unwrap();
         devices.send_event(&[0xB0, 0x7B, 0x00]).unwrap();
     }
 
@@ -310,12 +310,12 @@ impl PlaybackManager {
 
             let mut event_cursors = {
                 let notes = notes.read().unwrap();
-                let mut cursors = vec![0; notes.len() * 16];
+                let mut cursors = vec![0; notes.len()];
 
                 for (trk, track) in notes.iter().enumerate() {
-                    for (chn, channel) in track.iter().enumerate() {
-                        cursors[(trk << 4) | chn] = bin_search_notes_exact(&channel, playback_pos.load(Ordering::SeqCst));
-                    }
+                    //for (chn, channel) in track.iter().enumerate() {
+                    cursors[trk] = bin_search_notes_exact(&track, playback_pos.load(Ordering::SeqCst));
+                    //}
                 }
                 cursors
             };
@@ -397,32 +397,33 @@ impl PlaybackManager {
                         if stop_flag.load(Ordering::SeqCst) {
                             break;
                         }
-                        for (chn, channel) in track.iter().enumerate() {
+                        //for (chn, channel) in track.iter().enumerate() {
+                        //    if stop_flag.load(Ordering::SeqCst) {
+                        //        break;
+                        //    }
+                            
+                        //let cursor = &mut event_cursors[(trk << 4) | chn];
+                        let cursor = &mut event_cursors[trk];
+
+                        while *cursor < track.len() {
                             if stop_flag.load(Ordering::SeqCst) {
                                 break;
                             }
-                            
-                            let cursor = &mut event_cursors[(trk << 4) | chn];
 
-                            while *cursor < channel.len() {
-                                if stop_flag.load(Ordering::SeqCst) {
-                                    break;
+                            let note = &track[*cursor];
+
+                            if playback_pos.load(Ordering::SeqCst) >= note.start() {
+                                if note.velocity() >= 20 {
+                                    let _ = tx.try_send(MidiEvent::NoteOn { channel: note.channel(), key: note.key(), velocity: note.velocity() });
+                                    let _ = notify_tx.try_send(()); // notify the playback thread of this note on event
+                                    scheduled_offs.insert(Scheduled { time: note.end(), event: MidiEvent::NoteOff { channel: note.channel(), key: note.key(), velocity: note.velocity() } });
                                 }
-
-                                let note = &channel[*cursor];
-
-                                if playback_pos.load(Ordering::SeqCst) >= note.start() {
-                                    if note.velocity() >= 20 {
-                                        let _ = tx.try_send(MidiEvent::NoteOn { channel: chn as u8, key: note.key(), velocity: note.velocity() });
-                                        let _ = notify_tx.try_send(()); // notify the playback thread of this note on event
-                                        scheduled_offs.insert(Scheduled { time: note.end(), event: MidiEvent::NoteOff { channel: chn as u8, key: note.key(), velocity: note.velocity() } });
-                                    }
-                                    *cursor += 1;
-                                } else {
-                                    break;
-                                }
+                                *cursor += 1;
+                            } else {
+                                break;
                             }
                         }
+                        //}
                     }
                 }
 
@@ -436,7 +437,7 @@ impl PlaybackManager {
     }
 
     pub fn run_synth_loop(&self) {
-        let midi_devices = self.midi_devices.clone();
+        let device = self.device.clone();
 
         let rx = self.rx.clone();
         let notify_rx = self.notify_rx.clone();
@@ -445,19 +446,19 @@ impl PlaybackManager {
         let batch_size = self.batch_size.clone();
 
         thread::spawn(move || {
-            let send_ev = |devices: &mut MutexGuard<'_, MIDIDevices>, event: MidiEvent| {
+            let send_ev = |device: &mut MutexGuard<'_, dyn MIDIAudioEngine + Send + 'static>, event: MidiEvent| {
                 match event {
                     MidiEvent::NoteOn { channel, key, velocity } => {
-                        devices.send_event(&[0x90 | channel, key, velocity]).unwrap();
+                        device.send_event(&[0x90 | channel, key, velocity]).unwrap();
                     },
                     MidiEvent::NoteOff { channel, key, velocity } => {
-                        devices.send_event(&[0x80 | channel, key, velocity]).unwrap();
+                        device.send_event(&[0x80 | channel, key, velocity]).unwrap();
                     },
                     MidiEvent::Control { channel, controller, value } => {
-                        devices.send_event(&[0xB0 | channel, controller, value]).unwrap();
+                        device.send_event(&[0xB0 | channel, controller, value]).unwrap();
                     },
                     MidiEvent::PitchBend { channel, lsb, msb } => {
-                        devices.send_event(&[0xE0 | channel, lsb, msb]).unwrap();
+                        device.send_event(&[0xE0 | channel, lsb, msb]).unwrap();
                     }
                 }
             };
@@ -469,10 +470,10 @@ impl PlaybackManager {
                             Ok(first_event) => {
                                 if stop_flag.load(Ordering::SeqCst) { break; }
 
-                                let mut devices = midi_devices.lock().unwrap();
+                                let mut device = device.lock().unwrap();
                                 
                                 // always send the first event
-                                send_ev(&mut devices, first_event);
+                                send_ev(&mut device, first_event);
 
                                 // now we can process the rest of the events
                                 let mut evs_sent = 1;
@@ -483,7 +484,7 @@ impl PlaybackManager {
                                     MidiEventBatchSize::Unlimited => {
                                         while let Ok(event) = rx.try_recv() {
                                             if stop_flag.load(Ordering::SeqCst) { break; }
-                                            send_ev(&mut devices, event);
+                                            send_ev(&mut device, event);
                                             evs_sent += 1;
                                         }
                                     },
@@ -492,7 +493,7 @@ impl PlaybackManager {
                                             match rx.try_recv() {
                                                 Ok(event) => {
                                                     if stop_flag.load(Ordering::SeqCst) { break; }
-                                                    send_ev(&mut devices, event);
+                                                    send_ev(&mut device, event);
                                                     evs_sent += 1;
                                                 },
                                                 Err(_) => {
@@ -517,10 +518,10 @@ impl PlaybackManager {
 
             // stopped, so try to send a note off to all channels
             {
-                let mut devices = midi_devices.lock().unwrap();
+                let mut device = device.lock().unwrap();
                 for note in 0..128 {
                     for chan in 0..16 {
-                        devices.send_event(&[0x80 | chan, note, 0x00]).unwrap();
+                        device.send_event(&[0x80 | chan, note, 0x00]).unwrap();
                     }
                 }
 

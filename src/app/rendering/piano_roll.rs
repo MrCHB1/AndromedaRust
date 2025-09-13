@@ -1,4 +1,5 @@
 use crate::app::rendering::Renderer;
+use crate::app::shared::{NoteColors, BLACK, SELECTED, WHITE};
 use crate::audio::event_playback::PlaybackManager;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::project_data::ProjectData;
@@ -78,11 +79,11 @@ pub struct PianoRollRenderer {
 
     bars_render: Vec<RenderPianoRollBar>,
     notes_render: Vec<RenderPianoRollNote>,
-    render_notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
-    note_colors: Vec<[f32; 3]>,
+    render_notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    note_colors: Arc<NoteColors>,
     // per channel per track
-    last_note_start: Vec<Vec<usize>>,
-    first_render_note: Vec<Vec<usize>>,
+    last_note_start: Vec<usize>,
+    first_render_note: Vec<usize>,
     last_time: f32,
 
     pub ghost_notes: Option<Arc<Mutex<Vec<GhostNote>>>>,
@@ -100,7 +101,8 @@ impl PianoRollRenderer {
         nav: Arc<Mutex<PianoRollNavigation>>,
         gl: Arc<glow::Context>,
         playback_manager: &Arc<Mutex<PlaybackManager>>,
-        bar_cacher: &Arc<Mutex<BarCacher>>
+        bar_cacher: &Arc<Mutex<BarCacher>>,
+        colors: &Arc<NoteColors>,
     ) -> Self {
         let pr_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/piano_roll_bg");
         let pr_notes_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/piano_roll_note");
@@ -178,12 +180,12 @@ impl PianoRollRenderer {
 
         let last_note_start = {
             let notes = notes.read().unwrap();
-            vec![vec![0usize; 16]; notes.len()]
+            vec![0; notes.len()]
         };
 
         let first_render_note = {
             let notes = notes.read().unwrap();
-            vec![vec![0usize; 16]; notes.len()]
+            vec![0; notes.len()]
         };
 
         Self {
@@ -210,25 +212,7 @@ impl PianoRollRenderer {
             render_notes: notes,
 
             ppq: 960,
-            note_colors: vec![
-                [1.0, 0.0, 0.0],
-                [1.0, 0.25, 0.0],
-                [1.0, 0.5, 0.0],
-                [1.0, 0.75, 0.0],
-                [1.0, 1.0, 0.0],
-                [0.5, 1.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 1.0, 0.5],
-                [0.0, 1.0, 1.0],
-                [0.0, 0.75, 1.0],
-                [0.0, 0.5, 1.0],
-                [0.0, 0.25, 1.0],
-                [0.0, 0.0, 1.0],
-                [0.25, 0.0, 1.0],
-                [0.5, 0.0, 1.0],
-                [0.75, 0.0, 1.0],
-                [1.0, 0.0, 1.0]
-            ],
+            note_colors: colors.clone(),
 
             last_note_start,
             first_render_note,
@@ -381,8 +365,8 @@ impl Renderer for PianoRollRenderer {
                     let all_render_notes = self.render_notes.read().unwrap();
                     // resize last_note_start and first_render_note if notes changed size
                     if self.last_note_start.len() != all_render_notes.len() {
-                        self.last_note_start = vec![vec![0usize; 16]; all_render_notes.len()];
-                        self.first_render_note = vec![vec![0usize; 16]; all_render_notes.len()];
+                        self.last_note_start = vec![0; all_render_notes.len()];
+                        self.first_render_note = vec![0; all_render_notes.len()];
                     }
 
                     self.pr_notes_program.set_float("width", self.window_size.x);
@@ -420,16 +404,132 @@ impl Renderer for PianoRollRenderer {
                             let mut rendered_notes = 0;
 
                             // 1. draw all notes that is not the current track
-                            for note_track in tracks_to_iter {
+                            for notes in tracks_to_iter {
                                 // skip track if it has nothing or its the navigation's current track
-                                if note_track.is_empty() || curr_track == nav_curr_track {
+                                if notes.is_empty() || curr_track == nav_curr_track {
                                     curr_track += 1;
                                     continue;
                                 }
 
-                                let mut curr_channel = 0;
+                                let mut n_off = self.first_render_note[curr_track as usize];
+                                if self.last_time > tick_pos_offs {
+                                    if n_off == 0 {
+                                        for note in &notes[0..notes.len()] {
+                                            if note.end() as f32 > tick_pos_offs { break; }
+                                            n_off += 1;
+                                        }
+                                    } else {
+                                        for note in notes[0..n_off].iter().rev() {
+                                            if (note.end() as f32) <= tick_pos_offs { break; }
+                                            n_off -= 1;
+                                        }
+                                    }
+
+                                    self.first_render_note[curr_track as usize] = n_off;
+                                } else if self.last_time < tick_pos_offs {
+                                    for note in &notes[n_off..notes.len()] {
+                                        if note.end() as f32 > tick_pos_offs { break; }
+                                        n_off += 1;
+                                    }
+                                    self.first_render_note[curr_track as usize] = n_off;
+                                }
+
+                                let mut note_idx = n_off;
+
+                                let note_end = {
+                                    let mut e = n_off;
+                                    for note in &notes[n_off..notes.len()] {
+                                        if note.start() as f32 > tick_pos_offs + zoom_ticks { break; }
+                                        e += 1;
+                                    }
+                                    e
+                                };
+
+                                let mut curr_note = 0;
+
+                                for note in &notes[n_off..note_end] {
+                                    if note.key() as f32 + 1.0 < key_pos || note.key() as f32 > key_pos + zoom_keys {
+                                        curr_note += 1;
+                                        note_idx += 1;
+                                        continue;
+                                    }
+
+                                    let trk_chan = ((curr_track as usize) << 4) | (note.channel() as usize);
+
+                                    {
+                                        let sel_lock = self.selected.lock().unwrap();
+                                        let note_bottom = (note.key() as f32 - key_pos) / zoom_keys;
+                                        let note_top = ((note.key() as f32 + 1.0) - key_pos) / zoom_keys;
+
+                                        let highlight_note_play_size = zoom_ticks * 0.001;
+                                        let note_playing = (note.start() as f32) < tick_pos + highlight_note_play_size
+                                            && (note.end() as f32) > tick_pos - highlight_note_play_size
+                                            && is_playing;
+
+                                        self.notes_render[note_id] = RenderPianoRollNote {
+                                            0: [(note.start as f32 - tick_pos_offs) / zoom_ticks,
+                                                (note.length as f32) / zoom_ticks,
+                                                (note_bottom),
+                                                (note_top)],
+                                            1: {
+                                                let color = self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0));
+                                                /*let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
+                                                if sel_lock.contains(&note_idx) {
+                                                    color = [1.0, 0.5, 0.5];
+                                                } else {
+                                                    color = [color[0] / 128.0 * note.velocity as f32, color[1] / 128.0 * note.velocity as f32, color[2] / 128.0 * note.velocity as f32];
+                                                }
+
+                                                if note_playing {
+                                                    color = [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5];
+                                                }*/
+                                                
+                                                if note_playing {
+                                                    [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
+                                                } else {
+                                                    color
+                                                }
+                                                //let color = self.note_colors.get_and_mix(curr_channel);
+                                            },
+                                            2: {
+                                                // let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
+                                                // color = [color[0] / 128.0 * (127 - note.velocity) as f32, color[1] / 128.0 * (127 - note.velocity) as f32, color[2] / 128.0 * (127 - note.velocity) as f32];
+                                                let color = self.note_colors.get_and_mix(trk_chan, &BLACK, note.velocity() as f32 / 128.0);
+
+                                                if note_playing {
+                                                    [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
+                                                } else{
+                                                    color
+                                                }
+                                            }
+                                        };
+                                    }
+
+                                    note_id += 1;
+                                    note_idx += 1;
+
+                                    if note_id >= NOTE_BUFFER_SIZE {
+                                        self.pr_notes_vao.bind();
+                                        self.pr_notes_ibo.bind();
+                                        self.pr_notes_vbo.bind();
+                                        self.pr_notes_ebo.bind();
+                                        self.pr_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
+
+                                        self.gl.use_program(Some(self.pr_notes_program.program));
+                                        self.gl.draw_elements_instanced(
+                                            glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
+                                        rendered_notes += note_id;
+                                        note_id = 0;
+                                    }
+
+                                    curr_note += 1;
+                                    if curr_note >= notes.len() {
+                                        break;
+                                    }
+                                }
+                                // let mut curr_channel = 0;
                                 // iterate through the 16 channels
-                                for notes in note_track.iter() {
+                                /*for notes in note_track.iter() {
                                     if notes.is_empty() { curr_channel += 1; continue; }
 
                                     let mut curr_note = 0;
@@ -467,6 +567,8 @@ impl Renderer for PianoRollRenderer {
                                         e
                                     };
 
+                                    let trk_chan = ((curr_track as usize) << 4) | curr_channel;
+
                                     for note in &notes[n_off..note_end] {
                                         //n_off += 1;
                                         //if n_off == notes.len() { break; }
@@ -494,7 +596,8 @@ impl Renderer for PianoRollRenderer {
                                                     (note_bottom),
                                                     (note_top)],
                                                 1: {
-                                                    let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
+                                                    let color = self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0));
+                                                    /*let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
                                                     if sel_lock.contains(&note_idx) {
                                                         color = [1.0, 0.5, 0.5];
                                                     } else {
@@ -503,17 +606,25 @@ impl Renderer for PianoRollRenderer {
 
                                                     if note_playing {
                                                         color = [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5];
+                                                    }*/
+                                                    
+                                                    if note_playing {
+                                                        [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
+                                                    } else {
+                                                        color
                                                     }
-
-                                                    color
+                                                    //let color = self.note_colors.get_and_mix(curr_channel);
                                                 },
                                                 2: {
-                                                    let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
-                                                    color = [color[0] / 128.0 * (127 - note.velocity) as f32, color[1] / 128.0 * (127 - note.velocity) as f32, color[2] / 128.0 * (127 - note.velocity) as f32];
+                                                    // let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
+                                                    // color = [color[0] / 128.0 * (127 - note.velocity) as f32, color[1] / 128.0 * (127 - note.velocity) as f32, color[2] / 128.0 * (127 - note.velocity) as f32];
+                                                    let color = self.note_colors.get_and_mix(trk_chan, &BLACK, note.velocity() as f32 / 128.0);
+
                                                     if note_playing {
-                                                        color = [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5];
+                                                        [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
+                                                    } else{
+                                                        color
                                                     }
-                                                    color
                                                 }
                                             };
 
@@ -543,18 +654,127 @@ impl Renderer for PianoRollRenderer {
                                     }
 
                                     curr_channel += 1;
-                                }
+                                }*/
 
                                 curr_track += 1;
                             }
 
                             // 2. draw current track on top
-                            let notes_curr_track = &all_render_notes[nav_curr_track as usize];
+                            let notes = &all_render_notes[nav_curr_track as usize];
 
-                            let mut curr_channel = 0;
-                            for notes in notes_curr_track {
+                            if !notes.is_empty() {
+                                let mut curr_note = 0;
+                                let mut n_off = self.first_render_note[nav_curr_track as usize];
+
+                                if self.last_time > tick_pos_offs {
+                                    if n_off == 0 {
+                                        for note in &notes[0..notes.len()] {
+                                            if note.end() as f32 > tick_pos_offs { break; }
+                                            n_off += 1;
+                                        }
+                                    } else { // backwards instead of forwards
+                                        for note in notes[0..n_off].iter().rev() {
+                                            if (note.end() as f32) <= tick_pos_offs { break; }
+                                            n_off -= 1;
+                                        }
+                                    }
+                                    self.first_render_note[nav_curr_track as usize] = n_off;
+                                } else if self.last_time < tick_pos_offs {
+                                    for note in &notes[n_off..notes.len()] {
+                                        if note.end() as f32 > tick_pos_offs { break; }
+                                        n_off += 1;
+                                    }
+                                    self.first_render_note[nav_curr_track as usize] = n_off;
+                                }
+
+                                let mut note_idx = n_off;
+
+                                let note_end = {
+                                    let mut e = n_off;
+                                    for note in &notes[n_off..notes.len()] {
+                                        if note.start() as f32 > tick_pos_offs + zoom_ticks { break; }
+                                        e += 1;
+                                    }
+                                    e
+                                };
+
+                                for note in &notes[n_off..note_end] {
+                                    if note.key() as f32 + 1.0 < key_pos || (note.key() as f32) > key_pos + zoom_keys {
+                                        curr_note += 1;
+                                        note_idx += 1;
+                                        continue;
+                                    }
+
+                                    let trk_chan = ((nav_curr_track as usize) << 4) | (note.channel() as usize);
+
+                                    {
+                                        let sel_lock = self.selected.lock().unwrap();
+                                        let note_bottom = (note.key as f32 - key_pos) / zoom_keys;
+                                        let note_top = ((note.key as f32 + 1.0) - key_pos) / zoom_keys;
+
+                                        let highlight_note_play_size = zoom_ticks * 0.001;
+                                        let note_playing = (note.start() as f32) < tick_pos + highlight_note_play_size
+                                            && (note.end() as f32) > tick_pos - highlight_note_play_size
+                                            && is_playing;
+                
+
+                                        self.notes_render[note_id] = RenderPianoRollNote {
+                                            0: [(note.start as f32 - tick_pos_offs) / zoom_ticks,
+                                                (note.length as f32) / zoom_ticks,
+                                                (note_bottom),
+                                                (note_top)],
+                                            1: {
+                                                let color = if sel_lock.contains(&note_idx) {
+                                                    SELECTED
+                                                } else {
+                                                    self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0))
+                                                };
+
+                                                if note_playing {
+                                                    [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
+                                                } else {
+                                                    color
+                                                }
+                                            },
+                                            2: {
+                                                let color = self.note_colors.get_and_mix(trk_chan, &BLACK, note.velocity() as f32 / 128.0);
+                                                if note_playing {
+                                                    [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
+                                                } else {
+                                                    color
+                                                }
+                                            }
+                                        };
+                                    }
+
+                                    note_id += 1;
+                                    note_idx += 1;
+
+                                    // flush if note_id is now the note draw buffer size and reset it to zero
+                                    if note_id >= NOTE_BUFFER_SIZE {
+                                        self.pr_notes_vao.bind();
+                                        self.pr_notes_ibo.bind();
+                                        self.pr_notes_vbo.bind();
+                                        self.pr_notes_ebo.bind();
+                                        self.pr_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
+
+                                        self.gl.use_program(Some(self.pr_notes_program.program));
+                                        self.gl.draw_elements_instanced(
+                                            glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
+                                        rendered_notes += note_id;
+                                        note_id = 0;
+                                    }
+
+                                    curr_note += 1;
+                                    if curr_note >= notes.len() {
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // for notes in notes_curr_track {
                                 // skip channel if its empty
-                                if notes.is_empty() { curr_channel += 1; continue; }
+                                /*if notes.is_empty() { curr_channel += 1; continue; }
 
                                 let mut curr_note = 0;
 
@@ -591,6 +811,8 @@ impl Renderer for PianoRollRenderer {
                                     e
                                 };
                                 
+                                let trk_chan = ((nav_curr_track as usize) << 4) | curr_channel;
+                                
                                 for note in &notes[n_off..note_end] {
                                     //n_off += 1;
                                     //if n_off == notes.len() { break; }
@@ -619,22 +841,25 @@ impl Renderer for PianoRollRenderer {
                                                 (note_bottom),
                                                 (note_top)],
                                             1: {
-                                                let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
-                                                if sel_lock.contains(&note_idx) {
-                                                    color = [1.0, 0.5, 0.5];
+                                                let mut color = if sel_lock.contains(&note_idx) {
+                                                    SELECTED
                                                 } else {
-                                                    color = [color[0] / 128.0 * note.velocity as f32, color[1] / 128.0 * note.velocity as f32, color[2] / 128.0 * note.velocity as f32];
-                                                }
+                                                    self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0))
+                                                };
 
                                                 if note_playing {
-                                                    color = [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5];
+                                                    [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
+                                                } else {
+                                                    color
                                                 }
-
-                                                color
                                             },
                                             2: {
-                                                let color = self.note_colors[curr_channel as usize % self.note_colors.len()];
-                                                [color[0] / 128.0 * (127 - note.velocity) as f32, color[1] / 128.0 * (127 - note.velocity) as f32, color[2] / 128.0 * (127 - note.velocity) as f32]
+                                                let color = self.note_colors.get_and_mix(trk_chan, &BLACK, note.velocity() as f32 / 128.0);
+                                                if note_playing {
+                                                    [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
+                                                } else {
+                                                    color
+                                                }
                                             }
                                         };
 
@@ -665,8 +890,8 @@ impl Renderer for PianoRollRenderer {
                                     rendered_notes += 1;
                                 }
 
-                                curr_channel += 1;
-                            }
+                                curr_channel += 1;*/
+                            // }
                             
                             // 3. flush remaining notes
                             if note_id != 0 {
@@ -687,10 +912,13 @@ impl Renderer for PianoRollRenderer {
                     if let Some(ghost_notes) = &self.ghost_notes {
                         let mut note_id = 0;
                         let notes = ghost_notes.lock().unwrap();
+
                         for note in notes.iter() {
                             let note = note.get_note();
                             let note_bottom = (note.key as f32 - key_pos) / zoom_keys;
                             let note_top = ((note.key as f32 + 1.0) - key_pos) / zoom_keys;
+
+                            let trk_chan = ((nav_curr_track as usize) << 4) | (note.channel() as usize);
 
                             self.notes_render[note_id] = RenderPianoRollNote {
                                 0: [(note.start as f32 - tick_pos) / zoom_ticks,
@@ -698,12 +926,10 @@ impl Renderer for PianoRollRenderer {
                                     (note_bottom),
                                     (note_top)],
                                 1: {
-                                    let color = self.note_colors[nav_curr_track as usize * 16 + nav_curr_channel as usize % self.note_colors.len()];
-                                    [color[0] / 128.0 * note.velocity as f32, color[1] / 128.0 * note.velocity as f32, color[2] / 128.0 * note.velocity as f32]
+                                    self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0))
                                 },
                                 2: {
-                                        let color = self.note_colors[nav_curr_track as usize * 16 + nav_curr_channel as usize % self.note_colors.len()];
-                                    [color[0] / 128.0 * (127 - note.velocity) as f32, color[1] / 128.0 * (127 - note.velocity) as f32, color[2] / 128.0 * (127 - note.velocity) as f32]
+                                    self.note_colors.get_and_mix(trk_chan, &BLACK, note.velocity() as f32 / 128.0)
                                 }
                             };
                             note_id += 1;

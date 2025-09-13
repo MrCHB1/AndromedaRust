@@ -40,7 +40,7 @@ impl Default for ProjectInfo {
 pub struct ProjectData {
     pub project_info: ProjectInfo,
     // 16 channels per track. each channel contains vector of notes
-    pub notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
+    pub notes: Arc<RwLock<Vec<Vec<Note>>>>,
     pub global_metas: Arc<Mutex<Vec<MetaEvent>>>,
     pub channel_events: Arc<Mutex<Vec<Vec<ChannelEvent>>>>
 }
@@ -74,7 +74,10 @@ impl ProjectData {
 
     pub fn import_from_midi_file(&mut self, path: String) {
         let project_info = &mut self.project_info;
-        let mut file = midi_file::MIDIFile::open(&path).unwrap();
+        let mut file = midi_file::MIDIFile::new();
+        file.with_track_discarding(false)
+            .open(&path)
+            .unwrap();
         //self.notes = Arc::new(Mutex::new(std::mem::take(&mut file.notes)));
         {
             let mut notes = self.notes.write().unwrap();
@@ -104,11 +107,7 @@ impl ProjectData {
             let mut notes = self.notes.write().unwrap();
             notes.clear();
             // initialize an empty track
-            let mut track: Vec<Vec<Note>> = Vec::new();
-            for _ in 0..16 {
-                track.push(Vec::new());
-            }
-            notes.push(track);
+            notes.push(Vec::new());
         }
 
         // initialize default meta events

@@ -1,29 +1,33 @@
 use std::collections::VecDeque;
-// 1. parse header first
 use std::fs::File;
 use std::io::{Read, Result, Seek, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::editor::util::MIDITick;
 use crate::midi::events::channel_event::ChannelEvent;
+use crate::midi::events::mergers::{channel_to_midi_ev, merge_events};
 use crate::midi::events::meta_event::{MetaEvent, MetaEventType};
 use crate::midi::events::note::Note;
 use crate::midi::midi_track_parser::MIDITrackParser;
 
 use itertools::Itertools;
+use rayon::prelude::*;
 
 pub struct MIDIFile {
     pub format: u16,
     pub trk_count: u16,
     pub ppq: u16,
 
-    file_stream: Arc<Mutex<File>>,
+    // file_stream: Option<Arc<Mutex<File>>>,
     pub channel_events: Vec<Vec<ChannelEvent>>,
     pub meta_events: Vec<Vec<MetaEvent>>,
     // meta events that basically affect every track (like tempo, time signature, key signature...)
     // they go on the first track
     pub global_meta_events: Vec<MetaEvent>,
-    pub notes: Vec<Vec<Vec<Note>>>,
+    pub notes: Vec<Vec<Note>>,
+
+    // some useful settings
+    track_discarding: bool
 }
 
 pub struct MIDITrackPointer {
@@ -32,70 +36,130 @@ pub struct MIDITrackPointer {
 }
 
 impl MIDIFile {
-    pub fn open(path: &str) -> Result<Self> {
+    pub fn new() -> Self {
+        Self {
+            format: 0,
+            trk_count: 0,
+            ppq: 0,
+            // file_stream: Default::default(),
+            channel_events: Vec::new(),
+            meta_events: Vec::new(),
+            global_meta_events: Vec::new(),
+            notes: Vec::new(),
+            track_discarding: false
+        }
+    }
+
+    pub fn with_track_discarding<'a>(&'a mut self, value: bool) -> &'a mut Self {
+        self.track_discarding = value;
+        self
+    }
+    
+    pub fn open<'a>(&'a mut self, path: &str) -> Result<&'a mut Self> {
         let file_stream = Arc::new(Mutex::new(File::open(path)?));
-        let mut midi_file = Self {
-            format: 0, trk_count: 0, ppq: 0, file_stream,
-            channel_events: Vec::new(), meta_events: Vec::new(), global_meta_events: Vec::new(),
-            notes: Vec::new()
-        };
 
         // === parse header ===
         // check header first
-        if midi_file.read_u32() != 0x4D546864 { panic!("Invalid header while reading MIDI File") }
-        if midi_file.read_u32() != 0x00000006 { panic!("Expected header length to be 6.") }
-        let format: u16 = midi_file.read_u16();
-        let trk_count: u16 = midi_file.read_u16();
-        let ppq: u16 = midi_file.read_u16();
+        {
+            let mut fs = file_stream.lock().unwrap();
+            let (header, length) = self.read_u32x2(&mut fs);
+            assert!(header == 0x4D546864 && length == 6, "Invalid file header.");
+        }
+
+        let (format, trk_count, ppq) = {
+            let mut fs = file_stream.lock().unwrap();
+            self.read_u16x3(&mut fs)
+        };
 
         // === parse tracks in parallel
-        let mut track_locations: Vec<MIDITrackPointer> = Vec::new();
+        let mut track_locations: Vec<MIDITrackPointer> = Vec::with_capacity(trk_count as usize);
 
         // first get all track locations
         {
+            let mut fs = file_stream.lock().unwrap();
             for _ in 0..trk_count {
-                if midi_file.read_u32() != 0x4D54726B { panic!("Invalid track header!") }
-                let length = midi_file.read_u32();
+                let (header, length) = self.read_u32x2(&mut fs);
+                assert!(header == 0x4D54726B, "Invalid track header!");
 
-                let mut fs = midi_file.file_stream.lock().unwrap();
-                let track_pos = (*fs).stream_position().unwrap();
+                let track_pos = fs.stream_position().unwrap();
                 track_locations.push(MIDITrackPointer { start: track_pos, length });
-                (*fs).seek(std::io::SeekFrom::Current(length as i64)).unwrap();
+                fs.seek(std::io::SeekFrom::Current(length as i64)).unwrap();
             }
         }
 
-        // then make track parsers
-        let mut track_parsers: Vec<MIDITrackParser> = Vec::new();
+        // populate parsers
+        let mut track_parsers: Vec<MIDITrackParser> = Vec::with_capacity(trk_count as usize);
+
         for i in 0..trk_count as usize {
             let track_location = &track_locations[i];
-            let fs = midi_file.file_stream.clone();
-            track_parsers.push(MIDITrackParser::new(fs, track_location.start as usize, track_location.length as usize));
+            track_parsers.push(MIDITrackParser::new(&file_stream, track_location.start as usize, track_location.length as usize));
+
+            self.channel_events.push(Vec::new());
+            self.meta_events.push(Vec::new());
+            self.notes.push(Vec::new());
+        }
+        
+        let channel_events = &mut self.channel_events;
+        let meta_events = &mut self.meta_events;
+        let notes = &mut self.notes;
+
+        // instead of putting it all into one parallel iterator, i've split it in two
+        // one for if track discarding is on, and one for no track discarding. 
+        // this is to avoid any uneccessary extra allocations
+        if self.track_discarding {
+            let mut tracks_to_discard: Vec<bool> = vec![false; trk_count as usize];
+            let mut idx = 0;
+
+            tracks_to_discard.par_iter_mut()
+                .zip(track_parsers.par_iter_mut()
+                .zip(notes.par_iter_mut()
+                .zip(channel_events.par_iter_mut()
+                .zip(meta_events.par_iter_mut()))))
+                .enumerate()
+                .for_each(|(track, (discard, (parser, (notes, (channel_evs, meta_evs)))))| {
+                    Self::parse_track(parser, notes, channel_evs, meta_evs);
+
+                    *discard = self.track_discarding && parser.note_events.is_empty() && track > 0;
+                });
+
+            notes.retain(|_| { let keep = !tracks_to_discard[idx]; idx += 1; keep }); idx = 0;
+            channel_events.retain(|_| { let keep = !tracks_to_discard[idx]; idx += 1; keep }); idx = 0;
+            meta_events.retain(|_| { let keep = !tracks_to_discard[idx]; idx += 1; keep });
+
+            println!("Removed {} tracks.", tracks_to_discard.iter().filter(|&&d| d).count());
+        } else {
+            track_parsers.par_iter_mut()
+                .zip(notes.par_iter_mut()
+                .zip(channel_events.par_iter_mut()
+                .zip(meta_events.par_iter_mut())))
+                .for_each(|(parser, (notes, (channel_evs, meta_evs)))| {
+                    Self::parse_track(parser, notes, channel_evs, meta_evs);
+                });
         }
 
-        for i in 0..trk_count as usize {
-            let track_parser = &mut track_parsers[i];
-            while !track_parser.track_ended {
-                track_parser.parse_next();
-            }
-            let channel_events = std::mem::take(&mut track_parser.channel_events);
-            midi_file.channel_events.push(channel_events);
-            let meta_events = std::mem::take(&mut track_parser.meta_events);
-            midi_file.meta_events.push(meta_events);
-            let notes = std::mem::take(&mut track_parser.note_events);
-            midi_file.notes.push(notes);
-        }
+        self.format = format;
+        self.trk_count = trk_count;
+        self.ppq = ppq;
 
-        midi_file.format = format;
-        midi_file.trk_count = trk_count;
-        midi_file.ppq = ppq;
-        Ok(midi_file)
+        Ok(self)
+    }
+
+    #[inline(always)]
+    fn parse_track(parser: &mut MIDITrackParser, notes: &mut Vec<Note>, channel_evs: &mut Vec<ChannelEvent>, meta_evs: &mut Vec<MetaEvent>) {
+        while !parser.track_ended {
+            parser.parse_next();
+        }
+        
+        *notes = std::mem::take(&mut parser.note_events);
+        *channel_evs = std::mem::take(&mut parser.channel_events);
+        *meta_evs = std::mem::take(&mut parser.meta_events);
     }
 
     pub fn preprocess_meta_events(&mut self) {
         let unprocessed_metas = std::mem::take(&mut self.meta_events);
         // separate events to merge from non-mergable events (such as Track name, etc.)
-        let mut non_mergeable: Vec<Vec<MetaEvent>> = Vec::new();
-        let mut mergeable: Vec<Vec<MetaEvent>> = Vec::new();
+        let mut non_mergeable: Vec<Vec<MetaEvent>> = Vec::with_capacity(unprocessed_metas.len());
+        let mut mergeable: Vec<Vec<MetaEvent>> = Vec::with_capacity(unprocessed_metas.len());
 
         for track in unprocessed_metas.into_iter() {
             let mut nm_track: Vec<MetaEvent> = Vec::new();
@@ -103,7 +167,11 @@ impl MIDIFile {
             
             for meta_ev in track.into_iter() {
                 match meta_ev.event_type {
-                    MetaEventType::Tempo | MetaEventType::TimeSignature | MetaEventType::KeySignature | MetaEventType::Lyric | MetaEventType::Marker => {
+                    MetaEventType::Tempo | 
+                    MetaEventType::TimeSignature | 
+                    MetaEventType::KeySignature | 
+                    MetaEventType::Lyric | 
+                    MetaEventType::Marker => {
                         m_track.push(meta_ev);
                     },
                     _ => {
@@ -116,82 +184,86 @@ impl MIDIFile {
         }
 
         self.global_meta_events = self.merge_meta_events(mergeable);
-        println!("{}", self.global_meta_events.len());
         self.meta_events = non_mergeable;
     }
 
     fn merge_meta_seqs(&self, seq1: Vec<MetaEvent>, seq2: Vec<MetaEvent>) -> Vec<MetaEvent> {
-        let mut enum1 = seq1.into_iter();
-        let mut enum2 = seq2.into_iter();
-        let mut e1 = enum1.next();
-        let mut e2 = enum2.next();
-        let mut res = Vec::new();
+        let mut res = Vec::with_capacity(seq1.len() + seq2.len());
 
-        loop {
-            match e1 {
-                Some(ref en1) => {
-                    match e2 {
-                        Some(ref en2) => {
-                            if en1.tick < en2.tick {
-                                res.push(e1.unwrap());
-                                e1 = enum1.next();
-                            } else {
-                                res.push(e2.unwrap());
-                                e2 = enum2.next();
-                            }
-                        }
-                        None => {
-                            res.push(e1.unwrap());
-                            e1 = enum1.next();
-                        }
-                    }
+        let mut iter1 = seq1.into_iter().peekable();
+        let mut iter2 = seq2.into_iter().peekable();
+
+        while iter1.peek().is_some() || iter2.peek().is_some() {
+            let next_ev = match (iter1.peek(), iter2.peek()) {
+                (Some(ev1), Some(ev2)) => {
+                    if ev1.tick <= ev2.tick { iter1.next().unwrap() } else { iter2.next().unwrap() }
                 },
-                None => {
-                    if e2.is_none() { break; }
-                    else {
-                        res.push(e2.unwrap());
-                        e2 = enum2.next();
-                    }
-                }
-            }
+                (Some(_), None) => iter1.next().unwrap(),
+                (None, Some(_)) => iter2.next().unwrap(),
+                (None, None) => break
+            };
+            res.push(next_ev);
         }
 
         res
     }
 
     fn merge_meta_events(&self, seq: Vec<Vec<MetaEvent>>) -> Vec<MetaEvent> {
-        let mut b1 = seq.into_iter().collect::<Vec<_>>();
-        let mut b2 = Vec::new();
-        if b1.len() == 0 {
+        if seq.is_empty() {
             return Vec::new();
         }
-        while b1.len() > 1 {
-            while b1.len() > 0 {
-                if b1.len() == 1 {
-                    b2.push(b1.remove(0));
-                } else {
-                    b2.push(self.merge_meta_seqs(b1.remove(0), b1.remove(0)));
-                }
-            }
-            b1 = b2;
-            b2 = Vec::new();
+
+        let mut queue: VecDeque<Vec<MetaEvent>> = seq.into_iter().collect();
+
+        while queue.len() > 1 {
+            let seq1 = queue.pop_front().unwrap();
+            let seq2 = queue.pop_front().unwrap();
+            queue.push_back(self.merge_meta_seqs(seq1, seq2));
         }
-        b1.remove(0)
+
+        queue.pop_front().unwrap_or_default()
     }
 
-    fn read_u16(&mut self) -> u16 {
+    /*fn read_u16(&mut self) -> u16 {
         let mut b = [0u8; 2];
         (self.file_stream.lock().unwrap()).read(&mut b).unwrap();
-        return ((b[0] as u16) << 8) | (b[1] as u16);
+        Self::bytes_to_u16(&b)
     }
 
     fn read_u32(&mut self) -> u32 {
         let mut b = [0u8; 4];
         (self.file_stream.lock().unwrap()).read(&mut b).unwrap();
-        return ((b[0] as u32) << 24) |
-                ((b[1] as u32) << 16) |
-                ((b[2] as u32) << 8) |
-                ((b[3] as u32) << 0);
+        Self::bytes_to_u32(&b)
+    }*/
+
+    // only ever used for the file header lmao
+    fn read_u16x3(&mut self, stream: &mut MutexGuard<'_ , File>) -> (u16, u16, u16) {
+        let mut b = [0u8; 6];
+        stream.read(&mut b).unwrap();
+        let (a, bc) = b.split_at(2);
+        let (b, c) = bc.split_at(2);
+        (Self::bytes_to_u16(a), 
+         Self::bytes_to_u16(b),
+         Self::bytes_to_u16(c))
+    }
+
+    fn read_u32x2(&mut self, stream: &mut MutexGuard<'_ , File>) -> (u32, u32) {
+        let mut b = [0u8; 8];
+        stream.read(&mut b).unwrap();
+        let (a, b) = b.split_at(4);
+        (Self::bytes_to_u32(a),
+         Self::bytes_to_u32(b))
+    }
+
+    fn bytes_to_u16(bytes: &[u8]) -> u16 {
+        ((bytes[0] as u16) << 8) | (bytes[1] as u16)
+    }
+
+    fn bytes_to_u32(bytes: &[u8]) -> u32 {
+        ((bytes[0] as u32) << 24) |
+        ((bytes[1] as u32) << 16) |
+        ((bytes[2] as u32) << 8) |
+        ((bytes[3] as u32) << 0)
     }
 }
 
@@ -232,9 +304,23 @@ impl MIDIFileWriter {
         }
     }
 
-    pub fn new_track(&mut self) {
+    /// Adds a new empty track and returns its index.
+    pub fn new_track(&mut self) -> usize {
         self.tracks.push(Vec::new());
         self.track_count += 1;
+        self.track_count as usize - 1
+    }
+
+    /// Appends a ready-made track into this writer and returns the index.
+    pub fn append_track(&mut self, track: Vec<MIDIEvent>) -> usize {
+        self.tracks.push(track);
+        self.track_count += 1;
+        self.track_count as usize - 1
+    }
+
+    pub fn into_single_track(self) -> Vec<MIDIEvent> {
+        assert!(self.tracks.len() == 1, "Writer must contain exactly 1 track. self.tracks.len() = {}", self.tracks.len());
+        self.tracks.into_iter().next().unwrap()
     }
 
     pub fn flush_evs_to_track(&mut self, events: Vec<MIDIEvent>) {
@@ -247,6 +333,13 @@ impl MIDIFileWriter {
             data: vec![0xFF, 0x2F, 0x00]
         });
     }
+
+    /// Takes ownership of [`other`] and merges its tracks into this writer.
+    /*pub fn merge_from(&mut self, mut other: MIDIFileWriter) {
+        for track in other.tracks.drain(..) {
+            self.append_track(track);
+        }
+    }*/
     
     pub fn flush_global_metas(&mut self, meta_events: &Vec<MetaEvent>) {
         self.new_track();
@@ -267,21 +360,32 @@ impl MIDIFileWriter {
         self.end_track();
     }
 
-    // assuming notes is 16 vectors
-    pub fn add_notes_to_midi(&mut self, notes: &Vec<Vec<Note>>) {
-        let mut curr_chan = 0;
-        for channel_note in notes.iter() {
-            if channel_note.len() == 0 { curr_chan += 1; continue; } // we don't want empty tracks
+    pub fn add_notes_to_midi(&mut self, notes: &Vec<Note>) {
+        if notes.is_empty() { return; }
 
-            self.new_track();
-            let conv = self.notes_to_events(channel_note.iter().sorted_by_key(|n| n.start).collect::<Vec<_>>(), curr_chan);
-            self.flush_evs_to_track(conv);
-            self.end_track();
-            curr_chan += 1;
-        }
+        // self.new_track();
+        let conv = self.notes_to_events(notes.iter().sorted_by_key(|n| n.start).collect::<Vec<_>>());
+        self.flush_evs_to_track(conv);
+        // self.end_track();
     }
 
-    fn notes_to_events(&self, notes: Vec<&Note>, channel: u8) -> Vec<MIDIEvent> {
+    pub fn add_notes_with_other_events(&mut self, notes: &Vec<Note>, events: &Vec<ChannelEvent>) {
+        if notes.is_empty() { return; }
+
+        if events.is_empty() {
+            self.add_notes_to_midi(notes);
+            return;
+        }
+
+        // self.new_track();
+        let notes_conv = self.notes_to_events(notes.iter().sorted_by_key(|n| n.start).collect::<Vec<_>>());
+        let chans_cov = channel_to_midi_ev(events);
+        let merged = merge_events(notes_conv, chans_cov);
+        self.flush_evs_to_track(merged);
+        // self.end_track();
+    }
+
+    fn notes_to_events(&self, notes: Vec<&Note>) -> Vec<MIDIEvent> {
         let mut seq: Vec<MIDIEvent> = Vec::new();
         let mut note_off_times: VecDeque<(MIDIEvent, MIDITick)> = VecDeque::new();
         let mut prev_time = 0;
@@ -296,13 +400,13 @@ impl MIDIFileWriter {
 
             seq.push(MIDIEvent {
                 delta: note.start - prev_time,
-                data: vec![0x90 | channel, note.key, note.velocity]
+                data: vec![0x90 | note.channel(), note.key, note.velocity]
             });
             prev_time = note.start;
             let time = note.start + note.length;
             let off = (MIDIEvent {
                 delta: 0,
-                data: vec![0x80 | channel, note.key, 0x00]
+                data: vec![0x80 | note.channel(), note.key, 0x00]
             }, time);
             let mut pos = note_off_times.len() / 2;
             if note_off_times.is_empty() { note_off_times.push_back(off); }
@@ -317,7 +421,7 @@ impl MIDIFileWriter {
                         if pos == 0 || note_off_times[pos - 1].1 < time {
                             note_off_times.insert(pos, (MIDIEvent {
                                 delta: 0,
-                                data: vec![0x80 | channel, note.key, 0x00]
+                                data: vec![0x80 | note.channel(), note.key, 0x00]
                             }, time));
                             break;
                         } else { pos -= jump; }
@@ -325,7 +429,7 @@ impl MIDIFileWriter {
                         if pos == note_off_times.len() - 1 {
                             note_off_times.push_back((MIDIEvent {
                                 delta: 0,
-                                data: vec![0x80 | channel, note.key, 0x00]
+                                data: vec![0x80 | note.channel(), note.key, 0x00]
                             }, time));
                             break;
                         } else { pos += jump; }
@@ -349,6 +453,7 @@ impl MIDIFileWriter {
         
         // header
         self.write_u32(&mut file, 0x4D546864)?;
+
         // header length
         self.write_u32(&mut file, 6)?;
         self.write_u16(&mut file, 1)?; // format
@@ -356,25 +461,22 @@ impl MIDIFileWriter {
         self.write_u16(&mut file, self.ppq)?;
 
         // iterate through tracks
-        for track in self.tracks.iter() {
-            // track header
+        let track_bytes: Vec<Vec<u8>> = self.tracks
+            .par_iter()
+            .map(|track| {
+                let mut buf: Vec<u8> = Vec::new();
+                for ev in track {
+                    buf.extend(ev.get_vlq());
+                    buf.extend(&ev.data);
+                }
+                buf
+            })
+            .collect();
+
+        for buf in track_bytes {
             self.write_u32(&mut file, 0x4D54726B)?;
-            // count bytes
-            /*let num_bytes: usize = track.iter().map(|n| n.data.len()).sum();
-            self.write_u32(&mut file, num_bytes as u32)?;
-            for ev in track {
-                let delta = ev.get_vlq();
-                file.write(&delta)?;
-                file.write(&ev.data)?;
-            }*/
-            let mut buf: Vec<u8> = Vec::new();
-            for ev in track {
-                let delta = ev.get_vlq();
-                buf.extend(delta);
-                buf.extend(&ev.data);
-            }
             self.write_u32(&mut file, buf.len() as u32)?;
-            file.write(&buf)?;
+            file.write_all(&buf)?;
         }
 
         Ok(())

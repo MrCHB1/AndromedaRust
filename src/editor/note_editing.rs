@@ -48,7 +48,7 @@ impl Default for GhostNote {
 pub struct NoteEditing {
     editor_tool: Arc<Mutex<EditorToolSettings>>,
     render_manager: Arc<Mutex<RenderManager>>,
-    notes: Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
+    notes: Arc<RwLock<Vec<Vec<Note>>>>,
     ghost_notes: Arc<Mutex<Vec<GhostNote>>>,
     selected_notes_ids: Arc<Mutex<Vec<usize>>>,
     editor_actions: Arc<Mutex<EditorActions>>,
@@ -81,7 +81,7 @@ pub struct NoteEditing {
 
 impl NoteEditing {
     pub fn new(
-        notes: &Arc<RwLock<Vec<Vec<Vec<Note>>>>>,
+        notes: &Arc<RwLock<Vec<Vec<Note>>>>,
         nav: &Arc<Mutex<PianoRollNavigation>>,
         editor_tool: &Arc<Mutex<EditorToolSettings>>,
         render_manager: &Arc<Mutex<RenderManager>>,
@@ -119,7 +119,7 @@ impl NoteEditing {
     }
 
     #[inline(always)]
-    pub fn get_notes(&self) -> Arc<RwLock<Vec<Vec<Vec<Note>>>>> {
+    pub fn get_notes(&self) -> Arc<RwLock<Vec<Vec<Note>>>> {
         self.notes.clone()
     }
 
@@ -149,7 +149,7 @@ impl NoteEditing {
         ghost_notes.clear();
 
         // get notes in current track and channel
-        let notes = &mut notes[curr_track as usize][curr_channel as usize];
+        let notes = &mut notes[curr_track as usize];
 
         {
             let mut rem_offset = 0;
@@ -173,7 +173,7 @@ impl NoteEditing {
         if sel.is_empty() { println!("No selected notes to make as ghost notes"); return; }
 
         let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[curr_track as usize][curr_channel as usize];
+        let notes = &mut notes[curr_track as usize];
 
         let mut ghost_notes = self.ghost_notes.lock().unwrap();
         ghost_notes.clear();
@@ -242,7 +242,7 @@ impl NoteEditing {
         if self.flags & NOTE_EDIT_MOUSE_OVER_UI == 0 {
             let curr_mouse_over_note_idx = {
                 let notes = self.notes.read().unwrap();
-                let notes = &notes[curr_track as usize][curr_channel as usize];
+                let notes = &notes[curr_track as usize];
 
                 find_note_at(notes, mouse_midi_pos.0, mouse_midi_pos.1)
             };
@@ -257,7 +257,7 @@ impl NoteEditing {
                 let nav = self.nav.lock().unwrap();
                 self.is_at_note_end = {
                     let notes = self.notes.read().unwrap();
-                    let notes = &notes[curr_track as usize][curr_channel as usize];
+                    let notes = &notes[curr_track as usize];
 
                     let note = &notes[curr_mouse_over_note_idx.unwrap()];
                     let dist = (note.end() as f32 - mouse_midi_pos.0 as f32) / nav.zoom_ticks_smoothed * 960.0;
@@ -340,7 +340,7 @@ impl NoteEditing {
                     {
                         let (curr_track, curr_channel) = self.get_current_track_and_channel();
                         let notes = self.notes.read().unwrap();
-                        let note = &notes[curr_track as usize][curr_channel as usize][clicked_note_idx];
+                        let note = &notes[curr_track as usize][clicked_note_idx];
 
                         let mut tbs = self.toolbar_settings.lock().unwrap();
                         tbs.note_gate.update_value(note.length() as i32);
@@ -550,7 +550,7 @@ impl NoteEditing {
                     let (curr_track, curr_channel) = self.get_current_track_and_channel();
                     
                     let mut notes = self.notes.write().unwrap();
-                    let notes = &mut notes[curr_track as usize][curr_channel as usize];
+                    let notes = &mut notes[curr_track as usize];
                     for (i, id) in self.note_temp_mod_ids.iter().enumerate() {
                         let old_length = self.note_old_lengths[i];
 
@@ -678,7 +678,7 @@ impl NoteEditing {
 
                         // get the note we're changing the length of
                         let notes = self.notes.read().unwrap();
-                        let note = &notes[curr_track as usize][curr_channel as usize][note_id];
+                        let note = &notes[curr_track as usize][note_id];
 
                         let length_diff = note.length as SignedMIDITick - old_length as SignedMIDITick;
 
@@ -692,7 +692,7 @@ impl NoteEditing {
                         }
                     } else {
                         let notes = self.notes.read().unwrap();
-                        let notes = &notes[curr_track as usize][curr_channel as usize];
+                        let notes = &notes[curr_track as usize];
 
                         // to ignore notes that didn't change in length
                         let mut length_diffs = Vec::new();
@@ -733,7 +733,7 @@ impl NoteEditing {
 
                 let mut selected = {
                     let notes = self.notes.read().unwrap();
-                    let notes = &notes[curr_track as usize][curr_channel as usize];
+                    let notes = &notes[curr_track as usize];
 
                     get_notes_in_range(notes, min_tick, max_tick, min_key, max_key, true)
                 };
@@ -751,7 +751,7 @@ impl NoteEditing {
                 let (curr_track, curr_channel) = self.get_current_track_and_channel();
 
                 let notes = self.notes.read().unwrap();
-                let notes = &notes[curr_track as usize][curr_channel as usize];
+                let notes = &notes[curr_track as usize];
 
                 let selected = get_notes_in_range(notes, min_tick, max_tick, min_key, max_key, true);
 
@@ -809,7 +809,7 @@ impl NoteEditing {
                 let (curr_track, curr_channel) = self.get_current_track_and_channel();
                 let (sel_notes_dupe, min_tick, max_tick) = {
                     let notes = self.notes.read().unwrap();
-                    let notes = &notes[curr_track as usize][curr_channel as usize];
+                    let notes = &notes[curr_track as usize];
                     let sel_notes = self.selected_notes_ids.lock().unwrap();
                     if let Some((min_tick, max_tick)) = get_min_max_ticks_in_selection(notes, &sel_notes) {
                         (sel_notes.to_vec(), min_tick, max_tick)
@@ -818,7 +818,13 @@ impl NoteEditing {
                     }
                 };
 
-                self.duplicate_notes(sel_notes_dupe, max_tick, curr_track as u32 * 16 + curr_channel as u32, curr_track as u32 * 16 + curr_channel as u32, true);
+                self.duplicate_notes(
+                    sel_notes_dupe,
+                    max_tick,
+                    curr_track, 
+                    curr_track,
+                    true
+                );
             }
         }
 
@@ -835,7 +841,7 @@ impl NoteEditing {
     fn delete_notes(&mut self, mut ids: Vec<usize>, curr_track: u16, curr_channel: u8) {
         //let mut ids = ids.lock().unwrap();
         let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[curr_track as usize][curr_channel as usize];
+        let notes = &mut notes[curr_track as usize];
 
         let mut applied_ids = Vec::new();
 
@@ -862,15 +868,27 @@ impl NoteEditing {
     }
 
     /// Returns the IDs of newly duplicated notes. The IDs belong to [`note_group_dst`].
-    fn duplicate_notes(&mut self, note_ids: Vec<usize>, paste_tick: MIDITick, note_group_src: u32, note_group_dst: u32, select_duplicate: bool) -> Vec<usize> {
+    fn duplicate_notes(&mut self, note_ids: Vec<usize>, paste_tick: MIDITick, track_src: u16, track_dst: u16, select_duplicate: bool) -> Vec<usize> {
         let mut notes = self.notes.write().unwrap();
 
-        let (src_track, src_channel) = decode_note_group(note_group_src);
-        let (dst_track, dst_channel) = decode_note_group(note_group_dst);
+        // let (src_track, src_channel) = decode_note_group(note_group_src);
+        // let (dst_track, dst_channel) = decode_note_group(note_group_dst);
 
         let (mut notes_src, mut notes_dst) =
-            if src_track == dst_track && src_channel == dst_channel {
-                (&mut notes[src_track as usize][src_channel as usize], None)
+            if track_src == track_dst {
+                (&mut notes[track_src as usize], None)
+            } else {
+                let (low, high) = notes.split_at_mut(std::cmp::max(track_src, track_dst) as usize);
+                if track_src < track_dst {
+                    (&mut low[track_src as usize],
+                        Some(&mut high[0]))
+                } else {
+                    (&mut high[0],
+                        Some(&mut low[track_dst as usize]))
+                }
+            };
+            /*if src_track == dst_track && src_channel == dst_channel {
+                (&mut notes[src_track as usize], None)
             } else {
                 if src_track != dst_track {
                     let (low, high) = notes.split_at_mut(std::cmp::max(src_track, dst_track) as usize);
@@ -892,7 +910,7 @@ impl NoteEditing {
                         Some(&mut low[dst_channel as usize]))
                     }
                 }
-            };
+            };*/
 
         let mut paste_ids = Vec::new();
 
@@ -915,7 +933,8 @@ impl NoteEditing {
                         start: note.start - first_tick + paste_tick,
                         length: note.length,
                         key: note.key,
-                        velocity: note.velocity
+                        velocity: note.velocity,
+                        channel: note.channel
                     }
                 };
 
@@ -944,7 +963,8 @@ impl NoteEditing {
                         start: note.start - first_tick + paste_tick,
                         length: note.length,
                         key: note.key,
-                        velocity: note.velocity
+                        velocity: note.velocity,
+                        channel: note.channel
                     }
                 };
 
@@ -968,7 +988,7 @@ impl NoteEditing {
         let pasted_ids = { let mut ids = paste_ids.clone(); ids.reverse(); ids };
 
         let mut editor_actions = self.editor_actions.lock().unwrap();
-        editor_actions.register_action(EditorAction::Duplicate(pasted_ids, paste_tick, note_group_src, note_group_dst));
+        editor_actions.register_action(EditorAction::Duplicate(pasted_ids, paste_tick, track_src as u32, track_dst as u32));
         paste_ids
     }
 
@@ -982,7 +1002,7 @@ impl NoteEditing {
         let should_use_selected = note_ids.is_none();
 
         let notes = self.notes.read().unwrap();
-        let notes = &notes[curr_track as usize][curr_channel as usize];
+        let notes = &notes[curr_track as usize];
 
         self.drag_offset = {
             let base_note = &notes[base_id];
@@ -1015,7 +1035,7 @@ impl NoteEditing {
         // set drag offset
         self.drag_offset = {
             let notes = self.notes.read().unwrap();
-            let base_note = &notes[curr_track as usize][curr_channel as usize][base_id];
+            let base_note = &notes[curr_track as usize][base_id];
             base_note.start as SignedMIDITick - (self.curr_mouse_midi_pos.0 as SignedMIDITick)
         };
         
@@ -1059,7 +1079,7 @@ impl NoteEditing {
         let (curr_track, curr_channel) = self.get_current_track_and_channel();
         let mut notes = self.notes.write().unwrap();
         let mut ghost_notes = self.ghost_notes.lock().unwrap();
-        let notes = &mut notes[curr_track as usize][curr_channel as usize];
+        let notes = &mut notes[curr_track as usize];
 
         // to be stored in editor_actions
         let (mut old_ids, mut new_ids): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
@@ -1078,7 +1098,13 @@ impl NoteEditing {
 
             old_ids.push(gnote.id.unwrap_or(insert_idx));
             new_ids.push(real_idx);
-            (*notes).insert(insert_idx, Note { start: note.start, length: note.length, key: note.key, velocity: note.velocity });
+            (*notes).insert(insert_idx, Note {
+                start: note.start, 
+                length: note.length,
+                key: note.key,
+                velocity: note.velocity,
+                channel: note.channel
+            });
             
             *offset += 1;
 
@@ -1221,7 +1247,7 @@ impl NoteEditing {
                 let trk = (note_group >> 4) as usize;
 
                 let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[trk][chan];
+                let notes = &mut notes[trk];
 
                 for ids in note_ids.iter().rev() {
                     let recovered_note = self.note_temp_deleted.pop_back().unwrap();
@@ -1233,7 +1259,7 @@ impl NoteEditing {
                 let trk = (note_group >> 4) as usize;
 
                 let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[trk][chan];
+                let notes = &mut notes[trk];
 
                 // let mut rem_offset = 0;
                 for ids in note_ids.iter() {
@@ -1247,7 +1273,7 @@ impl NoteEditing {
                 let trk = (note_group >> 4) as usize;
 
                 let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[trk][chan];
+                let notes = &mut notes[trk];
                 for (i, ids) in note_ids.iter().enumerate() {
                     let length = notes[*ids].length as SignedMIDITick;
                     notes[*ids].length = (length + length_deltas[i]) as MIDITick;
@@ -1258,7 +1284,7 @@ impl NoteEditing {
                 let trk = (note_group >> 4) as usize;
 
                 let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[trk][chan];
+                let notes = &mut notes[trk];
 
                 println!("TODO: move notes");
                 println!("old id: {:?} | new id: {:?}", old_note_ids, new_note_ids);
@@ -1305,7 +1331,7 @@ impl NoteEditing {
                 let trk = (note_group >> 4) as usize;
 
                 let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[trk][chan];
+                let notes = &mut notes[trk];
 
                 for (i, ids) in note_ids.iter().enumerate() {
                     let start = notes[*ids].start as SignedMIDITick;
