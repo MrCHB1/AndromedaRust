@@ -2001,9 +2001,9 @@ impl MainWindow {
                 let renderer = Arc::clone(&renderer);
 
                 move |info, _| unsafe {
-                    let vp = info.viewport;
+                    let vp = info.viewport_in_pixels();
                     gl.enable(glow::SCISSOR_TEST);
-                    gl.scissor(rect.left() as i32, (window_height - rect.bottom()) as i32, rect.width() as i32, rect.height() as i32);
+                    gl.scissor(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
                     gl.clear(glow::COLOR_BUFFER_BIT);
                     gl.clear_color(0.0, 0.0, 0.0, 1.0);
                     {
@@ -2053,8 +2053,6 @@ impl MainWindow {
         let gl = self.gl.as_ref().unwrap();
         let data_view_renderer = self.data_view_renderer.as_ref().unwrap();
 
-        let window_height = ctx.input(|i| i.screen_rect).size().y;
-
         let callback = egui::PaintCallback {
             rect,
             callback: Arc::new(CallbackFn::new({
@@ -2063,9 +2061,9 @@ impl MainWindow {
                 let renderer = Arc::clone(&data_view_renderer);
 
                 move |info, _| unsafe {
-                    let vp = info.clip_rect_in_pixels();
+                    let vp = info.viewport_in_pixels();
                     gl.enable(glow::SCISSOR_TEST);
-                    gl.scissor(rect.left() as i32, (window_height - rect.bottom()) as i32, rect.width() as i32, rect.height() as i32);
+                    gl.scissor(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
                     gl.clear(glow::COLOR_BUFFER_BIT);
                     gl.clear_color(0.0, 0.0, 0.0, 1.0);
                     {
