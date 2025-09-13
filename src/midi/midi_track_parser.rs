@@ -19,10 +19,6 @@ pub struct MIDITrackParser {
 
 impl MIDITrackParser {
     pub fn new(stream: &Arc<Mutex<File>>, start: usize, length: usize) -> Self {
-        /*let mut unended_notes: Vec<Vec<usize>> = Vec::with_capacity(256 << 4);
-        for _ in 0..256<<4 { 
-            unended_notes.push(Vec::new());
-        }*/
         let unended_notes = HashMap::with_capacity(128 << 4);
 
         Self {

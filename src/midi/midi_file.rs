@@ -13,12 +13,13 @@ use crate::midi::midi_track_parser::MIDITrackParser;
 use itertools::Itertools;
 use rayon::prelude::*;
 
+// dude i dont think i can optimize this even further LOL
+
 pub struct MIDIFile {
     pub format: u16,
     pub trk_count: u16,
     pub ppq: u16,
 
-    // file_stream: Option<Arc<Mutex<File>>>,
     pub channel_events: Vec<Vec<ChannelEvent>>,
     pub meta_events: Vec<Vec<MetaEvent>>,
     // meta events that basically affect every track (like tempo, time signature, key signature...)
@@ -119,7 +120,7 @@ impl MIDIFile {
                 .for_each(|(track, (discard, (parser, (notes, (channel_evs, meta_evs)))))| {
                     Self::parse_track(parser, notes, channel_evs, meta_evs);
 
-                    *discard = self.track_discarding && parser.note_events.is_empty() && track > 0;
+                    *discard = parser.note_events.is_empty() && track > 0;
                 });
 
             notes.retain(|_| { let keep = !tracks_to_discard[idx]; idx += 1; keep }); idx = 0;
