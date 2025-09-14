@@ -20,6 +20,7 @@ use crate::midi::events::note::Note;
 use crate::set_attribute;
 
 const NOTE_BUFFER_SIZE: usize = 4096;
+const NOTE_BORDER_DARKNESS: f32 = 0.5;
 
 // Piano Roll Background
 pub type BarStart = f32;
@@ -305,6 +306,7 @@ impl Renderer for PianoRollRenderer {
                     self.pr_program.set_float("width", self.window_size.x);
                     self.pr_program.set_float("height", self.window_size.y);
                     self.pr_program.set_float("ppqNorm", self.ppq as f32 / zoom_ticks);
+                    self.pr_program.set_float("keyZoom", zoom_keys / 128.0);
 
                     while curr_bar_tick < zoom_ticks + tick_pos_offs {
                         let (bar_tick, bar_length) = {
@@ -473,16 +475,6 @@ impl Renderer for PianoRollRenderer {
                                                 (note_top)],
                                             1: {
                                                 let color = self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0));
-                                                /*let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
-                                                if sel_lock.contains(&note_idx) {
-                                                    color = [1.0, 0.5, 0.5];
-                                                } else {
-                                                    color = [color[0] / 128.0 * note.velocity as f32, color[1] / 128.0 * note.velocity as f32, color[2] / 128.0 * note.velocity as f32];
-                                                }
-
-                                                if note_playing {
-                                                    color = [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5];
-                                                }*/
                                                 
                                                 if note_playing {
                                                     [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
@@ -494,7 +486,7 @@ impl Renderer for PianoRollRenderer {
                                             2: {
                                                 // let mut color = self.note_colors[curr_channel as usize % self.note_colors.len()];
                                                 // color = [color[0] / 128.0 * (127 - note.velocity) as f32, color[1] / 128.0 * (127 - note.velocity) as f32, color[2] / 128.0 * (127 - note.velocity) as f32];
-                                                let color = self.note_colors.get_and_mix(trk_chan, &BLACK, note.velocity() as f32 / 128.0);
+                                                let color = self.note_colors.get_and_mix(trk_chan, &BLACK, NOTE_BORDER_DARKNESS);
 
                                                 if note_playing {
                                                     [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
@@ -737,10 +729,11 @@ impl Renderer for PianoRollRenderer {
                                                 }
                                             },
                                             2: {
-                                                let color = self.note_colors.get_and_mix(trk_chan, &BLACK, note.velocity() as f32 / 128.0);
+                                                let color = self.note_colors.get_and_mix(trk_chan, &BLACK, NOTE_BORDER_DARKNESS);
+
                                                 if note_playing {
                                                     [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
-                                                } else {
+                                                } else{
                                                     color
                                                 }
                                             }
@@ -929,7 +922,7 @@ impl Renderer for PianoRollRenderer {
                                     self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0))
                                 },
                                 2: {
-                                    self.note_colors.get_and_mix(trk_chan, &BLACK, note.velocity() as f32 / 128.0)
+                                    self.note_colors.get_and_mix(trk_chan, &BLACK, NOTE_BORDER_DARKNESS)
                                 }
                             };
                             note_id += 1;

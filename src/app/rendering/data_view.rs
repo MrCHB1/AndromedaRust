@@ -72,6 +72,10 @@ pub struct DataViewRenderer {
     gl: Arc<glow::Context>,
 
     bars_render: Vec<RenderDataViewBar>,
+
+    started_playing: bool,
+    last_view_offset: f32,
+    last_zoom: f32
 }
 
 impl DataViewRenderer {
@@ -131,7 +135,11 @@ impl DataViewRenderer {
             dv_instance_buffer,
             dv_index_buffer,
 
-            bars_render: dv_bars_render.to_vec()
+            bars_render: dv_bars_render.to_vec(),
+
+            started_playing: false,
+            last_view_offset: 0.0,
+            last_zoom: 0.0
         }
     }
 
@@ -171,10 +179,30 @@ impl Renderer for DataViewRenderer {
                 (nav.curr_track, nav.curr_channel)
             };
 
-            let is_playing = {
+            let (is_playing, view_offset) = {
                 let playback_manager = self.playback_manager.lock().unwrap();
-                playback_manager.playing
+                let mut view_offset = self.last_view_offset;
+                if playback_manager.playing && !self.started_playing {
+                    let nav = self.navigation.lock().unwrap();
+                    view_offset = nav.tick_pos_smoothed - playback_manager.playback_start_pos as f32;
+                    self.last_view_offset = view_offset;
+                    self.last_zoom = zoom_ticks;
+                    self.started_playing = true;
+                } else if !playback_manager.playing {
+                    self.started_playing = false;
+                    self.last_view_offset = 0.0;
+                }
+
+                view_offset = if self.last_zoom > 0.0 {
+                    view_offset * (zoom_ticks / self.last_zoom)
+                } else {
+                    view_offset
+                };
+
+                (playback_manager.playing, view_offset)
             };
+
+            let tick_pos_offs = tick_pos + view_offset;
 
             // RENDER BARS
             {
@@ -188,7 +216,7 @@ impl Renderer for DataViewRenderer {
                 let mut bar_num = 0;
                 let mut bar_id = 0;
 
-                while curr_bar_tick < zoom_ticks + tick_pos {
+                while curr_bar_tick < zoom_ticks + tick_pos_offs {
                     let (bar_tick, bar_length) = {
                         let mut bar_cacher = self.bar_cacher.lock().unwrap();
                         let interval = bar_cacher.get_bar_interval(bar_num);
@@ -196,14 +224,14 @@ impl Renderer for DataViewRenderer {
                     };
                     // let (bar_tick, bar_length) = (bar_num * self.ppq as u32 * 4, self.ppq as u32 * 4);
 
-                    if ((bar_tick + bar_length) as f32) < tick_pos{
+                    if ((bar_tick + bar_length) as f32) < tick_pos_offs {
                         curr_bar_tick += bar_length as f32;
                         bar_num += 1;
                         continue;
                     }
 
                     self.bars_render[bar_id] = RenderDataViewBar {
-                        0: ((curr_bar_tick - tick_pos) / zoom_ticks),
+                        0: ((curr_bar_tick - tick_pos_offs) / zoom_ticks),
                         1: (bar_length as f32 / zoom_ticks),
                         2: bar_num as u32
                     };

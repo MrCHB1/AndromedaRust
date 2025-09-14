@@ -2,9 +2,7 @@
 use crate::{app::{custom_widgets::{EditField, IntegerField}, rendering::{data_view::DataViewRenderer, RenderManager, RenderType, Renderer}, shared::NoteColors, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_devices::MIDIDevices}, editor::{edit_functions::EFChopDialog, meta_editing::{MetaEditing, MetaEventInsertDialog}, midi_bar_cacher::BarCacher, navigation::TrackViewNavigation, note_editing::NoteEditing, playhead::Playhead, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::MIDITick}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
 
 use eframe::{
-    egui::{self, Color32, RichText, Stroke, Ui, Vec2},
-    egui_glow::CallbackFn,
-    glow::HasContext,
+    egui::{self, Color32, Pos2, RichText, Shape, Stroke, Ui, Vec2}, egui_glow::CallbackFn, epaint::RectShape, glow::HasContext
 };
 use egui_extras::StripBuilder;
 use rayon::prelude::*;
@@ -277,6 +275,9 @@ impl MainWindow {
     fn export_midi_file(&mut self) {
         let midi_fd = rfd::FileDialog::new().add_filter("MIDI Files", &["mid"]);
         if let Some(file) = midi_fd.save_file() {
+            let export_timer = Instant::now();
+            let start = export_timer.elapsed().as_secs_f32();
+
             let project_data = self.project_data.lock().unwrap();
 
             // let mut midi_writer = MIDIFileWriter::new(project_data.project_info.ppq);
@@ -305,6 +306,8 @@ impl MainWindow {
             }
 
             midi_writer.write_midi(file.to_str().unwrap()).unwrap();
+            let end = export_timer.elapsed().as_secs_f32();
+            println!("Exported MIDI in {}s", end - start);
         }
     }
 
@@ -485,7 +488,7 @@ impl MainWindow {
                         track_view_nav.tick_pos = new_tick_pos;
 
                         let rend = render_manager.get_active_renderer();
-                        nav.change_tick_pos(new_tick_pos, |time| {
+                        track_view_nav.change_tick_pos(new_tick_pos, |time| {
                             rend.lock().unwrap().time_changed(time as u64)
                         });
                     }
@@ -2004,12 +2007,13 @@ impl MainWindow {
                     let vp = info.viewport_in_pixels();
                     gl.enable(glow::SCISSOR_TEST);
                     gl.scissor(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
+                    // gl.viewport(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
                     gl.clear(glow::COLOR_BUFFER_BIT);
                     gl.clear_color(0.0, 0.0, 0.0, 1.0);
                     {
                         let mut render = renderer.lock().unwrap();
                         let mut rnd = render.get_active_renderer().lock().unwrap();
-                        (*rnd).window_size(rect.size());
+                        (*rnd).window_size(Vec2 { x: vp.width_px as f32, y: vp.height_px as f32 });
                         (*rnd).draw();
                     }
                     gl.disable(glow::SCISSOR_TEST);
@@ -2042,6 +2046,32 @@ impl MainWindow {
                 );
             }
         }
+
+        if let Some(nav) = self.nav.as_ref() { // playhead line
+            let nav = nav.lock().unwrap();
+            let playhead = &self.playhead;
+
+            let tick_pos = nav.tick_pos_smoothed;
+            let tick_end = tick_pos + nav.zoom_ticks_smoothed;
+
+            let min_y = rect.min.y;
+            let max_y = rect.max.y;
+            let mut playhead_line_pos = (playhead.start_tick as f32 - tick_pos) / (tick_end - tick_pos);
+            if playhead_line_pos > 0.0 && playhead_line_pos < 1.0 {
+                playhead_line_pos = playhead_line_pos * rect.width() + rect.left();
+                ui.painter().add(
+                    Shape::line_segment(
+                        [
+                            Pos2 { x: playhead_line_pos, y: min_y },
+                            Pos2 { x: playhead_line_pos, y: max_y }
+                        ],
+                        Stroke::new(1.0, Color32::WHITE)
+                    )
+                );
+            }
+        }
+
+        
     }
 
     fn draw_data_viewer(&mut self, ctx: &egui::Context, ui: &mut Ui, any_window_opened: bool) {
@@ -2068,7 +2098,7 @@ impl MainWindow {
                     gl.clear_color(0.0, 0.0, 0.0, 1.0);
                     {
                         let mut render = renderer.lock().unwrap();    
-                        (*render).window_size(rect.size());
+                        (*render).window_size(Vec2 { x: vp.width_px as f32, y: vp.height_px as f32 });
                         (*render).draw();
                     }
                     gl.disable(glow::SCISSOR_TEST);
