@@ -1,21 +1,21 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::midi::events::meta_event::{MetaEvent, MetaEventType};
 
 pub struct BarCacher {
     pub ppq: u16,
     pub bar_cache: Vec<(u32, u32)>,
-    pub global_metas: Arc<Mutex<Vec<MetaEvent>>>,
+    pub global_metas: Arc<RwLock<Vec<MetaEvent>>>,
 }
 
 impl Default for BarCacher {
     fn default() -> Self {
-        BarCacher::new(960, &Arc::new(Mutex::new(Vec::new())))
+        BarCacher::new(960, &Arc::new(RwLock::new(Vec::new())))
     }
 }
 
 impl BarCacher {
-    pub fn new(ppq: u16, metas: &Arc<Mutex<Vec<MetaEvent>>>) -> Self {
+    pub fn new(ppq: u16, metas: &Arc<RwLock<Vec<MetaEvent>>>) -> Self {
         Self {
             ppq,
             bar_cache: Vec::new(),
@@ -38,7 +38,7 @@ impl BarCacher {
     }
 
     fn validate_bars_until(&mut self, target_bar: usize) {
-        let metas = self.global_metas.lock().unwrap();
+        let metas = self.global_metas.read().unwrap();
 
         while self.bar_cache.len() <= target_bar {
             let start_tick = match self.bar_cache.last() {

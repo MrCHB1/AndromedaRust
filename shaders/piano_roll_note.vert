@@ -2,8 +2,7 @@
 layout (location = 0) in vec2 vPos;
 
 layout (location = 1) in vec4 noteRect;
-layout (location = 2) in vec3 noteColor;
-layout (location = 3) in vec3 noteColor2;
+layout (location = 2) in uint noteMeta;
 
 out vec2 uv;
 out vec3 color;
@@ -12,9 +11,34 @@ out vec3 color2;
 out float noteWidth;
 out float noteHeight;
 
+uniform sampler2D noteColorTexture;
+
 void main() {
-    color = noteColor;
-    color2 = noteColor2;
+    vec3 n_color = texture2D(noteColorTexture, vec2(float(noteMeta & uint(0xF)) / 16.0, 0.5)).rgb;
+    color2 = n_color * 0.5;
+
+    n_color = mix(
+        vec3(1.0),
+        n_color,
+        float((noteMeta & uint(0xFF0)) >> uint(4)) / 128.0
+    );
+
+    if ((noteMeta & uint(1 << 13)) != uint(0)) {
+        n_color = vec3(1.0, 0.5, 0.5);
+    }
+
+    float grayFactor = float((noteMeta & (uint(3) << uint(14))) >> uint(14)) / 2.0;
+    n_color = mix(n_color, vec3(0.5, 0.5, 0.5), grayFactor);
+
+    if ((noteMeta & uint(1 << 12)) != uint(0)) {
+        n_color += vec3(0.5);
+        color2 += 0.25;
+    }
+
+    color = n_color;
+
+    // color = noteColor;
+    // color2 = noteColor2;
     vec2 uv_;
     float x_pos = 0.0f;
     float y_pos = 0.0f;

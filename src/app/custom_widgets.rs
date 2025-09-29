@@ -1,62 +1,55 @@
+use std::{any::Any, fmt::Display, str::FromStr};
+
 use eframe::egui;
-use num_traits::{NumCast, PrimInt, Num};
+use num_traits::{Num, NumCast, PrimInt, ToPrimitive};
 
-pub trait EditField<T> {
+pub trait NumberField {
     fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response;
-    fn update_value(&mut self, new_value: T);
-    fn update_buffer(&mut self);
-    fn value(&self) -> T;
+    fn changed(&self) -> bool;
+    
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    fn as_f32(&self) -> f32;
+    fn as_i32(&self) -> i32;
+    fn as_u8(&self) -> u8;
 }
 
-pub struct IntegerField {
+pub struct NumericField<T> {
     buffer: String,
-    min_value: i32,
-    max_value: i32,
-    value: i32,
-    pub changed: bool,
+    min_value: Option<T>,
+    max_value: Option<T>,
+    value: T,
+    pub changed: bool
 }
 
-impl IntegerField {
-    pub fn new(initial: i32, min_value: Option<i32>, max_value: Option<i32>) -> Self {
+impl<T> NumericField<T>
+where
+    T: NumCast + ToPrimitive + FromStr + Display + PartialOrd + Copy
+{
+    pub fn new(initial: T, min_value: Option<T>, max_value: Option<T>) -> Self {
         Self {
             buffer: initial.to_string(),
-            min_value: min_value.unwrap_or(i32::MIN),
-            max_value: max_value.unwrap_or(i32::MAX),
+            min_value,
+            max_value,
             value: initial,
             changed: false
         }
     }
-}
-
-impl EditField<i32> for IntegerField {
-    fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response {
-        self.changed = false;
-        let mut text_edit = egui::TextEdit::singleline(&mut self.buffer);
-        if let Some(width) = width {
-            text_edit = text_edit.desired_width(width);
-        }
-
-        let res = ui.horizontal(|ui| {
-            ui.label(label);
-            let response = ui.add(text_edit);
-            response
-        }).inner;
-
-        if res.lost_focus() {
-            self.update_buffer();
-        }
-
-        res
-    }
-
-    fn update_value(&mut self, new_value: i32) {
-        self.buffer = new_value.to_string();
-        self.value = new_value;
-    }
 
     fn update_buffer(&mut self) {
-        if let Ok(parsed) = self.buffer.parse::<i32>() {
-            self.value = parsed.clamp(self.min_value,self.max_value);
+        if let Ok(mut parsed) = self.buffer.parse::<T>() {
+            // clamping
+            if let Some(min_value) = self.min_value {
+                if parsed < min_value { parsed = min_value; }
+            }
+
+            if let Some(max_value) = self.max_value {
+                if parsed > max_value { parsed = max_value; }
+            }
+
+            self.value = parsed;
+            self.buffer = parsed.to_string();
             self.changed = true;
         } else {
             self.buffer = self.value.to_string();
@@ -64,54 +57,58 @@ impl EditField<i32> for IntegerField {
         }
     }
 
-    fn value(&self) -> i32 {
+    pub fn value(&self) -> T {
         self.value
     }
-}
 
-pub struct DecimalField {
-    buffer: String,   // what the user is typing
-    min_value: f64,
-    max_value: f64,
-    value: f64,       // the last successfully parsed value
-}
-
-impl DecimalField {
-    pub fn new(initial: f64, min_value: Option<f64>, max_value: Option<f64>) -> Self {
-        Self {
-            buffer: initial.to_string(),
-            min_value: min_value.unwrap_or(f64::MIN),
-            max_value: max_value.unwrap_or(f64::MAX),
-            value: initial,
-        }
+    pub fn set_value(&mut self, val: T) {
+        self.value = val;
+        self.buffer = val.to_string();
     }
+}
 
-    pub fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response {
-        ui.label(label);
-
+impl<T> NumberField for NumericField<T>
+where
+    T: NumCast + ToPrimitive + FromStr + Display + PartialOrd + Copy + 'static
+{
+    fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response {
+        self.changed = false;
         let mut text_edit = egui::TextEdit::singleline(&mut self.buffer);
-        if let Some(width) = width {
+        if let Some(width) = width { 
             text_edit = text_edit.desired_width(width);
         }
 
-        let res = ui.add(text_edit);
+        let response = ui.horizontal(|ui| {
+            ui.label(label);
+            ui.add(text_edit)
+        }).inner;
 
-        if res.lost_focus() {
-            self.update_buffer();
-        }
+        if response.lost_focus() { self.update_buffer(); }
 
-        res
+        response
     }
 
-    fn update_buffer(&mut self) {
-        if let Ok(parsed) = self.buffer.parse::<f64>() {
-            self.value = parsed.clamp(self.min_value, self.max_value);
-        } else {
-            self.buffer = self.value.to_string();
-        }
+    fn changed(&self) -> bool {
+        self.changed
     }
 
-    pub fn value(&self) -> f64 {
-        self.value
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn as_i32(&self) -> i32 {
+        self.value.to_i32().unwrap_or(0)
+    }
+
+    fn as_u8(&self) -> u8 {
+        self.value.to_u8().unwrap_or(0)
+    }
+
+    fn as_f32(&self) -> f32 {
+        self.value.to_f32().unwrap_or(0.0)
     }
 }

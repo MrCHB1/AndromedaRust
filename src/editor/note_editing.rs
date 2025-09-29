@@ -1,22 +1,26 @@
 use eframe::egui::{self, Pos2, Ui};
 
-use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::RenderManager}, editor::{actions::{EditorAction, EditorActions}, navigation::PianoRollNavigation, util::{bin_search_notes, decode_note_group, find_note_at, get_min_max_ticks_in_selection, get_notes_in_range, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::RenderManager}, editor::{actions::{EditorAction, EditorActions}, navigation::PianoRollNavigation, util::{bin_search_notes, decode_note_group, find_note_at, get_min_max_ticks_in_selection, get_mouse_midi_pos, get_notes_in_range, MIDITick, SignedMIDITick}}, midi::events::note::Note};
 use std::{collections::{HashMap, VecDeque}, sync::{Arc, Mutex, RwLock}};
-use crate::app::custom_widgets::EditField;
+use crate::app::custom_widgets::NumericField;
 
 // flags
-const NOTE_EDIT_FLAGS_NONE: u16 = 0x0;
-const NOTE_EDIT_MOUSE_OVER_UI: u16 = 0x1;
-const NOTE_EDIT_ANY_DIALOG_OPEN: u16 = 0x2;
-const NOTE_EDIT_TRACK_VIEW: u16 = 0x4;
-const NOTE_EDIT_MOUSE_OVER_NOTE: u16 = 0x8;
-const NOTE_EDIT_IS_EDITING: u16 = 0x10;
-const NOTE_EDIT_MULTIEDIT: u16 = 0x20;
-const NOTE_EDIT_DRAGGING: u16 = 0x40;
-const NOTE_EDIT_LENGTH_CHANGE: u16 = 0x80;
-const NOTE_EDIT_ERASING: u16 = 0x100;
+pub mod note_flags {
+    pub const NOTE_EDIT_FLAGS_NONE: u16 = 0x0;
+    pub const NOTE_EDIT_MOUSE_OVER_UI: u16 = 0x1;
+    pub const NOTE_EDIT_ANY_DIALOG_OPEN: u16 = 0x2;
+    pub const NOTE_EDIT_TRACK_VIEW: u16 = 0x4;
+    pub const NOTE_EDIT_MOUSE_OVER_NOTE: u16 = 0x8;
+    pub const NOTE_EDIT_IS_EDITING: u16 = 0x10;
+    pub const NOTE_EDIT_MULTIEDIT: u16 = 0x20;
+    pub const NOTE_EDIT_DRAGGING: u16 = 0x40;
+    pub const NOTE_EDIT_LENGTH_CHANGE: u16 = 0x80;
+    pub const NOTE_EDIT_ERASING: u16 = 0x100;
 
-const NOTE_EDIT_MOUSE_DOWN_ON_UI: u16 = 0x1000;
+    pub const NOTE_EDIT_MOUSE_DOWN_ON_UI: u16 = 0x1000;
+}
+
+use note_flags::*;
 
 pub struct GhostNote {
     id: Option<usize>, // None if the ghost note does not refer to any specific note in the editor
@@ -77,6 +81,8 @@ pub struct NoteEditing {
     draw_select_box: bool,
 
     last_clicked_note_idx: usize,
+
+    pub latest_note_start: MIDITick, // for slider scrolling
 }
 
 impl NoteEditing {
@@ -114,7 +120,9 @@ impl NoteEditing {
             drag_offset: 0,
             last_clicked_note_idx: 0,
             selection_range: (0, 0, 0, 0),
-            draw_select_box: false
+            draw_select_box: false,
+
+            latest_note_start: 38400,
         }
     }
 
@@ -193,7 +201,7 @@ impl NoteEditing {
         }
     }
 
-    pub fn get_mouse_midi_pos(&self, ui: &mut Ui) -> ((MIDITick, u8), (MIDITick, u8)) {
+    /*pub fn get_mouse_midi_pos(&self, ui: &mut Ui) -> ((MIDITick, u8), (MIDITick, u8)) {
         let rect = ui.min_rect();
         if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
             let (mut mouse_x, mut mouse_y) = (mouse_pos.x, mouse_pos.y);
@@ -213,7 +221,7 @@ impl NoteEditing {
         } else {
             ((0, 0), (0, 0))
         }
-    }
+    }*/
 
     pub fn midi_pos_to_ui_pos(&self, ui: &mut Ui, tick_pos: MIDITick, key_pos: u8) -> (f32, f32) {
         let nav = self.nav.lock().unwrap();
@@ -229,7 +237,7 @@ impl NoteEditing {
 
     /// Will update itself and change some data, mostly from mouse position. Called on every frame.
     pub fn update_from_ui(&mut self, ui: &mut Ui) {
-        let (mouse_midi_pos, mouse_midi_pos_rounded) = self.get_mouse_midi_pos(ui);
+        let (mouse_midi_pos, mouse_midi_pos_rounded) = get_mouse_midi_pos(ui, &self.nav);
 
         let (curr_track, curr_channel) = self.get_current_track_and_channel();
         self.curr_mouse_midi_pos = mouse_midi_pos;
@@ -314,6 +322,8 @@ impl NoteEditing {
             editor_tool.get_tool()
         };
 
+
+
         match editor_tool {
             EditorTool::Pencil => {
                 self.flags &= !NOTE_EDIT_IS_EDITING;
@@ -343,8 +353,9 @@ impl NoteEditing {
                         let note = &notes[curr_track as usize][clicked_note_idx];
 
                         let mut tbs = self.toolbar_settings.lock().unwrap();
-                        tbs.note_gate.update_value(note.length() as i32);
-                        tbs.note_velocity.update_value(note.velocity() as i32);
+                        tbs.note_gate.set_value(note.length());
+                        tbs.note_velocity.set_value(note.velocity());
+                        tbs.note_channel.set_value(note.channel() + 1);
                     }
 
                     self.flags &= !NOTE_EDIT_LENGTH_CHANGE;
@@ -379,10 +390,16 @@ impl NoteEditing {
                         sel.clear();
                     }
 
-                    // make a new ghost note at index zero
+                    // make a new ghost note at index zero... if it is empty
+                    // otherwise, just go ahead n modify the one at index 0
                     {
-                        let mut ghost_notes = self.ghost_notes.lock().unwrap();
-                        if ghost_notes.is_empty() { ghost_notes.push(Default::default()); }
+                        self.update_first_ghost_note();
+                        /*let mut ghost_notes = self.ghost_notes.lock().unwrap();
+                        if ghost_notes.is_empty() {
+                            let tbs = self.toolbar_settings.lock().unwrap();
+                            
+                        }*/
+                        // if ghost_notes.is_empty() { ghost_notes.push(Default::default()); }
                         self.flags |= NOTE_EDIT_IS_EDITING;
                     }
                 }
@@ -452,33 +469,44 @@ impl NoteEditing {
         match editor_tool {
             EditorTool::Pencil => {
                 // update ghost notes (if there is any)
-                let mut ghost_notes = self.ghost_notes.lock().unwrap();
 
                 if self.flags & NOTE_EDIT_IS_EDITING != 0 {
+                    self.update_first_ghost_note();
+                    /*let gn_start = {
+                        let mut snapped = self.snap_tick(self.curr_mouse_midi_pos.0 as SignedMIDITick);
+                        if snapped < 0 {
+                            snapped = 0;
+                        }
+                        snapped
+                    } as MIDITick;
+
+                    let gn_key = {
+                        let mut key = self.curr_mouse_midi_pos.1 as u8;
+                        if key > 127 {
+                            key = 127;
+                        }
+                        key
+                    };
+
+                    let tbs = self.toolbar_settings.lock().unwrap();
+                    let gn_length = tbs.note_gate.value() as MIDITick;
+                    let gn_velocity = tbs.note_velocity.value() as u8;
+                    let gn_channel = tbs.note_channel.value() as u8 - 1;
+                    drop(tbs);
+                    
                     if !ghost_notes.is_empty() {
                         let gn = ghost_notes[0].get_note_mut();
-                        gn.start = {
-                            let mut snapped = self.snap_tick(self.curr_mouse_midi_pos.0 as SignedMIDITick);
-                            if snapped < 0 {
-                                snapped = 0;
-                            }
-                            snapped
-                        } as MIDITick;
-                        gn.key = {
-                            let mut key = self.curr_mouse_midi_pos.1 as u8;
-                            if key > 127 {
-                                key = 127;
-                            }
-                            key
-                        };
-
-                        let tbs = self.toolbar_settings.lock().unwrap();
-                        gn.length = tbs.note_gate.value() as MIDITick;
-                        gn.velocity = tbs.note_velocity.value() as u8;
+                        gn.start = gn_start;
+                        gn.key = gn_key;
+                        gn.length = gn_length;
+                        gn.velocity = gn_velocity;
+                        gn.channel = gn_channel;
                     } else {
-                        ghost_notes.push(Default::default());
-                    }
+                        ghost_notes.push(GhostNote { id: None, note: Note { channel: gn_channel, start: gn_start, length: gn_length, key: gn_key, velocity: gn_velocity } });
+                    }*/
                 } else if self.flags & NOTE_EDIT_DRAGGING != 0 {
+                    let mut ghost_notes = self.ghost_notes.lock().unwrap();
+
                     // single-note editing
                     if self.flags & NOTE_EDIT_MULTIEDIT == 0 {
                         if !ghost_notes.is_empty() {
@@ -682,6 +710,11 @@ impl NoteEditing {
 
                         let length_diff = note.length as SignedMIDITick - old_length as SignedMIDITick;
 
+                        {
+                            let mut tbs = self.toolbar_settings.lock().unwrap();
+                            tbs.note_gate.set_value(note.length());
+                        }
+
                         if length_diff != 0 {
                             let mut editor_actions = self.editor_actions.lock().unwrap();
                             editor_actions.register_action(EditorAction::LengthChange(
@@ -723,6 +756,8 @@ impl NoteEditing {
 
                     self.flags &= !(NOTE_EDIT_LENGTH_CHANGE | NOTE_EDIT_MULTIEDIT);
                 }
+
+                self.update_latest_note_start();
             },
             EditorTool::Eraser => {
                 self.flags &= !NOTE_EDIT_ERASING;
@@ -779,7 +814,7 @@ impl NoteEditing {
 
     pub fn on_key_down(&mut self, ui: &mut Ui, ctrl_down: bool) {
         // undo/redo
-        if ctrl_down {
+        /*if ctrl_down {
             if ui.input(|i| i.key_pressed(egui::Key::Z)) {
                 let action = {
                     let mut editor_actions = self.editor_actions.lock().unwrap();
@@ -801,7 +836,7 @@ impl NoteEditing {
                     self.apply_action(action.unwrap());
                 }
             }
-        }
+        }*/
 
         // duplicate notes
         if ctrl_down {
@@ -864,6 +899,43 @@ impl NoteEditing {
             };
 
             self.delete_notes(selected, curr_track, curr_channel);
+        }
+    }
+
+    fn update_first_ghost_note(&mut self) {
+        let mut ghost_notes = self.ghost_notes.lock().unwrap();
+
+        let gn_start = {
+            let mut snapped = self.snap_tick(self.curr_mouse_midi_pos.0 as SignedMIDITick);
+            if snapped < 0 {
+                snapped = 0;
+            }
+            snapped
+        } as MIDITick;
+        
+        let gn_key = {
+            let mut key = self.curr_mouse_midi_pos.1 as u8;
+            if key > 127 {
+                key = 127;
+            }
+            key
+        };
+
+        let tbs = self.toolbar_settings.lock().unwrap();
+        let gn_length = tbs.note_gate.value() as MIDITick;
+        let gn_velocity = tbs.note_velocity.value() as u8;
+        let gn_channel = tbs.note_channel.value() as u8 - 1;
+        drop(tbs);
+        
+        if !ghost_notes.is_empty() {
+            let gn = ghost_notes[0].get_note_mut();
+            gn.start = gn_start;
+            gn.key = gn_key;
+            gn.length = gn_length;
+            gn.velocity = gn_velocity;
+            gn.channel = gn_channel;
+        } else {
+            ghost_notes.push(GhostNote { id: None, note: Note { channel: gn_channel, start: gn_start, length: gn_length, key: gn_key, velocity: gn_velocity } });
         }
     }
 
@@ -1240,7 +1312,7 @@ impl NoteEditing {
         self.flags & NOTE_EDIT_ERASING != 0
     }
 
-    pub fn apply_action(&mut self, action: EditorAction) {
+    pub fn apply_action(&mut self, action: &EditorAction) {
         match action {
             EditorAction::PlaceNotes(note_ids, note_group) => {
                 let chan = (note_group & 0xF) as usize;
@@ -1262,7 +1334,7 @@ impl NoteEditing {
                 let notes = &mut notes[trk];
 
                 // let mut rem_offset = 0;
-                for ids in note_ids.iter() {
+                for ids in note_ids.iter().rev() {
                     let removed_note = notes.remove(*ids);
                     self.note_temp_deleted.push_back(removed_note);
                     // rem_offset += 1;
@@ -1311,7 +1383,7 @@ impl NoteEditing {
                 }
 
                 // sort
-                notes_removed_tmp.sort_by_key(|(_, note)| note.start);
+                notes_removed_tmp.sort_by_key(|(id, _)| *id);
                 let mut old_ids_sorted = Vec::new();
 
                 for (old_id, note) in notes_removed_tmp.into_iter() {
@@ -1321,7 +1393,7 @@ impl NoteEditing {
                     notes.insert(insert_idx, note);
                 }
 
-                if update_selected {
+                if *update_selected {
                     let mut selected = self.selected_notes_ids.lock().unwrap();
                     *selected = old_ids_sorted
                 }
@@ -1370,17 +1442,19 @@ impl NoteEditing {
                     }
                 }
             },
-            EditorAction::Bulk(mut actions) => {
+            EditorAction::Bulk(actions) => {
                 let mut actions_taken = 0;
-                while let Some(action) = actions.pop() {
+                for action in actions.iter().rev() {
                     self.apply_action(action);
                     actions_taken += 1;
                 }
+                /*while let Some(action) = actions.pop() {
+                    self.apply_action(&action);
+                    actions_taken += 1;
+                }*/
                 println!("Actions taken in a bulk action: {}", actions_taken);
             }
-            EditorAction::Duplicate(_, _, _, _) => {
-
-            }
+            _ => {}
         }
     }
 
@@ -1414,5 +1488,21 @@ impl NoteEditing {
                 ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
             }
         }
+    }
+
+    pub fn get_flags(&self) -> u16 {
+        self.flags
+    }
+
+    // probably slow :skull:
+    fn update_latest_note_start(&mut self) {
+        let notes = self.notes.read().unwrap();
+        let mut latest_start: MIDITick = 0;
+        for note_track in notes.iter() {
+            if note_track.is_empty() { continue; }
+            let last_note = note_track.last().unwrap();
+            if last_note.start() >= latest_start { latest_start = last_note.start(); }
+        }
+        self.latest_note_start = latest_start + 38400;
     }
 }

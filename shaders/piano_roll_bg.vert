@@ -1,9 +1,8 @@
 #version 330
-layout (location = 0) in vec2 vPos;
 
-layout (location = 1) in float barStart;
-layout (location = 2) in float barLength;
-layout (location = 3) in uint barNumber;
+layout (location = 0) in float barStart;
+layout (location = 1) in float barLength;
+layout (location = 2) in uint barNumber;
 
 out vec2 uv;
 out float oddBarFac;
@@ -13,24 +12,28 @@ uniform float prBarBottom;
 uniform float prBarTop;
 
 void main() {
-
     float x_pos = 0.0f;
     float y_pos = 0.0f;
+    vec2 uv_ = vec2(0.0);
     if (int(gl_VertexID % 4) == 0) {
         x_pos = barStart;
         y_pos = prBarBottom;
+        uv_ = vec2(0.0, 0.0);
     } else if (int(gl_VertexID % 4) == 1) {
         x_pos = barStart + barLength;
         y_pos = prBarBottom;
+        uv_ = vec2(1.0, 0.0);
     } else if (int(gl_VertexID % 4) == 2) {
         x_pos = barStart + barLength;
         y_pos = prBarTop;
+        uv_ = vec2(1.0, 1.0);
     } else if (int(gl_VertexID % 4) == 3) {
         x_pos = barStart;
         y_pos = prBarTop;
+        uv_ = vec2(0.0, 1.0);
     }
 
-    uv = vPos;
+    uv = uv_;
     oddBarFac = (int(barNumber) % 2 == 1) ? 0.8 : 1.0;
     bLength = barLength;
 

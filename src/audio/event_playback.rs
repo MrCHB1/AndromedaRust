@@ -117,8 +117,8 @@ impl Default for MidiEventBatchSize {
 
 pub struct PlaybackManager {
     pub notes: Arc<RwLock<Vec<Vec<Note>>>>,
-    pub meta_events: Arc<Mutex<Vec<MetaEvent>>>,
-    pub channel_events: Arc<Mutex<Vec<Vec<ChannelEvent>>>>,
+    pub meta_events: Arc<RwLock<Vec<MetaEvent>>>,
+    pub channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
     pub device: Arc<Mutex<dyn MIDIAudioEngine + Send>>,
     pub ppq: u16,
 
@@ -135,14 +135,17 @@ pub struct PlaybackManager {
     start_pos_secs_from_ticks: f32,
     tempo_map: Arc<RwLock<Vec<(MIDITick, f32)>>>,
     batch_size: Arc<Mutex<MidiEventBatchSize>>,
+
+    play_at_mouse: bool,
+    mouse_last_key: u8
 }
 
 impl PlaybackManager {
     pub fn new(
         device: Arc<Mutex<dyn MIDIAudioEngine + Send>>,
         notes: Arc<RwLock<Vec<Vec<Note>>>>,
-        meta_events: Arc<Mutex<Vec<MetaEvent>>>,
-        channel_events: Arc<Mutex<Vec<Vec<ChannelEvent>>>>,
+        meta_events: Arc<RwLock<Vec<MetaEvent>>>,
+        channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
     ) -> Self {
         let (tx, rx) = bounded(100000);
         let (notify_tx, notify_rx) = bounded::<()>(1);
@@ -161,7 +164,8 @@ impl PlaybackManager {
             start_pos_secs_from_ticks: 0.0f32,
             tempo_map: Arc::new(RwLock::new(Vec::new())),
             batch_size: Arc::new(Mutex::new(MidiEventBatchSize::BatchSize(4096))),
-
+            play_at_mouse: false,
+            mouse_last_key: 0
         }
     }
 
@@ -203,13 +207,52 @@ impl PlaybackManager {
         println!("New pool size: {}", new_size);
     }
 
+    pub fn start_play_at_mouse(&mut self, key: u8, channel: u8, velocity: u8) {
+        if self.play_at_mouse || self.playing { return; }
+
+        {
+            let mut synth = self.device.lock().unwrap();
+            if let Ok(_) = synth.send_event(&[0x90 | channel, key, velocity]) {}
+        }
+        self.play_at_mouse = true;
+        self.mouse_last_key = key;
+    }
+
+    pub fn update_play_at_mouse(&mut self, key: u8, channel: u8, velocity: u8) {
+        if !self.play_at_mouse || self.playing { return; }
+        if self.mouse_last_key == key { return; }
+
+        {
+            let mut synth = self.device.lock().unwrap();
+            if let Ok(_) = synth.send_event(&[0x80 | channel, self.mouse_last_key, 0x00]) {}
+            if let Ok(_) = synth.send_event(&[0x90 | channel, key, velocity]) {}
+        }
+
+        self.mouse_last_key = key;
+    }
+
+    pub fn stop_play_at_mouse(&mut self, key: u8, channel: u8) {
+        if !self.play_at_mouse || self.playing { return; }
+
+        {
+            let mut synth = self.device.lock().unwrap();
+            if let Ok(_) = synth.send_event(&[0x80 | channel, key, 0x00]) {}
+        }
+
+        self.play_at_mouse = false;
+    }
+
+    /*pub fn toggle_play_at_mouse(&mut self, first_key_played: u8) {
+        self.play_at_mouse = !self.play_at_mouse;
+    }*/
+
     pub fn set_event_batch_size(&mut self, size: MidiEventBatchSize) {
         let mut batch_size = self.batch_size.lock().unwrap();
         *batch_size = size;
     }
 
     fn build_tempo_map(&self) -> Vec<(MIDITick, f32)> {
-        let meta = self.meta_events.lock().unwrap();
+        let meta = self.meta_events.read().unwrap();
         meta.iter()
             .filter(|m| m.event_type == MetaEventType::Tempo)
             .map(|m| (m.tick, bytes_as_tempo(&m.data)))
@@ -321,7 +364,7 @@ impl PlaybackManager {
             };
 
             let mut ch_event_cursors = {
-                let ch_evs = channel_events.lock().unwrap();
+                let ch_evs = channel_events.read().unwrap();
                 vec![0; ch_evs.len()]
             };
 
@@ -346,7 +389,7 @@ impl PlaybackManager {
 
                 // first the control events / other stuff
                 {
-                    let channel_events = channel_events.lock().unwrap();
+                    let channel_events = channel_events.read().unwrap();
                     for (trk, track) in channel_events.iter().enumerate() {
                         // early break if stop flag is set
                         if stop_flag.load(Ordering::SeqCst) {

@@ -14,6 +14,8 @@ pub enum EditorAction {
     Select(Vec<usize>, u32), // pretty straightforward
     Deselect(Vec<usize>, u32),
     Duplicate(Vec<usize>, MIDITick, u32, u32), // (note_ids, paste_tick, source track/channel, destination track/channel)
+    AddMeta(Vec<usize>),
+    DeleteMeta(Vec<usize>),
     Bulk(Vec<EditorAction>) // for bulk actions
 }
 
@@ -127,6 +129,12 @@ impl EditorActions {
             },
             EditorAction::Duplicate(note_id, _, _, note_group) => { // clever hack >:3
                 EditorAction::DeleteNotes(note_id, note_group)
+            },
+            EditorAction::AddMeta(meta_ids) => {
+                EditorAction::DeleteMeta(meta_ids)
+            },
+            EditorAction::DeleteMeta(meta_ids) => {
+                EditorAction::AddMeta(meta_ids)
             },
             EditorAction::Bulk(actions) => {
                 {

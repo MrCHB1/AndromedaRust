@@ -51,7 +51,7 @@ impl RenderManager {
         view_settings: Arc<Mutex<ViewSettings>>,
         playback_manager: Arc<Mutex<PlaybackManager>>,
         bar_cacher: Arc<Mutex<BarCacher>>,
-        colors: &Arc<NoteColors>
+        colors: &Arc<Mutex<NoteColors>>
     ) {
         // initialize piano roll renderer
         {

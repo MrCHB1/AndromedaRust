@@ -1,3 +1,5 @@
+use crate::app::custom_widgets::NumericField;
+
 #[derive(PartialEq)]
 pub enum VS_PianoRoll_OnionState {
     NoOnion,
@@ -61,6 +63,8 @@ impl ToString for VS_PianoRoll_DataViewState {
 
 pub struct ViewSettings {
     pub pr_onion_state: VS_PianoRoll_OnionState,
+    pub pr_onion_coloring: VS_PianoRoll_OnionColoring,
+    pub pr_curr_track: NumericField<u16>,
     pub pr_dataview_state: VS_PianoRoll_DataViewState,
     pub pr_dataview_size: f32
 }
@@ -69,6 +73,8 @@ impl Default for ViewSettings {
     fn default() -> Self {
         Self {
             pr_dataview_size: 0.25,
+            pr_curr_track: NumericField::new(0, Some(0), Some(u16::MAX)),
+            pr_onion_coloring: VS_PianoRoll_OnionColoring::PartialColor,
             pr_onion_state: Default::default(),
             pr_dataview_state: Default::default()
         }

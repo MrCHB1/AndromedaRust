@@ -1,3 +1,7 @@
+use std::sync::{Arc, Mutex};
+
+use crate::{audio::event_playback::PlaybackManager, editor::{playhead::Playhead, util::MIDITick}};
+
 pub struct PianoRollNavigation {
     pub tick_pos: f32,
     pub key_pos: f32,
@@ -27,7 +31,7 @@ impl Default for PianoRollNavigation {
             tick_pos_smoothed: 0.0,
             key_pos_smoothed: 21.0,
             zoom_ticks_smoothed: 7680.0,
-            zoom_keys_smoothed: 88.0,
+            zoom_keys_smoothed: 88.0
         }
     }
 }
@@ -46,7 +50,7 @@ impl PianoRollNavigation {
             tick_pos_smoothed: 0.0,
             key_pos_smoothed: 21.0,
             zoom_ticks_smoothed: 7680.0,
-            zoom_keys_smoothed: 88.0,
+            zoom_keys_smoothed: 88.0
         }
     }
 
@@ -94,7 +98,6 @@ impl TrackViewNavigation {
         self.tick_pos = tick_pos;
         change_fn(self.tick_pos);
     }
-
 
     pub fn update_smoothed_values(&mut self) {
         self.tick_pos_smoothed = (self.tick_pos * 0.1) + (self.tick_pos_smoothed * 0.9);

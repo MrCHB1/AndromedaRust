@@ -1,11 +1,8 @@
-use crate::audio::midi_audio_engine::MIDIAudioEngine;
-
 #[cfg(windows)]
 pub mod kdmapi {
     use winapi::um::libloaderapi::{GetModuleHandleA, GetProcAddress};
     use winapi::shared::minwindef::{BOOL, DWORD};
     use winapi::um::mmsystem::MMRESULT;
-    use winapi::um::winnt::VOID;
 
     use crate::audio::midi_audio_engine::MIDIAudioEngine;
 
@@ -149,7 +146,9 @@ pub mod kdmapi {
 
 
 #[cfg(not(windows))]
-mod kdmapi {
+pub mod kdmapi {
+    use crate::audio::midi_audio_engine::MIDIAudioEngine;
+
     pub struct KDMAPI {
         supports_kdmapi: bool
     }

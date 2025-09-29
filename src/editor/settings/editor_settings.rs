@@ -1,6 +1,6 @@
 use eframe::egui::{self, RichText, Ui};
 
-use crate::{app::custom_widgets::{IntegerField, EditField}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
+use crate::{app::custom_widgets::{NumberField, NumericField}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use std::any::Any;
 
@@ -15,7 +15,7 @@ pub struct ESGeneralSettings {
     import_reassign_channels: bool,
     import_reassign_channel_10_as_11: bool,
     import_max_ppq_override: bool,
-    import_max_ppq_override_value: IntegerField,
+    import_max_ppq_override_value: NumericField<u16>,
     import_remove_overlaps: bool,
 
     export_discard_empty_tracks: bool
@@ -29,7 +29,7 @@ impl Default for ESGeneralSettings {
             import_reassign_channels: false,
             import_reassign_channel_10_as_11: false,
             import_max_ppq_override: false,
-            import_max_ppq_override_value: IntegerField::new(960, Some(96), Some(7680)),
+            import_max_ppq_override_value: NumericField::new(960, Some(96), Some(7680)),
             import_remove_overlaps: false,
 
             export_discard_empty_tracks: true
@@ -57,7 +57,7 @@ pub struct ESAudioSettings {
     md_port_out: usize,
 
     // advanced settings
-    md_event_pool_size: IntegerField
+    md_event_pool_size: NumericField<usize>
 }
 
 impl Default for ESAudioSettings {
@@ -65,7 +65,7 @@ impl Default for ESAudioSettings {
         Self {
             md_port_in: 0,
             md_port_out: 0,
-            md_event_pool_size: IntegerField::new(4096, Some(100), Some(262144))
+            md_event_pool_size: NumericField::new(4096, Some(100), Some(262144))
         }
     }
 }
@@ -189,7 +189,7 @@ impl ESSettingsWindow {
                 if audio_settings.md_event_pool_size.changed {
                     if let Some(playback_manager) = self.playback_manager.as_ref() {
                         let mut playback_manager = playback_manager.lock().unwrap();
-                        playback_manager.set_event_pool_size(audio_settings.md_event_pool_size.value() as usize);
+                        playback_manager.set_event_pool_size(audio_settings.md_event_pool_size.value());
                     }
                 }
             }

@@ -1,5 +1,8 @@
-use eframe::glow::{self, NativeBuffer, NativeVertexArray};
+use eframe::glow::{self, NativeBuffer, NativeTexture, NativeVertexArray};
 use eframe::glow::HasContext;
+use image::ImageReader;
+use std::fs::File;
+use std::io::Read;
 use std::sync::Arc;
 
 pub struct Buffer {
@@ -77,7 +80,28 @@ impl VertexArray {
     ) {
         unsafe {
             self.bind();
-            if type_ == glow::FLOAT {
+            match type_ {
+                glow::FLOAT => {
+                    self.gl.vertex_attrib_pointer_f32(
+                        attrib_pos,
+                        components,
+                        type_,
+                        false, 
+                        std::mem::size_of::<V>() as i32,
+                        offset
+                    );
+                }
+                _ => {
+                    self.gl.vertex_attrib_pointer_i32(
+                        attrib_pos,
+                        components,
+                        type_,
+                        std::mem::size_of::<V>() as i32,
+                        offset
+                    );
+                }
+            }
+            /*if type_ == glow::FLOAT {
                 self.gl.vertex_attrib_pointer_f32(
                     attrib_pos,
                     components,
@@ -86,7 +110,7 @@ impl VertexArray {
                     std::mem::size_of::<V>() as i32,
                     offset
                 );
-            } else {
+            } else if type_ == glow::INT {
                 self.gl.vertex_attrib_pointer_i32(
                     attrib_pos,
                     components,
@@ -94,7 +118,7 @@ impl VertexArray {
                     std::mem::size_of::<V>() as i32,
                     offset
                 );
-            }
+            } else if type_ ==*/
 
             self.gl.enable_vertex_attrib_array(attrib_pos);
         }
@@ -105,6 +129,89 @@ impl Drop for VertexArray {
     fn drop(&mut self) {
         unsafe {
             self.gl.delete_vertex_array(self.array);
+        }
+    }
+}
+
+pub struct Texture {
+    tex: NativeTexture,
+    target: u32,
+    gl: Arc<glow::Context>,
+
+    width: i32,
+    height: i32,
+}
+
+impl Texture {
+    pub fn new(gl: Arc<glow::Context>, target: u32) -> Self {
+        unsafe {
+            let tex = gl.create_texture().unwrap();
+            Self {
+                tex,
+                target,
+                gl,
+                width: 1,
+                height: 1
+            }
+        }
+    }
+
+    pub fn set_wrapping(&mut self, wrapping: u32) {
+        unsafe {
+            self.gl.tex_parameter_i32(self.target, glow::TEXTURE_WRAP_S, wrapping as i32);
+            self.gl.tex_parameter_i32(self.target, glow::TEXTURE_WRAP_T, wrapping as i32);
+        }
+    }
+
+    pub fn set_filtering(&mut self, filter: u32) {
+        unsafe {
+            self.gl.tex_parameter_i32(self.target, glow::TEXTURE_MIN_FILTER, filter as i32);
+            self.gl.tex_parameter_i32(self.target, glow::TEXTURE_MAG_FILTER, filter as i32);
+        }
+    }
+
+    pub fn load_texture(&mut self, path: &str, width: i32, height: i32) {
+        let img = ImageReader::open(path).unwrap().decode().unwrap().to_rgb8();
+        let data = img.as_raw();
+        self.load_raw(data.as_slice(), width, height);
+    }
+
+    pub fn load_raw(&mut self, data: &[u8], width: i32, height: i32) {
+        unsafe {
+            self.gl.tex_image_2d(self.target, 0, glow::RGB8 as i32, width, height, 0, glow::RGB, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(data)));
+            self.gl.generate_mipmap(self.target);
+        }
+
+        self.width = width;
+        self.height = height;
+    }
+
+    pub fn update_texture(&mut self, path: &str) {
+        let img = ImageReader::open(path).unwrap().decode().unwrap().to_rgb8();
+        let data = img.as_raw();
+        self.update_texture_raw(data.as_slice());
+    }
+
+    pub fn update_texture_raw(&mut self, data: &[u8]) {
+        assert!(data.len() == (self.width * self.height * 3) as usize);
+
+        unsafe {
+            self.bind();
+            self.gl.tex_sub_image_2d(self.target, 0, 0, 0, self.width, self.height, glow::RGB, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(data)));
+        }
+    }
+
+    pub fn bind(&mut self) {
+        unsafe {
+            self.gl.bind_texture(self.target, Some(self.tex));
+        }
+    }
+}
+
+impl Drop for Texture {
+    fn drop(&mut self) {
+        unsafe {
+            self.gl.delete_texture(self.tex);
         }
     }
 }

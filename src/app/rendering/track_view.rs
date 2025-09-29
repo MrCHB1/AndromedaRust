@@ -31,11 +31,11 @@ pub struct RenderTrackViewBar(BarStart, BarLength, BarNumber);
 
 // track view notes
 pub type NoteRect = [f32; 4]; // (start, length, note bottom, note top)
-pub type NoteColor = [f32; 3];
+pub type NoteMeta = u32;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-pub struct RenderTrackViewNote(NoteRect, NoteColor);
+pub struct RenderTrackViewNote(NoteRect, NoteMeta);
 
 pub type Position = [f32; 2];
 
@@ -78,8 +78,8 @@ pub struct TrackViewRenderer {
     bars_render: Vec<RenderTrackViewBar>,
     notes_render: Vec<RenderTrackViewNote>,
     render_notes: Arc<RwLock<Vec<Vec<Note>>>>,
-    global_metas: Arc<Mutex<Vec<MetaEvent>>>,
-    note_colors: Arc<NoteColors>,
+    global_metas: Arc<RwLock<Vec<MetaEvent>>>,
+    note_colors: Arc<Mutex<NoteColors>>,
 
     // per channel per track
     last_note_start: Vec<usize>,
@@ -96,7 +96,7 @@ impl TrackViewRenderer {
         gl: Arc<glow::Context>,
         playback_manager: &Arc<Mutex<PlaybackManager>>,
         bar_cacher: &Arc<Mutex<BarCacher>>,
-        colors: &Arc<NoteColors>
+        colors: &Arc<Mutex<NoteColors>>
     ) -> Self {
         let tv_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/track_view_bg");
         let tv_notes_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/track_view_note");
@@ -150,15 +150,15 @@ impl TrackViewRenderer {
         let tv_notes_render = vec![
             RenderTrackViewNote {
                 0: [0.0, 1.0, 0.0, 1.0],
-                1: [1.0, 0.0, 0.0]
+                1: 0
             }; NOTE_BUFFER_SIZE
         ];
         tv_notes_ibo.set_data(tv_notes_render.as_slice(), glow::DYNAMIC_DRAW);
 
         let tv_note_rect = tv_notes_program.get_attrib_location("noteRect").unwrap();
         set_attribute!(glow::FLOAT, tv_notes_vao, tv_note_rect, RenderTrackViewNote::0);
-        let tv_note_color = tv_notes_program.get_attrib_location("noteColor").unwrap();
-        set_attribute!(glow::FLOAT, tv_notes_vao, tv_note_color, RenderTrackViewNote::1);
+        let tv_note_color = tv_notes_program.get_attrib_location("noteMeta").unwrap();
+        set_attribute!(glow::UNSIGNED_INT, tv_notes_vao, tv_note_color, RenderTrackViewNote::1);
 
         gl.vertex_attrib_divisor(1, 1);
         gl.vertex_attrib_divisor(2, 1);
@@ -214,7 +214,7 @@ impl TrackViewRenderer {
     fn get_time(&self) -> f32 {
         let nav = self.navigation.lock().unwrap();
 
-        let is_playing = {
+        /*let is_playing = {
             let playback_manager = self.playback_manager.lock().unwrap();
             playback_manager.playing
         };
@@ -226,9 +226,9 @@ impl TrackViewRenderer {
             } else {
                 nav.tick_pos_smoothed
             }
-        };
+        };*/
 
-        nav_ticks
+        nav.tick_pos_smoothed
     }
 }
 
@@ -322,7 +322,13 @@ impl Renderer for TrackViewRenderer {
 
             // RENDER NOTES
             {
+                let mut note_colors = self.note_colors.lock().unwrap();
+
                 self.gl.use_program(Some(self.tv_notes_program.program));
+                
+                self.gl.active_texture(glow::TEXTURE0);
+                note_colors.get_texture().bind();
+
                 self.tv_notes_program.set_float("width", self.window_size.x);
                 self.tv_notes_program.set_float("height", self.window_size.y);
 
@@ -411,9 +417,7 @@ impl Renderer for TrackViewRenderer {
                                     note_bottom / zoom_tracks,
                                     note_top / zoom_tracks],
                                 1: {
-                                    //let color = self.note_colors[curr_channel as usize % self.note_colors.len()];
-                                    //[color[0], color[1], color[2]]
-                                    *self.note_colors.get(trk_chan)
+                                    note_colors.get_index(trk_chan) as u32
                                 }
                             };
 

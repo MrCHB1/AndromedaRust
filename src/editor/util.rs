@@ -1,5 +1,7 @@
-use crate::midi::events::{meta_event::{MetaEvent, MetaEventType}, note::Note};
-use std::{cmp::Ordering, collections::{HashMap, HashSet, VecDeque}};
+use eframe::egui::Ui;
+
+use crate::{editor::navigation::PianoRollNavigation, midi::events::{meta_event::{MetaEvent, MetaEventType}, note::Note}};
+use std::{cmp::Ordering, collections::{HashMap, HashSet, VecDeque}, sync::{Arc, Mutex}};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 
 pub type MIDITick = u32;
@@ -321,4 +323,26 @@ pub fn get_meta_next_tick(metas: &Vec<MetaEvent>, meta_type: MetaEventType, tick
         }
     }
     None
+}
+
+pub fn get_mouse_midi_pos(ui: &mut Ui, nav: &Arc<Mutex<PianoRollNavigation>>) -> ((MIDITick, u8), (MIDITick, u8)) {
+    let rect = ui.min_rect();
+    if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+        let (mut mouse_x, mut mouse_y) = (mouse_pos.x, mouse_pos.y);
+
+        mouse_x = (mouse_x - rect.left()) / rect.width();
+        mouse_y = 1.0 - (mouse_y - rect.top()) / rect.height();
+
+        let nav = nav.lock().unwrap();
+
+        let mouse_tick_pos = (mouse_x * nav.zoom_ticks_smoothed + nav.tick_pos_smoothed) as MIDITick;
+        let (mouse_key_pos_rounded, mouse_key_pos) = (
+            (mouse_y * nav.zoom_keys_smoothed + nav.key_pos_smoothed).round() as u8,
+            (mouse_y * nav.zoom_keys_smoothed + nav.key_pos_smoothed) as u8
+        );
+
+        ((mouse_tick_pos, mouse_key_pos), (mouse_tick_pos, mouse_key_pos_rounded))
+    } else {
+        ((0, 0), (0, 0))
+    }
 }

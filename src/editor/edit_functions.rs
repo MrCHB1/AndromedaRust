@@ -6,7 +6,7 @@ use eframe::{
     glow::HasContext,
 };
 
-use crate::{app::{custom_widgets::{DecimalField, IntegerField}, main_window::MainWindow}, editor::{actions::{EditorAction, EditorActions}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks, move_element, MIDITick}}, midi::events::note::Note};
+use crate::{app::{custom_widgets::NumericField, main_window::MainWindow}, editor::{actions::{EditorAction, EditorActions}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks, move_element, MIDITick}}, midi::events::note::Note};
 
 // modular edit_function
 pub enum EditFunction {
@@ -50,7 +50,7 @@ impl EditFunctions {
             },
             EditFunction::FlipY(note_ids) => {
                 let mut changed_positions = Vec::new();
-                let (min_key, max_key) = get_min_max_keys_in_selection(notes, &note_ids).unwrap();
+                let (min_key, max_key) = get_min_max_keys_in_selection(notes, &note_ids).unwrap_or_default();
 
                 for id in note_ids.iter() {
                     let note = &mut notes[*id];
@@ -91,13 +91,13 @@ impl EditFunctions {
 
 // the dialogues for these functions
 pub struct EFStretchDialog {
-    pub stretch_factor: DecimalField,
+    pub stretch_factor: NumericField<f32>,
     pub is_shown: bool
 }
 
 impl Default for EFStretchDialog {
     fn default() -> Self {
-        Self { stretch_factor: DecimalField::new(1.0, Some(0.0), None), is_shown: false }
+        Self { stretch_factor: NumericField::new(1.0, Some(0.0), None), is_shown: false }
     }
 }
 
@@ -109,13 +109,13 @@ impl EFStretchDialog {
 pub struct EFChopDialog {
     pub use_tick_lens: bool,
     pub snap_id: usize,
-    pub target_tick_len: IntegerField,
+    pub target_tick_len: NumericField<MIDITick>,
     pub is_shown: bool,
 }
 
 impl Default for EFChopDialog {
     fn default() -> Self {
-        Self { use_tick_lens: false, snap_id: 0, target_tick_len: IntegerField::new(240, Some(1), Some(u16::MAX.into())), is_shown: false }
+        Self { use_tick_lens: false, snap_id: 0, target_tick_len: NumericField::new(240, Some(1), Some(MIDITick::MAX.into())), is_shown: false }
     }
 }
 

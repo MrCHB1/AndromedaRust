@@ -69,4 +69,13 @@ impl ShaderProgram {
             )
         }
     }
+
+    pub fn set_int(&self, name: &str, value: i32) {
+        unsafe {
+            self.gl.uniform_1_i32(
+                self.gl.get_uniform_location(self.program, name).as_ref(),
+                value
+            )
+        }
+    }
 }

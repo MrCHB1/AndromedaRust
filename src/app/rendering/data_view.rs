@@ -146,7 +146,7 @@ impl DataViewRenderer {
     fn get_time(&self) -> f32 {
         let nav = self.navigation.lock().unwrap();
 
-        let is_playing = {
+        /*let is_playing = {
             let playback_manager = self.playback_manager.lock().unwrap();
             playback_manager.playing
         };
@@ -158,9 +158,9 @@ impl DataViewRenderer {
             } else {
                 nav.tick_pos_smoothed
             }
-        };
+        };*/
 
-        nav_ticks
+        nav.tick_pos_smoothed
     }
 }
 
@@ -179,9 +179,9 @@ impl Renderer for DataViewRenderer {
                 (nav.curr_track, nav.curr_channel)
             };
 
-            let (is_playing, view_offset) = {
+            let (is_playing, playback_pos) = {
                 let playback_manager = self.playback_manager.lock().unwrap();
-                let mut view_offset = self.last_view_offset;
+                /*let mut view_offset = self.last_view_offset;
                 if playback_manager.playing && !self.started_playing {
                     let nav = self.navigation.lock().unwrap();
                     view_offset = nav.tick_pos_smoothed - playback_manager.playback_start_pos as f32;
@@ -198,11 +198,12 @@ impl Renderer for DataViewRenderer {
                 } else {
                     view_offset
                 };
-
-                (playback_manager.playing, view_offset)
+                
+                (playback_manager.playing, view_offset)*/
+                (playback_manager.playing, playback_manager.get_playback_ticks() as f32)
             };
 
-            let tick_pos_offs = tick_pos + view_offset;
+            let tick_pos_offs = tick_pos;
 
             // RENDER BARS
             {

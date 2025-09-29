@@ -2,7 +2,7 @@
 // kinda like midi_file.rs but editable lol
 
 use crate::midi::{events::{channel_event::ChannelEvent, meta_event::{MetaEvent, MetaEventType}, note::Note}, midi_file};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 pub fn tempo_as_bytes(tempo: f32) -> [u8; 3] {
     let tempo_conv = (60000000.0 / tempo) as u32;
@@ -41,8 +41,8 @@ pub struct ProjectData {
     pub project_info: ProjectInfo,
     // 16 channels per track. each channel contains vector of notes
     pub notes: Arc<RwLock<Vec<Vec<Note>>>>,
-    pub global_metas: Arc<Mutex<Vec<MetaEvent>>>,
-    pub channel_events: Arc<Mutex<Vec<Vec<ChannelEvent>>>>
+    pub global_metas: Arc<RwLock<Vec<MetaEvent>>>,
+    pub channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>
 }
 
 impl ProjectData {
@@ -80,14 +80,11 @@ impl ProjectData {
             .unwrap();
         //self.notes = Arc::new(Mutex::new(std::mem::take(&mut file.notes)));
         {
-            let mut notes = self.notes.write().unwrap();
-            let mut global_metas = self.global_metas.lock().unwrap();
-            let mut channel_events = self.channel_events.lock().unwrap();
             file.preprocess_meta_events(); // will merge specific meta events into one track
 
-            *notes = std::mem::take(&mut file.notes);
-            *global_metas = std::mem::take(&mut file.global_meta_events);
-            *channel_events = std::mem::take(&mut file.channel_events);
+            *(self.notes.write().unwrap()) = std::mem::take(&mut file.notes);
+            *(self.global_metas.write().unwrap()) = std::mem::take(&mut file.global_meta_events);
+            *(self.channel_events.write().unwrap()) = std::mem::take(&mut file.channel_events);
         }
         
         project_info.name = "";
@@ -105,14 +102,19 @@ impl ProjectData {
         
         {
             let mut notes = self.notes.write().unwrap();
+            let mut ch_evs = self.channel_events.write().unwrap();
+
             notes.clear();
+            ch_evs.clear();
+
             // initialize an empty track
             notes.push(Vec::new());
+            ch_evs.push(Vec::new());
         }
 
         // initialize default meta events
         {
-            let mut global_metas = self.global_metas.lock().unwrap();
+            let mut global_metas = self.global_metas.write().unwrap();
             *global_metas = vec![
                 MetaEvent {
                     tick: 0,

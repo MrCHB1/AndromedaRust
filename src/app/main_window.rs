@@ -1,9 +1,22 @@
 // abstraction is NEEDED!!
-use crate::{app::{custom_widgets::{EditField, IntegerField}, rendering::{data_view::DataViewRenderer, RenderManager, RenderType, Renderer}, shared::NoteColors, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_devices::MIDIDevices}, editor::{edit_functions::EFChopDialog, meta_editing::{MetaEditing, MetaEventInsertDialog}, midi_bar_cacher::BarCacher, navigation::TrackViewNavigation, note_editing::NoteEditing, playhead::Playhead, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::MIDITick}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
+use crate::{
+    app::{
+        custom_widgets::{NumberField, NumericField}, 
+        rendering::{data_view::DataViewRenderer, RenderManager, RenderType, Renderer}, 
+        shared::NoteColors, 
+        view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionState}}, 
+        audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_devices::MIDIDevices}, 
+        editor::{
+            edit_functions::EFChopDialog, 
+            meta_editing::{MetaEditing, MetaEventInsertDialog}, 
+            midi_bar_cacher::BarCacher, 
+            navigation::TrackViewNavigation, 
+            note_editing::{note_flags::*, NoteEditing}, playhead::Playhead, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{get_mouse_midi_pos, MIDITick}}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
 
 use eframe::{
     egui::{self, Color32, Pos2, RichText, Shape, Stroke, Ui, Vec2}, egui_glow::CallbackFn, epaint::RectShape, glow::HasContext
 };
+use egui_double_slider::DoubleSlider;
 use egui_extras::StripBuilder;
 use rayon::prelude::*;
 use rounded_div::RoundedDiv;
@@ -14,7 +27,10 @@ use crate::{
         view_settings::ViewSettings,
     },
     editor::{
-        actions::{EditorAction, EditorActions}, edit_functions::{EFStretchDialog, EditFunction, EditFunctions}, navigation::PianoRollNavigation, project_data::ProjectData, util::{bin_search_notes, bin_search_notes_exact, decode_note_group, find_note_at, get_absolute_max_tick_from_ids, get_min_max_ticks_in_selection, get_notes_in_range, move_element}
+        actions::{EditorAction, EditorActions},
+        edit_functions::{EFStretchDialog, EditFunction, EditFunctions},
+        navigation::PianoRollNavigation,
+        project_data::ProjectData, util::{bin_search_notes, bin_search_notes_exact, decode_note_group, find_note_at, get_absolute_max_tick_from_ids, get_min_max_ticks_in_selection, get_notes_in_range, move_element}
     },
     midi::{
         events::note::Note,
@@ -104,19 +120,20 @@ impl EditorToolSettings {
 }
 
 pub struct ToolBarSettings {
-    pub note_gate: IntegerField,
-    pub note_velocity: IntegerField,
+    pub note_gate: NumericField<MIDITick>,
+    pub note_velocity: NumericField<u8>,
+    pub note_channel: NumericField<u8>,
 }
 
 impl Default for ToolBarSettings {
     fn default() -> Self {
         Self {
-            note_gate: IntegerField::new(960, Some(1), Some(u16::MAX.into())),
-            note_velocity: IntegerField::new(100, Some(1), Some(127)),
+            note_gate: NumericField::new(960, Some(1), Some(u16::MAX.into())),
+            note_velocity: NumericField::new(100, Some(1), Some(127)),
+            note_channel: NumericField::new(1, Some(1), Some(16))
         }
     }
 }
-
 
 #[derive(Default)]
 pub struct MainWindow {
@@ -133,7 +150,7 @@ pub struct MainWindow {
     track_view_nav: Option<Arc<Mutex<TrackViewNavigation>>>,
     view_settings: Option<Arc<Mutex<ViewSettings>>>,
     playhead: Playhead,
-    note_colors: Arc<NoteColors>,
+    note_colors: Arc<Mutex<NoteColors>>,
 
     mouse_over_ui: bool,
     editor_tool: Arc<Mutex<EditorToolSettings>>,
@@ -154,10 +171,6 @@ pub struct MainWindow {
     ef_chop_dialog: EFChopDialog,
 
     is_dragging_notes: bool,
-    // old_drag_ticks: i64,
-    // old_drag_keys: i16,
-    // drag_ticks: i64,
-    // drag_keys: i16,
     old_note_lengths: Vec<u32>,
 
     temp_del_notes: VecDeque<Note>,
@@ -246,7 +259,6 @@ impl MainWindow {
             )));
         }
         s.editor_actions = Arc::new(Mutex::new(EditorActions::new(256)));
-        s.note_colors = Arc::new(NoteColors::new());
         s
     }
 
@@ -264,11 +276,14 @@ impl MainWindow {
         if let Some(playback_manager) = self.playback_manager.as_mut() {
             let mut playback_manager = playback_manager.lock().unwrap();
             playback_manager.ppq = project_data.project_info.ppq;
-        }
 
-        {
             let mut bar_cacher = self.bar_cacher.lock().unwrap();
+            bar_cacher.ppq = project_data.project_info.ppq;
             bar_cacher.clear_cache();
+
+            let render_manager = self.render_manager.as_ref().unwrap();
+            let mut render_manager = render_manager.lock().unwrap();
+            render_manager.set_ppq(project_data.project_info.ppq);
         }
     }
 
@@ -282,8 +297,8 @@ impl MainWindow {
 
             // let mut midi_writer = MIDIFileWriter::new(project_data.project_info.ppq);
             let notes = project_data.notes.read().unwrap();
-            let global_metas = project_data.global_metas.lock().unwrap();
-            let channel_evs = project_data.channel_events.lock().unwrap();
+            let global_metas = project_data.global_metas.read().unwrap();
+            let channel_evs = project_data.channel_events.read().unwrap();
 
             let ppq = project_data.project_info.ppq;
 
@@ -319,6 +334,10 @@ impl MainWindow {
 
         let view_settings = Arc::new(Mutex::new(ViewSettings::default()));
         let render_manager: Arc<Mutex<RenderManager>> = Arc::new(Mutex::new(Default::default()));
+
+        let mut note_colors = NoteColors::new(&gl);
+        note_colors.load_from_image("./shaders/textures/notes.png");
+        self.note_colors = Arc::new(Mutex::new(note_colors));
         
         if let Some(playback_manager) = self.playback_manager.as_ref() {
             let mut render_manager = render_manager.lock().unwrap();
@@ -363,7 +382,7 @@ impl MainWindow {
         let editor_tool = &self.editor_tool;
         let render_manager = self.render_manager.as_ref().unwrap();
         self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, render_manager, &self.editor_actions, &self.toolbar_settings)));
-        self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher)));
+        self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher, &self.editor_actions)));
     }
 
     // allows the renderer to draw ghost notes
@@ -745,123 +764,21 @@ impl MainWindow {
     }
 
     fn handle_mouse_down_pr(&mut self, _ctx: &egui::Context, ui: &mut Ui) {
+        if self.nav.is_none() { return; }
         let mut note_editing = self.note_editing.lock().unwrap();
         note_editing.on_mouse_down();
-        /*if self.show_note_properties_popup || self.tool_dialogs_any_open { return; }
-        // dont handle this if the mouse is hovering over any ui element
-        //if self.mouse_over_ui || self.is_waiting_for_no_ui_hover { return; }
-        let (midi_mouse_pos, midi_mouse_pos_rounded) = self.get_mouse_midi_pos(ui);
+        
+        // if changing length of notes, don't play
+        if note_editing.get_flags() & NOTE_EDIT_LENGTH_CHANGE != 0 || self.mouse_over_ui { return; }
 
-        if !self.mouse_over_ui {
-            self.tool_mouse_down = true;
+        if let Some(playback_manager) = self.playback_manager.as_ref() {
+            let nav = self.nav.as_ref().unwrap();
+            let (mouse_midi_pos, _) = get_mouse_midi_pos(ui, nav);
+
+            let tbs = self.toolbar_settings.lock().unwrap();
+            let mut playback = playback_manager.lock().unwrap();
+            playback.start_play_at_mouse(mouse_midi_pos.1, tbs.note_channel.value() as u8 - 1, tbs.note_velocity.value() as u8);
         }
-
-        if let Some((curr_track, curr_channel)) = self.get_current_track_and_channel() {
-            match self.editor_tool.curr_tool {
-                EditorTool::Pencil => {
-                    // reset flags first
-                    self.editor_tool.flags = TOOL_FLAGS_NONE;
-
-                    // based on flags, skip until next mouse up
-                    if self.mouse_over_ui {
-                        //if self.editor_tool.flags & (TOOL_PENCIL_DRAGGING | TOOL_PENCIL_LENGTH_CHANGE) != 0 {
-                        //    self.is_waiting_for_no_ui_hover = true;
-                        //}
-                        self.is_waiting_for_no_ui_hover = true;
-                        self.dragged_from_ui = true;
-                        return;
-                    }
-
-                    if let Some(clicked_idx) =
-                        self.get_clicked_note_idx(curr_track, curr_channel, midi_mouse_pos, true)
-                    {
-                        // if we're over a selected note and there's more than one note in the selection, we're modifying multiple notes
-                        {
-                            let mut sel = self.temp_selected_notes.lock().unwrap();
-                            if !sel.is_empty() {
-                                if sel.contains(&clicked_idx) && sel.len() > 1 {
-                                    self.editor_tool.flags |= TOOL_PENCIL_MULTIEDIT;
-                                } else {
-                                    sel.clear();
-                                }
-                            }
-                        }
-
-                        let is_at_end = self.is_cursor_at_note_end(
-                            clicked_idx,
-                            curr_track,
-                            curr_channel,
-                            midi_mouse_pos,
-                        );
-
-                        if self.editor_tool.flags & TOOL_PENCIL_MULTIEDIT != 0 {
-                            if is_at_end {
-                                let selected_ids = self.temp_selected_notes.clone();
-                                self.setup_notes_for_length_change(
-                                    curr_track,
-                                    curr_channel,
-                                    clicked_idx,
-                                    selected_ids,
-                                    -(midi_mouse_pos.0 as i32),
-                                );
-                            } else {
-                                let selected_ids = self.temp_selected_notes.clone();
-                                self.setup_notes_for_drag(
-                                    curr_track,
-                                    curr_channel,
-                                    clicked_idx,
-                                    selected_ids,
-                                    -(midi_mouse_pos.0 as i32),
-                                );
-                            }
-                        } else {
-                            if is_at_end {
-                                self.setup_notes_for_length_change(
-                                    curr_track,
-                                    curr_channel,
-                                    clicked_idx,
-                                    Arc::new(Mutex::new(vec![clicked_idx])),
-                                    -(midi_mouse_pos.0 as i32),
-                                );
-                            } else {
-                                self.setup_notes_for_drag(
-                                    curr_track,
-                                    curr_channel,
-                                    clicked_idx,
-                                    Arc::new(Mutex::new(vec![clicked_idx])),
-                                    -(midi_mouse_pos.0 as i32),
-                                );
-                            }
-                        }
-                    } else {
-                        // no note clicked, clear selected note id array if any
-                        {
-                            let mut sel = self.temp_selected_notes.lock().unwrap();
-                            sel.clear();
-                        }
-
-                        // return;
-                    }
-
-                    if self.editor_tool.flags & TOOL_PENCIL_ALL_FLAGS_EXCEPT_MULTIEDIT == 0
-                        || self.editor_tool.flags & TOOL_PENCIL_DRAGGING != 0
-                    {
-                        self.show_ghost_notes();
-                    }
-                }
-                EditorTool::Eraser => {
-                    if self.mouse_over_ui { return; }
-                    self.editor_tool.flags = TOOL_ERASER_ENABLE;
-
-                    self.init_selection_box(midi_mouse_pos.0, midi_mouse_pos_rounded.1);
-                }
-                EditorTool::Selector => {
-                    if self.mouse_over_ui { return; }
-
-                    self.init_selection_box(midi_mouse_pos.0, midi_mouse_pos_rounded.1);
-                }
-            }
-        }*/
     }
 
     /// Handles double clicks in the editor. This doesn't run if the mouse is over any UI element.
@@ -898,6 +815,17 @@ impl MainWindow {
     }
 
     fn handle_mouse_move_pr(&mut self, _ctx: &egui::Context, ui: &mut Ui) {
+        if self.nav.is_none() { return; }
+
+        if let Some(playback_manager) = self.playback_manager.as_ref() {
+            let nav = self.nav.as_ref().unwrap();
+            let (mouse_midi_pos, _) = get_mouse_midi_pos(ui, nav);
+
+            let tbs = self.toolbar_settings.lock().unwrap();
+            let mut playback = playback_manager.lock().unwrap();
+            playback.update_play_at_mouse(mouse_midi_pos.1, tbs.note_channel.value() as u8 - 1, tbs.note_velocity.value() as u8);
+        }
+
         let mut note_editing = self.note_editing.lock().unwrap();
         note_editing.on_mouse_move();
         /*if self.show_note_properties_popup || self.tool_dialogs_any_open { return; }
@@ -1091,7 +1019,18 @@ impl MainWindow {
         }*/
     }
 
-    fn handle_mouse_up_pr(&mut self, _ctx: &egui::Context, _ui: &mut Ui) {
+    fn handle_mouse_up_pr(&mut self, _ctx: &egui::Context, ui: &mut Ui) {
+        if self.nav.is_none() { return; }
+
+        if let Some(playback_manager) = self.playback_manager.as_ref() {
+            let nav = self.nav.as_ref().unwrap();
+            let (mouse_midi_pos, _) = get_mouse_midi_pos(ui, nav);
+
+            let tbs = self.toolbar_settings.lock().unwrap();
+            let mut playback = playback_manager.lock().unwrap();
+            playback.stop_play_at_mouse(mouse_midi_pos.1, tbs.note_channel.value() as u8 - 1);
+        }
+
         let mut note_editing = self.note_editing.lock().unwrap();
         note_editing.on_mouse_up();
         /*if self.show_note_properties_popup && self.note_properties_mouse_up_processed || self.tool_dialogs_any_open { return; }
@@ -1342,6 +1281,36 @@ impl MainWindow {
         {
             let mut note_editing = self.note_editing.lock().unwrap();
             note_editing.on_key_down(ui, ctrl_down);
+        }
+
+        {
+            if ctrl_down {
+                let action = {
+                    if ui.input(|i| i.key_pressed(egui::Key::Z)) {
+                        let undo_action = {
+                            let mut editor_actions = self.editor_actions.lock().unwrap();
+                            editor_actions.undo_action()
+                        };
+                        undo_action
+                    } else if ui.input(|i| i.key_pressed(egui::Key::Y)) {
+                        let redo_action = {
+                            let mut editor_actions = self.editor_actions.lock().unwrap();
+                            editor_actions.redo_action()
+                        };
+                        redo_action
+                    } else { 
+                        None
+                    }
+                };
+
+                if let Some(action) = action {
+                    let mut note_editing = self.note_editing.lock().unwrap();
+                    let mut meta_editing = self.meta_editing.lock().unwrap();
+
+                    note_editing.apply_action(&action);
+                    meta_editing.apply_action(&action);
+                }
+            }
         }
 
         if ui.input(|i| i.key_pressed(egui::Key::Space)) {
@@ -1899,6 +1868,25 @@ impl MainWindow {
         }
     }
 
+    fn get_playhead_pos(&self, to_window: bool) -> f32 {
+        if let Some(nav) = self.nav.as_ref() {
+            let nav = nav.lock().unwrap();
+            let playhead = &self.playhead;
+
+            let mut playhead_line_pos = playhead.start_tick as f32;
+            if let Some(playback_manager) = self.playback_manager.as_ref() {
+                let playback_manager = playback_manager.lock().unwrap();
+                if playback_manager.playing {
+                    playhead_line_pos = playback_manager.get_playback_ticks() as f32;
+                }
+            }
+            if to_window { playhead_line_pos - nav.tick_pos_smoothed }
+            else { playhead_line_pos }
+        } else {
+            0.0
+        }
+    }
+
     fn draw(&mut self, ctx: &egui::Context, ui: &mut Ui, any_window_opened: bool) {
         let available_size = ui.available_size();
         let (rect, _response) = ui.allocate_exact_size(available_size, egui::Sense::hover());
@@ -2047,31 +2035,29 @@ impl MainWindow {
             }
         }
 
-        if let Some(nav) = self.nav.as_ref() { // playhead line
-            let nav = nav.lock().unwrap();
-            let playhead = &self.playhead;
-
-            let tick_pos = nav.tick_pos_smoothed;
-            let tick_end = tick_pos + nav.zoom_ticks_smoothed;
-
-            let min_y = rect.min.y;
-            let max_y = rect.max.y;
-            let mut playhead_line_pos = (playhead.start_tick as f32 - tick_pos) / (tick_end - tick_pos);
-            if playhead_line_pos > 0.0 && playhead_line_pos < 1.0 {
-                playhead_line_pos = playhead_line_pos * rect.width() + rect.left();
-                ui.painter().add(
-                    Shape::line_segment(
-                        [
-                            Pos2 { x: playhead_line_pos, y: min_y },
-                            Pos2 { x: playhead_line_pos, y: max_y }
-                        ],
-                        Stroke::new(1.0, Color32::WHITE)
-                    )
-                );
+        let mut playhead_pos = {
+            let playhead_pos = self.get_playhead_pos(true);
+            if let Some(nav) = self.nav.as_ref() {
+                let nav = nav.lock().unwrap();
+                playhead_pos / nav.zoom_ticks_smoothed
+            } else {
+                0.0
             }
-        }
+        };
 
-        
+        // playhead line
+        if playhead_pos > 0.0 && playhead_pos < 1.0 {
+            playhead_pos = playhead_pos * rect.width() + rect.left();
+            ui.painter().add(
+                Shape::line_segment(
+                    [
+                        Pos2 { x: playhead_pos, y: rect.min.y },
+                        Pos2 { x: playhead_pos, y: rect.max.y }
+                    ],
+                    Stroke::new(1.0, Color32::WHITE)
+                )
+            );
+        }
     }
 
     fn draw_data_viewer(&mut self, ctx: &egui::Context, ui: &mut Ui, any_window_opened: bool) {
@@ -2107,6 +2093,42 @@ impl MainWindow {
         };
 
         ui.painter().add(callback);
+    }
+
+    /// will make new empty tracks if needed, or will remove tracks following [`track`] if ALL of them are empty
+    fn validate_tracks_until(&mut self, track: u16) {
+        let project_data = self.project_data.lock().unwrap();
+        let mut notes = project_data.notes.write().unwrap();
+        let mut ch_evs = project_data.channel_events.write().unwrap();
+
+        let last_len = notes.len();
+        let new_len = track + 1;
+        let len_change = new_len as i32 - last_len as i32;
+        if len_change == 0 { return; }
+
+        if len_change < 0 {
+            // TODO: add logic to remove tracks starting from end until either notes or ch_evs is not empty
+            for _ in 0..(-len_change) {
+                let can_remove = notes.last().map_or(false, |n| n.is_empty())
+                    && ch_evs.last().map_or(false, |c| c.is_empty());
+
+                if can_remove {
+                    notes.pop();
+                    ch_evs.pop();
+                } else {
+                    break;
+                }
+            }
+        } else {
+            for _ in 0..len_change {
+                notes.push(Vec::new());
+                ch_evs.push(Vec::new());
+            }
+
+            assert!(notes.len() == ch_evs.len());
+        }
+
+        println!("Using {} tracks", notes.len());
     }
 }
 
@@ -2193,14 +2215,14 @@ impl eframe::App for MainWindow {
                         if ui.add_enabled(editor_actions.get_can_undo(), egui::Button::new("Undo")).clicked() {
                             if let Some(action) = editor_actions.undo_action() {
                                 let mut note_editing = self.note_editing.lock().unwrap();
-                                note_editing.apply_action(action);
+                                note_editing.apply_action(&action);
                                 //self.apply_action(action);
                             }
                         }
                         if ui.add_enabled(editor_actions.get_can_redo(), egui::Button::new("Redo")).clicked() {
                             if let Some(action) = editor_actions.redo_action() {
                                 let mut note_editing = self.note_editing.lock().unwrap();
-                                note_editing.apply_action(action);
+                                note_editing.apply_action(&action);
                                 //self.apply_action(action);
                             }
                         }
@@ -2218,6 +2240,16 @@ impl eframe::App for MainWindow {
                                         data
                                     });
                                 });
+                            }
+
+                            if ui.button("Tempo").clicked() {
+                                let meta_editing = self.meta_editing.clone();
+                                let playhead_pos = self.playhead.start_tick;
+
+                                self.meta_ev_insert_dialog.show(MetaEventType::Tempo, move |data| {
+                                    let mut meta_editing = meta_editing.lock().unwrap();
+                                    meta_editing.insert_meta_event(MetaEvent { tick: playhead_pos, event_type: MetaEventType::Tempo, data });
+                                })
                             }
                         });
                         self.mouse_over_ui |= ui.ui_contains_pointer();
@@ -2267,14 +2299,24 @@ impl eframe::App for MainWindow {
                             }
 
                             if ui.add_enabled(has_selected_notes, egui::Button::new("Flip Y (Key-wise)")).clicked() {
-                                let mut sel_notes = self.temp_selected_notes.lock().unwrap();
-                                let project_data = self.project_data.lock().unwrap();
-                                let mut notes = project_data.notes.write().unwrap();
-                                let sel_notes_copy = sel_notes.clone();
+                                let note_editing = self.note_editing.lock().unwrap();
+                                let notes = note_editing.get_notes();
+                                let sel_notes = note_editing.get_selected_note_ids();
+
+                                let mut notes = notes.write().unwrap();
+                                let mut sel_notes = sel_notes.lock().unwrap();
+                                let sel_notes_clone = sel_notes.clone();
 
                                 if let Some((curr_track, curr_channel)) = self.get_current_track_and_channel() {
                                     let mut editor_actions = self.editor_actions.lock().unwrap();
-                                    self.editor_functions.apply_function(&mut notes[curr_track as usize], &mut sel_notes, EditFunction::FlipY(sel_notes_copy), curr_track, curr_channel, &mut editor_actions);
+                                    self.editor_functions.apply_function(
+                                        &mut notes[curr_track as usize],
+                                        &mut sel_notes,
+                                        EditFunction::FlipY(sel_notes_clone),
+                                        curr_track,
+                                        curr_channel,
+                                        &mut editor_actions
+                                    );
                                 }
                                 should_close = true;
                             }
@@ -2353,25 +2395,48 @@ impl eframe::App for MainWindow {
                     });
                     ui.separator();
                     // note gate and velocity
-                    let mut tbs = self.toolbar_settings.lock().unwrap();
-                    tbs.note_gate.show("Gate", ui, Some(30.0));
-                    tbs.note_velocity.show("Velo", ui, Some(30.0));
+                    {
+                        let mut tbs = self.toolbar_settings.lock().unwrap();
+                        tbs.note_gate.show("Gate", ui, Some(30.0));
+                        tbs.note_velocity.show("Velo", ui, Some(30.0));
+                        tbs.note_channel.show("Chan", ui, Some(30.0));
+                    }
 
                     ui.separator();
-                    //let vs = &mut self.view_settings;
-                    if let Some(vs) = self.view_settings.as_mut() {
+                    
+                    // workaround :/
+                    let mut tracks_need_update = false;
+                    let mut track_to_change_to = 0;
+
+                    if let Some(vs) = self.view_settings.as_ref() {
                         let mut vs = vs.lock().unwrap();
-                        egui::ComboBox::from_label("View Tracks")
-                        .selected_text(format!("{}", vs.pr_onion_state.to_string()))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::NoOnion, "No tracks");
-                            ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewAll, "All tracks");
-                            ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewNext, "Next track");
-                            ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewPrevious, "Previous track");
-                            self.mouse_over_ui |= ui.ui_contains_pointer();
-                        });
+                        ui.label("View Track");
+                        egui::ComboBox::from_id_salt("onion_track")
+                            .selected_text(format!("{}", vs.pr_onion_state.to_string()))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::NoOnion, "No tracks");
+                                ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewAll, "All tracks");
+                                ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewNext, "Next track");
+                                ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewPrevious, "Previous track");
+                                self.mouse_over_ui |= ui.ui_contains_pointer();
+                            });
+                        vs.pr_curr_track.show("Curr. Track", ui, Some(50.0));
+                        if vs.pr_curr_track.changed() {
+                            tracks_need_update = true;
+                            track_to_change_to = vs.pr_curr_track.value();
+                        }
                     }
+
+                    if tracks_need_update {
+                        self.validate_tracks_until(track_to_change_to);
+                        if let Some(nav) = self.nav.as_ref() {
+                            let mut nav = nav.lock().unwrap();
+                            nav.curr_track = track_to_change_to;
+                        }
+                    }
+
                     ui.separator();
+
                     //int_edit_field(ui, "Gate", &mut tbs.note_gate, 1, u16::MAX.into(), Some(30.0));
                     //int_edit_field(ui, "Velo", &mut tbs.note_velocity, 1, 127, Some(30.0));
 
@@ -2394,7 +2459,8 @@ impl eframe::App for MainWindow {
                     };
 
                     ui.style_mut().spacing.slider_width = ui.available_width();
-                    let mut playhead_time = self.playhead.start_tick;
+                    // let mut playhead_time = self.playhead.start_tick;
+                    let mut playhead_time = self.get_playhead_pos(false) as MIDITick;
                     if ui.add(
                         egui::Slider::new(&mut playhead_time, min_tick..=max_tick)
                         .show_value(false)
@@ -2432,6 +2498,41 @@ impl eframe::App for MainWindow {
                 } else {
                     (VS_PianoRoll_DataViewState::Hidden, 0.25)
                 };
+
+                egui::TopBottomPanel::bottom("scroll_navigation").show(ctx, |ui| {
+                    ui.style_mut().spacing.slider_width = ui.available_width();
+
+                    if let Some(nav) = self.nav.as_mut() {
+                        let latest_note_start = {
+                            let notes = self.note_editing.lock().unwrap();
+                            notes.latest_note_start
+                        };
+
+                        let mut nav = nav.lock().unwrap();
+                        let mut tick_pos = nav.tick_pos;
+                        let mut tick_end = nav.tick_pos + nav.zoom_ticks;
+                        if ui.add(
+                            DoubleSlider::new(&mut tick_pos, &mut tick_end, 0.0..=(latest_note_start as f32))
+                            .width(ui.available_width())
+                            .separation_distance(480.0)
+                        ).changed() {
+
+                            {
+                                let mut rend = self.render_manager.as_ref().unwrap().lock().unwrap();
+                                nav.change_tick_pos(tick_pos, |time| {
+                                    rend.get_active_renderer().lock().unwrap().time_changed(time as u64);
+                                });
+                            }
+                            nav.zoom_ticks = tick_end - tick_pos;
+                        }
+                        // nav.tick_pos = tick_pos;
+                        
+                        /*if ui.add(egui::Slider::new(&mut nav.tick_pos, 0.0..=(latest_note_start as f32))).changed() {
+
+                        }*/
+                    }
+                    self.mouse_over_ui |= ui.ui_contains_pointer();
+                });
 
                 if dataview_state != VS_PianoRoll_DataViewState::Hidden && !is_on_track_view {
                     egui::TopBottomPanel::bottom("data_viewer").show(ctx, |ui| {
