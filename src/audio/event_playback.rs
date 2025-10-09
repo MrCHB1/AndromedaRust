@@ -1,10 +1,9 @@
-use std::{collections::{BinaryHeap, LinkedList, VecDeque}, sync::{atomic::{AtomicBool, AtomicU32, Ordering}, Arc, Mutex, RwLock}, thread::JoinHandle, time::{Duration, Instant}};
+#![warn(unused)]
+use std::{sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, RwLock}, time::{Duration, Instant}};
 
-use crate::{audio::{midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices}, editor::{project_data::bytes_as_tempo, util::{bin_search_notes_exact, AtomicMIDITick, MIDITick, MIDITickAtomic}}, midi::events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::{MetaEvent, MetaEventType}, note::Note}};
-use crossbeam::channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use crate::{audio::{midi_audio_engine::MIDIAudioEngine}, editor::{project_data::bytes_as_tempo, util::{bin_search_notes_exact, MIDITick, MIDITickAtomic}}, midi::events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::{MetaEvent, MetaEventType}, note::Note}};
+use crossbeam::channel::{bounded, Receiver, Sender};
 use std::thread;
-use ordered_float::NotNan;
-use std::cmp::Reverse;
 use std::sync::MutexGuard;
 
 #[derive(Eq, PartialEq)]

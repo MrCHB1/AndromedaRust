@@ -1,3 +1,4 @@
+#![warn(unused)]
 use crate::editor::util::MIDITick;
 
 // channel and track is implied

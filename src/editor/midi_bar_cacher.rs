@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use crate::midi::events::meta_event::{MetaEvent, MetaEventType};
 
@@ -6,6 +6,7 @@ pub struct BarCacher {
     pub ppq: u16,
     pub bar_cache: Vec<(u32, u32)>,
     pub global_metas: Arc<RwLock<Vec<MetaEvent>>>,
+    last_ts_index: usize
 }
 
 impl Default for BarCacher {
@@ -19,7 +20,8 @@ impl BarCacher {
         Self {
             ppq,
             bar_cache: Vec::new(),
-            global_metas: metas.clone()
+            global_metas: metas.clone(),
+            last_ts_index: 0
         }
     }
 
@@ -46,17 +48,21 @@ impl BarCacher {
                 None => 0u32
             };
 
-            let length = self.compute_bar_length_at(start_tick, &metas);
+            let (length, new_idx) = self.compute_bar_length_at(start_tick, &metas, self.last_ts_index);
+            self.last_ts_index = new_idx;
             self.bar_cache.push((start_tick, length));
         }
     }
 
-    fn compute_bar_length_at(&self, start_tick: u32, metas: &Vec<MetaEvent>) -> u32 {
+    fn compute_bar_length_at(&self, start_tick: u32, metas: &Vec<MetaEvent>, search_idx: usize) -> (u32, usize) {
+        // Use cached index to avoid linear search from beginning
         let mut current_ts = None;
-        for meta in metas.iter() {
-            if meta.event_type == MetaEventType::TimeSignature {
-                if meta.tick as u32 <= start_tick {
-                    current_ts = Some(meta)
+        let last_idx = search_idx;
+
+        for i in search_idx..metas.len() {
+            if metas[i].event_type == MetaEventType::TimeSignature {
+                if metas[i].tick as u32 <= start_tick {
+                    current_ts = Some(&metas[i])
                 } else {
                     break;
                 }
@@ -72,15 +78,21 @@ impl BarCacher {
         let ticks_per_beat = (self.ppq as u32) << 2;
         let nominal = (num * ticks_per_beat) >> den;
 
-        let next_ts = metas.iter()
+        let next_ts = metas[last_idx..]
+            .iter()
             .find(|m| m.event_type == MetaEventType::TimeSignature && (m.tick as u32) > start_tick);
-        if let Some(next) = next_ts {
+        
+        let length = if let Some(next) = next_ts {
             let next_tick = next.tick as u32;
             if next_tick < start_tick + nominal {
-                return next_tick - start_tick;
+                next_tick - start_tick
+            } else {
+                nominal
             }
-        }
+        } else {
+            nominal
+        };
 
-        nominal
+        (length, last_idx)
     }
 }

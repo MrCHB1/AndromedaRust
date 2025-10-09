@@ -1,13 +1,14 @@
+use crate::app::rendering::note_cull_helper::NoteCullHelper;
 use crate::app::rendering::Renderer;
-use crate::app::shared::{NoteColors, BLACK, SELECTED, WHITE};
+use crate::app::shared::NoteColors;
 use crate::audio::event_playback::PlaybackManager;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::project_data::ProjectData;
-use crate::editor::util::get_meta_next_tick;
-use crate::midi::events::meta_event::{MetaEvent, MetaEventType};
 use eframe::egui::Vec2;
 use eframe::glow;
 use eframe::glow::HasContext;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 use crate::editor::note_editing::GhostNote;
 use crate::app::rendering::{
@@ -20,7 +21,7 @@ use crate::midi::events::note::Note;
 use crate::set_attribute;
 
 const NOTE_BUFFER_SIZE: usize = 8192;
-const NOTE_BORDER_DARKNESS: f32 = 0.5;
+// const NOTE_BORDER_DARKNESS: f32 = 0.5;
 
 // Piano Roll Background
 pub type BarStart = f32;
@@ -33,7 +34,6 @@ pub struct RenderPianoRollBar(BarStart, BarLength, BarNumber);
 
 // Piano Roll Notes
 pub type NoteRect = [f32; 4]; // (start, length, note bottom, note top)
-pub type NoteColor = [f32; 3];
 pub type NoteMeta = u32; // first byte is note color index. 9th bit is the note selected bit, and 10th bit is note playing bit
 
 #[repr(C, packed)]
@@ -80,34 +80,30 @@ pub struct PianoRollRenderer {
     gl: Arc<glow::Context>,
 
     bars_render: Vec<RenderPianoRollBar>,
-    notes_render: Vec<RenderPianoRollNote>,
+    notes_render: [RenderPianoRollNote; NOTE_BUFFER_SIZE],
     render_notes: Arc<RwLock<Vec<Vec<Note>>>>,
     note_colors: Arc<Mutex<NoteColors>>,
-    // per channel per track
-    last_note_start: Vec<usize>,
-    first_render_note: Vec<usize>,
-    last_time: f32,
+
+    note_cull_helper: Arc<Mutex<NoteCullHelper>>,
 
     pub ghost_notes: Option<Arc<Mutex<Vec<GhostNote>>>>,
     pub selected: Arc<Mutex<Vec<usize>>>,
     render_active: bool,
-    started_playing: bool,
-    last_view_offset: f32,
-    last_zoom: f32
 }
 
 impl PianoRollRenderer {
     pub unsafe fn new(
-        project_data: &Arc<Mutex<ProjectData>>,
-        view_settings: Arc<Mutex<ViewSettings>>,
-        nav: Arc<Mutex<PianoRollNavigation>>,
-        gl: Arc<glow::Context>,
+        project_data: &Rc<RefCell<ProjectData>>,
+        view_settings: &Arc<Mutex<ViewSettings>>,
+        nav: &Arc<Mutex<PianoRollNavigation>>,
+        gl: &Arc<glow::Context>,
         playback_manager: &Arc<Mutex<PlaybackManager>>,
         bar_cacher: &Arc<Mutex<BarCacher>>,
         colors: &Arc<Mutex<NoteColors>>,
+        note_cull_helper: &Arc<Mutex<NoteCullHelper>>,
     ) -> Self {
-        let pr_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/piano_roll_bg");
-        let pr_notes_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/piano_roll_note");
+        let pr_program = ShaderProgram::create_from_files(gl.clone(), "./assets/shaders/piano_roll_bg");
+        let pr_notes_program = ShaderProgram::create_from_files(gl.clone(), "./assets/shaders/piano_roll_note");
 
         // -------- PIANO ROLL BAR --------
 
@@ -152,7 +148,7 @@ impl PianoRollRenderer {
         set_attribute!(glow::FLOAT, pr_notes_vao, 0, Vertex::0);
 
         let pr_notes_ibo = Buffer::new(gl.clone(), glow::ARRAY_BUFFER);
-        let pr_notes_render = vec![
+        let pr_notes_render = [
             RenderPianoRollNote {
                 0: [0.0, 1.0, 0.0, 1.0],
                 1: 0
@@ -174,19 +170,9 @@ impl PianoRollRenderer {
         pr_notes_color_tex.set_filtering(glow::NEAREST);
         pr_notes_color_tex.load_texture("./shaders/textures/notes.png", 16, 1);*/
 
-        let (notes, global_metas) = {
-            let project_data = project_data.lock().unwrap();
-            (project_data.notes.clone(), project_data.global_metas.clone())
-        };
-
-        let last_note_start = {
-            let notes = notes.read().unwrap();
-            vec![0; notes.len()]
-        };
-
-        let first_render_note = {
-            let notes = notes.read().unwrap();
-            vec![0; notes.len()]
+        let notes = {
+            let project_data = project_data.borrow();
+            project_data.notes.clone()
         };
 
         Self {
@@ -207,23 +193,19 @@ impl PianoRollRenderer {
             pr_notes_ebo,
             pr_notes_ibo,
 
-            gl,
+            gl: gl.clone(),
             bars_render: pr_bars_render.to_vec(),
-            notes_render: pr_notes_render.to_vec(),
+            notes_render: pr_notes_render,
             render_notes: notes,
 
             ppq: 960,
             note_colors: colors.clone(),
 
-            last_note_start,
-            first_render_note,
-            last_time: 0.0,
+            note_cull_helper: note_cull_helper.clone(),
+
             ghost_notes: None,
             selected: Arc::new(Mutex::new(Vec::new())),
-            render_active: false,
-            started_playing: false,
-            last_view_offset: 0.0,
-            last_zoom: 0.0
+            render_active: false
         }
     }
 
@@ -255,9 +237,9 @@ impl Renderer for PianoRollRenderer {
                 (nav.zoom_ticks_smoothed, nav.key_pos_smoothed, nav.zoom_keys_smoothed)
             };
             
-            let (nav_curr_track, nav_curr_channel) = {
+            let nav_curr_track = {
                 let nav = self.navigation.lock().unwrap();
-                (nav.curr_track, nav.curr_channel)
+                nav.curr_track
             };
 
             let (is_playing, playback_pos) = {
@@ -304,6 +286,12 @@ impl Renderer for PianoRollRenderer {
                     self.pr_program.set_float("ppqNorm", self.ppq as f32 / zoom_ticks);
                     self.pr_program.set_float("keyZoom", zoom_keys / 128.0);
 
+                    // bind before loop
+                    self.pr_vertex_array.bind();
+                    self.pr_instance_buffer.bind();
+                    self.pr_vertex_buffer.bind();
+                    self.pr_index_buffer.bind();
+
                     while curr_bar_tick < zoom_ticks + tick_pos_offs {
                         let (bar_tick, bar_length) = {
                             let mut bar_cacher = self.bar_cacher.lock().unwrap();
@@ -325,10 +313,6 @@ impl Renderer for PianoRollRenderer {
                         };
                         bar_id += 1;
                         if bar_id >= 32 {
-                            self.pr_vertex_array.bind();
-                            self.pr_instance_buffer.bind();
-                            self.pr_vertex_buffer.bind();
-                            self.pr_index_buffer.bind();
                             self.pr_instance_buffer.set_data(self.bars_render.as_slice(), glow::DYNAMIC_DRAW);
                             self.gl.draw_elements_instanced(
                                 glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, 32);
@@ -341,13 +325,7 @@ impl Renderer for PianoRollRenderer {
                 }
 
                 if bar_id != 0 {
-                    self.pr_vertex_array.bind();
-                    self.pr_instance_buffer.bind();
-                    self.pr_vertex_buffer.bind();
-                    self.pr_index_buffer.bind();
                     self.pr_instance_buffer.set_data(self.bars_render.as_slice(), glow::DYNAMIC_DRAW);
-
-                    self.gl.use_program(Some(self.pr_program.program));
                     self.gl.draw_elements_instanced(
                             glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, bar_id as i32);
                 }
@@ -364,10 +342,10 @@ impl Renderer for PianoRollRenderer {
 
                     let all_render_notes = self.render_notes.read().unwrap();
                     // resize last_note_start and first_render_note if notes changed size
-                    if self.last_note_start.len() != all_render_notes.len() {
+                    /*if self.last_note_start.len() != all_render_notes.len() {
                         self.last_note_start = vec![0; all_render_notes.len()];
                         self.first_render_note = vec![0; all_render_notes.len()];
-                    }
+                    }*/
 
                     self.gl.active_texture(glow::TEXTURE0);
                     note_colors.get_texture().bind();
@@ -412,9 +390,15 @@ impl Renderer for PianoRollRenderer {
                             let mut note_id = 0;
                             let mut curr_track = 0;
 
-                            let mut rendered_notes = 0;
+                            // bind before rendering all notes
+                            self.pr_notes_vao.bind();
+                            self.pr_notes_ibo.bind();
+                            self.pr_notes_vbo.bind();
+                            self.pr_notes_ebo.bind();
 
-                            let mut valid_render = true; // in case tracks have been switched in the middle of looping
+                            let mut note_culler = self.note_cull_helper.lock().unwrap();
+                            note_culler.sync_cull_array_lengths();
+                            // note_culler.update_cull(tick_pos, zoom_ticks);
 
                             // 1. draw all notes that is not the current track
                             for notes in tracks_to_iter {
@@ -424,59 +408,21 @@ impl Renderer for PianoRollRenderer {
                                     continue;
                                 }
 
-                                let mut n_off = self.first_render_note[curr_track as usize];
-                                if self.last_time > tick_pos_offs {
-                                    if n_off == 0 {
-                                        for note in &notes[0..notes.len()] {
-                                            if note.end() as f32 > tick_pos_offs { break; }
-                                            n_off += 1;
-                                        }
-                                    } else {
-                                        for note in notes[0..n_off].iter().rev() {
-                                            if (note.end() as f32) <= tick_pos_offs { break; }
-                                            n_off -= 1;
-                                        }
-                                    }
-
-                                    self.first_render_note[curr_track as usize] = n_off;
-                                } else if self.last_time < tick_pos_offs {
-                                    for note in &notes[n_off..notes.len()] {
-                                        if note.end() as f32 > tick_pos_offs { break; }
-                                        n_off += 1;
-                                    }
-                                    self.first_render_note[curr_track as usize] = n_off;
-                                }
-
-                                if n_off >= notes.len() {
-                                    self.first_render_note[curr_track as usize] = 0;
-                                    curr_track += 1;
-                                    continue;
-                                }
-
-                                let mut note_idx = n_off;
-
-                                let note_end = {
-                                    let mut e = n_off;
-                                    for note in &notes[n_off..notes.len()] {
-                                        if note.start() as f32 > tick_pos_offs + zoom_ticks { break; }
-                                        e += 1;
-                                    }
-                                    e
-                                };
+                                note_culler.update_cull_for_track(curr_track, tick_pos_offs, zoom_ticks);
+                                let (note_start, note_end) = note_culler.get_track_cull_range(curr_track);
+                                let n_off = note_start;
 
                                 let mut curr_note = 0;
 
                                 for note in &notes[n_off..note_end] {
                                     if note.key() as f32 + 1.0 < key_pos || note.key() as f32 > key_pos + zoom_keys {
                                         curr_note += 1;
-                                        note_idx += 1;
                                         continue;
                                     }
 
                                     let trk_chan = ((curr_track as usize) << 4) | (note.channel() as usize);
 
                                     {
-                                        let sel_lock = self.selected.lock().unwrap();
                                         let note_bottom = (note.key() as f32 - key_pos) / zoom_keys;
                                         let note_top = ((note.key() as f32 + 1.0) - key_pos) / zoom_keys;
 
@@ -523,19 +469,14 @@ impl Renderer for PianoRollRenderer {
                                     }
 
                                     note_id += 1;
-                                    note_idx += 1;
 
                                     if note_id >= NOTE_BUFFER_SIZE {
-                                        self.pr_notes_vao.bind();
-                                        self.pr_notes_ibo.bind();
-                                        self.pr_notes_vbo.bind();
-                                        self.pr_notes_ebo.bind();
                                         self.pr_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
 
                                         self.gl.use_program(Some(self.pr_notes_program.program));
                                         self.gl.draw_elements_instanced(
                                             glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
-                                        rendered_notes += note_id;
+                                        // rendered_notes += note_id;
                                         note_id = 0;
                                     }
 
@@ -553,8 +494,12 @@ impl Renderer for PianoRollRenderer {
 
                             if !notes.is_empty() {
                                 let mut curr_note = 0;
-                                let mut n_off = self.first_render_note[nav_curr_track as usize];
 
+                                note_culler.update_cull_for_track(nav_curr_track, tick_pos_offs, zoom_ticks);
+                                let (note_start, note_end) = note_culler.get_track_cull_range(nav_curr_track);
+                                let n_off = note_start;
+                                let mut note_idx = n_off;
+                                /*let mut n_off = self.first_render_note[nav_curr_track as usize];
                                 if self.last_time > tick_pos_offs {
                                     if n_off == 0 {
                                         for note in &notes[0..notes.len()] {
@@ -585,7 +530,7 @@ impl Renderer for PianoRollRenderer {
                                         e += 1;
                                     }
                                     e
-                                };
+                                };*/
 
                                 for note in &notes[n_off..note_end] {
                                     if note.key() as f32 + 1.0 < key_pos || (note.key() as f32) > key_pos + zoom_keys {
@@ -653,16 +598,12 @@ impl Renderer for PianoRollRenderer {
 
                                     // flush if note_id is now the note draw buffer size and reset it to zero
                                     if note_id >= NOTE_BUFFER_SIZE {
-                                        self.pr_notes_vao.bind();
-                                        self.pr_notes_ibo.bind();
-                                        self.pr_notes_vbo.bind();
-                                        self.pr_notes_ebo.bind();
                                         self.pr_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
 
                                         self.gl.use_program(Some(self.pr_notes_program.program));
                                         self.gl.draw_elements_instanced(
                                             glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
-                                        rendered_notes += note_id;
+                                        // rendered_notes += note_id;
                                         note_id = 0;
                                     }
 
@@ -796,16 +737,13 @@ impl Renderer for PianoRollRenderer {
                             
                             // 3. flush remaining notes
                             if note_id != 0 {
-                                self.pr_notes_vao.bind();
-                                self.pr_notes_ibo.bind();
-                                self.pr_notes_vbo.bind();
-                                self.pr_notes_ebo.bind();
+                                
                                 self.pr_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
 
                                 self.gl.use_program(Some(self.pr_notes_program.program));
                                 self.gl.draw_elements_instanced(
                                     glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, note_id as i32);
-                                rendered_notes += note_id;
+                                // rendered_notes += note_id;
                             }
                         }
                     }
@@ -813,6 +751,11 @@ impl Renderer for PianoRollRenderer {
                     if let Some(ghost_notes) = &self.ghost_notes {
                         let mut note_id = 0;
                         let notes = ghost_notes.lock().unwrap();
+
+                        self.pr_notes_vao.bind();
+                        self.pr_notes_ibo.bind();
+                        self.pr_notes_vbo.bind();
+                        self.pr_notes_ebo.bind();
 
                         for note in notes.iter() {
                             let note = note.get_note();
@@ -838,10 +781,6 @@ impl Renderer for PianoRollRenderer {
                             };
                             note_id += 1;
                             if note_id >= NOTE_BUFFER_SIZE {
-                                self.pr_notes_vao.bind();
-                                self.pr_notes_ibo.bind();
-                                self.pr_notes_vbo.bind();
-                                self.pr_notes_ebo.bind();
                                 self.pr_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
                                 self.gl.use_program(Some(self.pr_notes_program.program));
                                 self.gl.draw_elements_instanced(
@@ -851,10 +790,6 @@ impl Renderer for PianoRollRenderer {
                         }
 
                         if note_id != 0 {
-                            self.pr_notes_vao.bind();
-                            self.pr_notes_ibo.bind();
-                            self.pr_notes_vbo.bind();
-                            self.pr_notes_ebo.bind();
                             self.pr_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
                             self.gl.use_program(Some(self.pr_notes_program.program));
                             self.gl.draw_elements_instanced(
@@ -862,7 +797,7 @@ impl Renderer for PianoRollRenderer {
                         }
                     }
 
-                    self.last_time = tick_pos_offs;
+                    // self.last_time = tick_pos_offs;
                 }
 
                 self.gl.use_program(None);

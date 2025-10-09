@@ -1,8 +1,8 @@
+#![warn(unused)]
+
 use eframe::glow::{self, NativeBuffer, NativeTexture, NativeVertexArray};
 use eframe::glow::HasContext;
 use image::ImageReader;
-use std::fs::File;
-use std::io::Read;
 use std::sync::Arc;
 
 pub struct Buffer {
@@ -170,11 +170,11 @@ impl Texture {
         }
     }
 
-    pub fn load_texture(&mut self, path: &str, width: i32, height: i32) {
+    /*pub fn load_texture(&mut self, path: &str, width: i32, height: i32) {
         let img = ImageReader::open(path).unwrap().decode().unwrap().to_rgb8();
         let data = img.as_raw();
         self.load_raw(data.as_slice(), width, height);
-    }
+    }*/
 
     pub fn load_raw(&mut self, data: &[u8], width: i32, height: i32) {
         unsafe {

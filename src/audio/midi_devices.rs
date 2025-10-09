@@ -1,6 +1,4 @@
 use midir::{MidiInputPort, MidiInputConnection, MidiOutputConnection, MidiOutputPort};
-use rfd::MessageDialog;
-use std::sync::{Arc, Mutex};
 
 use crate::audio::midi_audio_engine::MIDIAudioEngine;
 
@@ -124,7 +122,7 @@ impl MIDIDevices {
 impl MIDIAudioEngine for MIDIDevices {
     /// This will open the current MIDI port for sending events.
     fn init_audio(&mut self) {
-        self.connect_out_port(self.curr_midi_out_port.unwrap());
+        self.connect_out_port(self.curr_midi_out_port.unwrap()).unwrap();
     }
 
     fn close_stream(&mut self) {

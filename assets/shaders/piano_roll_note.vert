@@ -29,6 +29,7 @@ void main() {
 
     float grayFactor = float((noteMeta & (uint(3) << uint(14))) >> uint(14)) / 2.0;
     n_color = mix(n_color, vec3(0.5, 0.5, 0.5), grayFactor);
+    color2 = mix(color2, vec3(0.5) / 2.0, grayFactor);
 
     if ((noteMeta & uint(1 << 12)) != uint(0)) {
         n_color += vec3(0.5);

@@ -1,19 +1,30 @@
+#![warn(unused)]
 // actions.rs - defined for the undo/redo system in the editor.
 
 use std::collections::{VecDeque};
 
-use crate::editor::util::{MIDITick, SignedMIDITick};
+use crate::{editor::util::{MIDITick, SignedMIDITick}, midi::events::note::Note};
 
 #[derive(Clone)]
 pub enum EditorAction {
-    PlaceNotes(Vec<usize>, u32), // used from pencil. PlaceNote(nodeId or noteIndex, track * 16 + channel)
-    DeleteNotes(Vec<usize>, u32), // used from either pencil (when holding right mouse button) or eraser. DeleteNote(noteId, track * 16 + channel)
-    LengthChange(Vec<usize>, Vec<SignedMIDITick>, u32), // this action stores the change in length of notes.
-    NotesMove(Vec<usize>, Vec<usize>, Vec<(SignedMIDITick, i16)>, u32, bool), // stores change in tick and key. last bool is if we should update selected notes ids
-    NotesMoveImmediate(Vec<usize>, Vec<(SignedMIDITick, i16)>, u32), // stores change in tick and key without keeping track of the old note ids. this is unsafe lol
-    Select(Vec<usize>, u32), // pretty straightforward
-    Deselect(Vec<usize>, u32),
-    Duplicate(Vec<usize>, MIDITick, u32, u32), // (note_ids, paste_tick, source track/channel, destination track/channel)
+    // used from pencil
+    PlaceNotes(
+        Vec<usize>, // note ids,
+        Option<VecDeque<Note>>, // only used when undoing or redoing
+        u16 // note group (track)
+    ),
+    // used from pencil or eraser
+    DeleteNotes(
+        Vec<usize>, // note ids
+        Option<VecDeque<Note>>, // can be by user or from undo/redo
+        u16 // note group (track)
+    ),
+    LengthChange(Vec<usize>, Vec<SignedMIDITick>, u16), // this action stores the change in length of notes.
+    NotesMove(Vec<usize>, Vec<usize>, Vec<(SignedMIDITick, i16)>, u16, bool), // stores change in tick and key. last bool is if we should update selected notes ids
+    NotesMoveImmediate(Vec<usize>, Vec<(SignedMIDITick, i16)>, u16), // stores change in tick and key without keeping track of the old note ids. this is unsafe lol
+    Select(Vec<usize>, u16), // pretty straightforward
+    Deselect(Vec<usize>, u16),
+    Duplicate(Vec<usize>, MIDITick, u16, u16), // (note_ids, paste_tick, source track/channel, destination track/channel)
     AddMeta(Vec<usize>),
     DeleteMeta(Vec<usize>),
     Bulk(Vec<EditorAction>) // for bulk actions
@@ -61,7 +72,7 @@ impl EditorActions {
     }
 
     // this will basically "invert" the actions, starting from the latest action (front of VecDeque)
-    pub fn undo_action(&mut self) -> Option<EditorAction> {
+    pub fn undo_action(&mut self) -> Option<&mut EditorAction> {
         if !self.get_can_undo() { println!("Nothing to undo"); return None; }
 
         // increment the number of undo's
@@ -72,13 +83,13 @@ impl EditorActions {
         // invert this action
         action_to_undo = self.invert_action(action_to_undo);
         // put it back in the deque
-        self.actions.insert(lastmost_undo_index, action_to_undo.clone());
+        self.actions.insert(lastmost_undo_index, action_to_undo);
 
-        Some(action_to_undo)
+        Some(&mut self.actions[lastmost_undo_index])
     }
 
     // like undo, this will "invert" the actions, but starting from the undo_depth'th last index
-    pub fn redo_action(&mut self) -> Option<EditorAction> {
+    pub fn redo_action(&mut self) -> Option<&mut EditorAction> {
         //if self.undo_depth == 0 { println!("Nothing to redo"); return None; }
         if !self.get_can_redo() { println!("Nothing to redo"); return None; }
 
@@ -87,10 +98,11 @@ impl EditorActions {
         // invert action
         action_to_redo = self.invert_action(action_to_redo);
         // put it back into the deque
-        self.actions.insert(lastmost_redo_index, action_to_redo.clone());
+        self.actions.insert(lastmost_redo_index, action_to_redo);
 
         self.undo_depth -= 1;
-        Some(action_to_redo)
+
+        Some(&mut self.actions[lastmost_redo_index])
     }
 
     pub fn get_can_undo(&self) -> bool {
@@ -106,11 +118,11 @@ impl EditorActions {
 
     fn invert_action(&mut self, action: EditorAction) -> EditorAction {
         match action {
-            EditorAction::PlaceNotes(note_id, note_group) => {
-                EditorAction::DeleteNotes(note_id, note_group)
+            EditorAction::PlaceNotes(note_id, deleted_notes, note_group) => {
+                EditorAction::DeleteNotes(note_id, deleted_notes, note_group)
             },
-            EditorAction::DeleteNotes(note_id, note_group) => {
-                EditorAction::PlaceNotes(note_id, note_group)
+            EditorAction::DeleteNotes(note_id, deleted_notes, note_group) => {
+                EditorAction::PlaceNotes(note_id, deleted_notes, note_group)
             },
             EditorAction::LengthChange(note_id, length_delta, note_group) => {
                 EditorAction::LengthChange(note_id, length_delta.iter().map(|l| -l).collect(), note_group)
@@ -128,7 +140,7 @@ impl EditorActions {
                 EditorAction::Select(note_id, note_group)
             },
             EditorAction::Duplicate(note_id, _, _, note_group) => { // clever hack >:3
-                EditorAction::DeleteNotes(note_id, note_group)
+                EditorAction::DeleteNotes(note_id, None, note_group)
             },
             EditorAction::AddMeta(meta_ids) => {
                 EditorAction::DeleteMeta(meta_ids)

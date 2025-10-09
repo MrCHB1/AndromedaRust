@@ -1,3 +1,4 @@
+#![warn(unused)]
 use crate::editor::util::MIDITick;
 
 pub enum ChannelEventType {

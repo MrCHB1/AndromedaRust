@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
 use eframe::egui::Vec2;
 use eframe::glow;
-use crate::{app::{main_window::MainWindow, rendering::{piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
+use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
 use crate::editor::note_editing::GhostNote;
 
 pub mod buffers;
@@ -9,6 +9,7 @@ pub mod piano_roll;
 pub mod shaders;
 pub mod track_view;
 pub mod data_view;
+pub mod note_cull_helper;
 
 pub trait Renderer {
     fn draw(&mut self);
@@ -28,14 +29,14 @@ pub enum RenderType {
 }
 
 pub struct RenderManager {
-    pub render_type: RenderType,
+    pub render_type: Arc<RwLock<RenderType>>,
     renderers: Vec<Arc<Mutex<dyn Renderer + Send + Sync>>>
 }
 
 impl Default for RenderManager {
     fn default() -> Self {
         Self {
-            render_type: RenderType::PianoRoll,
+            render_type: Arc::new(RwLock::new(RenderType::PianoRoll)),
             renderers: Vec::new()
         }
     }
@@ -44,14 +45,15 @@ impl Default for RenderManager {
 impl RenderManager {
     pub fn init_renderers(
         &mut self,
-        project_data: Arc<Mutex<ProjectData>>,
+        project_data: Rc<RefCell<ProjectData>>,
         gl: Option<Arc<glow::Context>>,
         nav: Arc<Mutex<PianoRollNavigation>>,
         track_view_nav: Arc<Mutex<TrackViewNavigation>>,
         view_settings: Arc<Mutex<ViewSettings>>,
         playback_manager: Arc<Mutex<PlaybackManager>>,
         bar_cacher: Arc<Mutex<BarCacher>>,
-        colors: &Arc<Mutex<NoteColors>>
+        colors: &Arc<Mutex<NoteColors>>,
+        note_cull_helper: &Arc<Mutex<NoteCullHelper>>
     ) {
         // initialize piano roll renderer
         {
@@ -63,12 +65,13 @@ impl RenderManager {
             let piano_roll_renderer = Arc::new(Mutex::new(unsafe {
                 PianoRollRenderer::new(
                     &project_data,
-                    view_settings.clone(),
-                    nav.clone(),
-                    gl.clone(),
+                    &view_settings,
+                    &nav,
+                    &gl,
                     &playback_manager,
                     &bar_cacher,
-                    colors
+                    colors,
+                    note_cull_helper,
                 )
             }));
 
@@ -76,9 +79,8 @@ impl RenderManager {
             let track_view_renderer = Arc::new(Mutex::new(unsafe {
                 TrackViewRenderer::new(
                     &project_data,
-                    track_view_nav.clone(),
-                    gl.clone(),
-                    &playback_manager,
+                    &track_view_nav,
+                    &gl,
                     &bar_cacher,
                     colors
                 )
@@ -112,7 +114,7 @@ impl RenderManager {
     }
 
     pub fn get_active_renderer(&mut self) -> &mut Arc<std::sync::Mutex<(dyn Renderer + Send + Sync + 'static)>> {
-        match self.render_type {
+        match *(self.render_type.read().unwrap()) {
             RenderType::PianoRoll => {
                 &mut self.renderers[0]
             },
@@ -122,8 +124,8 @@ impl RenderManager {
         }
     }
 
-    pub fn get_render_type(&self) -> &RenderType {
-        &self.render_type
+    pub fn get_render_type(&self) -> Arc<RwLock<RenderType>> {
+        self.render_type.clone()
     }
 
     fn get_renderer(&mut self, render_type: RenderType) -> &mut Arc<std::sync::Mutex<(dyn Renderer + Send + Sync + 'static)>> {
@@ -142,12 +144,12 @@ impl RenderManager {
             RenderType::PianoRoll => {
                 let tmp = self.get_renderer(RenderType::TrackView);
                 tmp.lock().unwrap().set_active(false);
-                self.render_type = RenderType::PianoRoll;
+                *self.render_type.write().unwrap() = RenderType::PianoRoll;
             },
             RenderType::TrackView => {
                 let tmp = self.get_renderer(RenderType::PianoRoll);
                 tmp.lock().unwrap().set_active(false);
-                self.render_type = RenderType::TrackView;
+                *self.render_type.write().unwrap() = RenderType::TrackView;
             }
         }
         

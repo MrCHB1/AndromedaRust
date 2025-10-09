@@ -1,3 +1,4 @@
+#![warn(unused)]
 pub trait MIDIAudioEngine {
     fn init_audio(&mut self);
     fn close_stream(&mut self);

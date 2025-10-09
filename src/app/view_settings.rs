@@ -25,6 +25,7 @@ impl ToString for VS_PianoRoll_OnionState {
     }
 }
 
+#[derive(PartialEq)]
 pub enum VS_PianoRoll_OnionColoring {
     GrayedOut,
     PartialColor,
@@ -34,6 +35,16 @@ pub enum VS_PianoRoll_OnionColoring {
 impl Default for VS_PianoRoll_OnionColoring {
     fn default() -> Self {
         VS_PianoRoll_OnionColoring::PartialColor
+    }
+}
+
+impl ToString for VS_PianoRoll_OnionColoring {
+    fn to_string(&self) -> String {
+        match self {
+            VS_PianoRoll_OnionColoring::FullColor => "Full Color".to_string(),
+            VS_PianoRoll_OnionColoring::PartialColor => "Partial Color".to_string(),
+            VS_PianoRoll_OnionColoring::GrayedOut => "Grayed Out".to_string()
+        }
     }
 }
 
@@ -66,7 +77,9 @@ pub struct ViewSettings {
     pub pr_onion_coloring: VS_PianoRoll_OnionColoring,
     pub pr_curr_track: NumericField<u16>,
     pub pr_dataview_state: VS_PianoRoll_DataViewState,
-    pub pr_dataview_size: f32
+    pub pr_dataview_size: f32,
+
+    pub show_meta_events: bool
 }
 
 impl Default for ViewSettings {
@@ -76,7 +89,9 @@ impl Default for ViewSettings {
             pr_curr_track: NumericField::new(0, Some(0), Some(u16::MAX)),
             pr_onion_coloring: VS_PianoRoll_OnionColoring::PartialColor,
             pr_onion_state: Default::default(),
-            pr_dataview_state: Default::default()
+            pr_dataview_state: Default::default(),
+
+            show_meta_events: false
         }
     }
 }

@@ -1,17 +1,17 @@
-use std::{any::Any, fmt::Display, str::FromStr};
+use std::{fmt::Display, str::FromStr};
 
 use eframe::egui;
-use num_traits::{Num, NumCast, PrimInt, ToPrimitive};
+use num_traits::{NumCast, ToPrimitive};
 
 pub trait NumberField {
     fn show(&mut self, label: &str, ui: &mut egui::Ui, width: Option<f32>) -> egui::Response;
     fn changed(&self) -> bool;
     
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
+    // fn as_any(&self) -> &dyn Any;
+    // fn as_any_mut(&mut self) -> &mut dyn Any;
 
     fn as_f32(&self) -> f32;
-    fn as_i32(&self) -> i32;
+    // fn as_i32(&self) -> i32;
     fn as_u8(&self) -> u8;
 }
 
@@ -92,7 +92,7 @@ where
         self.changed
     }
 
-    fn as_any(&self) -> &dyn Any {
+    /*fn as_any(&self) -> &dyn Any {
         self
     }
 
@@ -102,7 +102,7 @@ where
 
     fn as_i32(&self) -> i32 {
         self.value.to_i32().unwrap_or(0)
-    }
+    }*/
 
     fn as_u8(&self) -> u8 {
         self.value.to_u8().unwrap_or(0)

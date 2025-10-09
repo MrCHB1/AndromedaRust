@@ -21,16 +21,13 @@ pub mod kdmapi {
 
     impl KDMAPI {
         pub fn new() -> Self {
-            let mut supports_kdmapi: bool = false;
             
             let init_ptr = unsafe {
                 let module = GetModuleHandleA("OmniMIDI\0".as_ptr() as *const i8);
                 let func = GetProcAddress(module, "InitializeKDMAPIStream\0".as_ptr() as *const i8);
                 if !(module.is_null() || func.is_null()) {
-                    supports_kdmapi = true;
                     Some(std::mem::transmute::<_, InitializeKDMAPIStream>(func))
                 } else {
-                    supports_kdmapi = false;
                     None
                 }
             };
@@ -39,10 +36,8 @@ pub mod kdmapi {
                 let module = GetModuleHandleA("OmniMIDI\0".as_ptr() as *const i8);
                 let func = GetProcAddress(module, "TerminateKDMAPIStream\0".as_ptr() as *const i8);
                 if !(module.is_null() || func.is_null()) {
-                    supports_kdmapi = true;
                     Some(std::mem::transmute::<_, TerminateKDMAPIStream>(func))
                 } else {
-                    supports_kdmapi = false;
                     None
                 }
             };
@@ -51,13 +46,13 @@ pub mod kdmapi {
                 let module = GetModuleHandleA("OmniMIDI\0".as_ptr() as *const i8);
                 let func = GetProcAddress(module, "SendDirectDataNoBuf\0".as_ptr() as *const i8);
                 if !(module.is_null() || func.is_null()) {
-                    supports_kdmapi = true;
                     Some(std::mem::transmute::<_, SendDirectDataNoBuf>(func))
                 } else {
-                    supports_kdmapi = false;
                     None
                 }
             };
+
+            let supports_kdmapi = init_ptr.is_some() && term_ptr.is_some() && send_ptr.is_some();
 
             if supports_kdmapi {
                 println!("KDMAPI loaded!");

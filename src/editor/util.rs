@@ -1,7 +1,8 @@
+#![warn(unused)]
 use eframe::egui::Ui;
 
-use crate::{editor::navigation::PianoRollNavigation, midi::events::{meta_event::{MetaEvent, MetaEventType}, note::Note}};
-use std::{cmp::Ordering, collections::{HashMap, HashSet, VecDeque}, sync::{Arc, Mutex}};
+use crate::{editor::navigation::{PianoRollNavigation, TrackViewNavigation}, midi::events::{meta_event::{MetaEvent, MetaEventType}, note::Note}};
+use std::{cmp::Ordering, collections::{HashMap}, path::PathBuf, sync::{Arc, Mutex}};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 
 pub type MIDITick = u32;
@@ -265,7 +266,7 @@ pub fn manipulate_note_ticks(notes: &mut Vec<Note>, ids: &Vec<usize>, start_fn: 
     let mut ids_with_pos = Vec::new();
 
     let mut id_compensation = HashMap::new();
-    for (i, (old_id, note, start_change, _)) in updates.into_iter().enumerate() {
+    for (old_id, note, start_change, _) in updates.into_iter() {
         let insert_idx = bin_search_notes(notes, note.start);
         let offset = id_compensation.entry(insert_idx).or_insert(0);
         let real_idx = insert_idx + *offset;
@@ -345,4 +346,27 @@ pub fn get_mouse_midi_pos(ui: &mut Ui, nav: &Arc<Mutex<PianoRollNavigation>>) ->
     } else {
         ((0, 0), (0, 0))
     }
+}
+
+pub fn get_mouse_track_view_pos(ui: &mut Ui, nav: &Arc<Mutex<TrackViewNavigation>>) -> (MIDITick, u16) {
+    let rect = ui.min_rect();
+    if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+        let (mut mouse_x, mut mouse_y) = (mouse_pos.x, mouse_pos.y);
+
+        mouse_x = (mouse_x - rect.left()) / rect.width();
+        mouse_y = (mouse_y - rect.top()) / rect.height();
+
+        let nav = nav.lock().unwrap();
+
+        let mouse_tick_pos = (mouse_x * nav.zoom_ticks_smoothed + nav.tick_pos_smoothed) as MIDITick;
+        let mouse_track_pos = (mouse_y * nav.zoom_tracks_smoothed + nav.track_pos_smoothed) as u16;
+
+        (mouse_tick_pos, mouse_track_pos)
+    } else {
+        (0, 0)
+    }
+}
+
+pub fn path_rel_to_abs(path: String) -> PathBuf {
+    std::path::absolute(path).unwrap()
 }

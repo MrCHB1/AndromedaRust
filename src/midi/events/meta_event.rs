@@ -1,3 +1,4 @@
+#![warn(unused)]
 use crate::editor::util::MIDITick;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -34,7 +35,24 @@ impl ToString for MetaEventType {
             MetaEventType::TimeSignature => "Time Signature",
             MetaEventType::Tempo => "Tempo",
             MetaEventType::KeySignature => "Key Signature",
+            MetaEventType::Marker => "Marker",
             _ => ""
         }.to_string()
+    }
+}
+
+impl MetaEvent {
+    pub fn get_value_string(&self) -> String {
+        match self.event_type {
+            MetaEventType::Marker => {
+                String::from_utf8_lossy(&self.data).to_string()
+            },
+            MetaEventType::Tempo => {
+                let tempo = (self.data[2] as u32) | ((self.data[1] as u32) << 8) | ((self.data[0] as u32) << 16);
+                let tempof = 60000000.0 / tempo as f32;
+                tempof.to_string()
+            },
+            _ => { String::from("N/A") }
+        }
     }
 }

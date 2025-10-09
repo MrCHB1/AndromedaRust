@@ -9,3 +9,4 @@ pub mod meta_editing;
 pub mod midi_bar_cacher;
 pub mod playhead;
 pub mod track_editing;
+pub mod keybinds;

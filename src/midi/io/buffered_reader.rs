@@ -1,3 +1,4 @@
+#![warn(unused)]
 use std::{fs::File, io::Read};
 use std::io::{self, Seek};
 use std::sync::{Arc, Mutex};

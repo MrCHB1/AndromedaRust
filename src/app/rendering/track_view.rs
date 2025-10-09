@@ -1,10 +1,10 @@
 use crate::app::shared::NoteColors;
-use crate::audio::event_playback::PlaybackManager;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::navigation::TrackViewNavigation;
 use crate::editor::project_data::ProjectData;
-use crate::midi::events::meta_event::MetaEvent;
 use crate::midi::events::note::Note;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 use eframe::egui::Vec2;
 use eframe::glow;
@@ -56,7 +56,6 @@ const QUAD_INDICES: [u32; 6] = [
 
 pub struct TrackViewRenderer {
     pub navigation: Arc<Mutex<TrackViewNavigation>>,
-    pub playback_manager: Arc<Mutex<PlaybackManager>>,
     pub bar_cacher: Arc<Mutex<BarCacher>>,
     pub window_size: Vec2<>,
     pub ppq: u16,
@@ -78,7 +77,6 @@ pub struct TrackViewRenderer {
     bars_render: Vec<RenderTrackViewBar>,
     notes_render: Vec<RenderTrackViewNote>,
     render_notes: Arc<RwLock<Vec<Vec<Note>>>>,
-    global_metas: Arc<RwLock<Vec<MetaEvent>>>,
     note_colors: Arc<Mutex<NoteColors>>,
 
     // per channel per track
@@ -91,15 +89,14 @@ pub struct TrackViewRenderer {
 
 impl TrackViewRenderer {
     pub unsafe fn new(
-        project_data: &Arc<Mutex<ProjectData>>,
-        nav: Arc<Mutex<TrackViewNavigation>>,
-        gl: Arc<glow::Context>,
-        playback_manager: &Arc<Mutex<PlaybackManager>>,
+        project_data: &Rc<RefCell<ProjectData>>,
+        nav: &Arc<Mutex<TrackViewNavigation>>,
+        gl: &Arc<glow::Context>,
         bar_cacher: &Arc<Mutex<BarCacher>>,
         colors: &Arc<Mutex<NoteColors>>
     ) -> Self {
-        let tv_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/track_view_bg");
-        let tv_notes_program = ShaderProgram::create_from_files(gl.clone(), "./shaders/track_view_note");
+        let tv_program = ShaderProgram::create_from_files(gl.clone(), "./assets/shaders/track_view_bg");
+        let tv_notes_program = ShaderProgram::create_from_files(gl.clone(), "./assets/shaders/track_view_note");
 
         // -------- TRACK VIEW BAR --------
 
@@ -163,9 +160,9 @@ impl TrackViewRenderer {
         gl.vertex_attrib_divisor(1, 1);
         gl.vertex_attrib_divisor(2, 1);
 
-        let (notes, global_metas) = {
-            let project_data = project_data.lock().unwrap();
-            (project_data.notes.clone(), project_data.global_metas.clone())
+        let notes = {
+            let project_data = project_data.borrow();
+            project_data.notes.clone()
         };
 
         let last_note_start = {
@@ -179,9 +176,8 @@ impl TrackViewRenderer {
         };
 
         Self {
-            navigation: nav,
+            navigation: nav.clone(),
             window_size: Vec2::new(0.0, 0.0),
-            playback_manager: playback_manager.clone(),
             bar_cacher: bar_cacher.clone(),
             tv_program,
             tv_vertex_buffer,
@@ -195,11 +191,10 @@ impl TrackViewRenderer {
             tv_notes_ebo,
             tv_notes_ibo,
 
-            gl,
+            gl: gl.clone(),
             bars_render: tv_bars_render.to_vec(),
             notes_render: tv_notes_render.to_vec(),
             render_notes: notes,
-            global_metas,
 
             ppq: 960,
             note_colors: colors.clone(),
@@ -249,6 +244,11 @@ impl Renderer for TrackViewRenderer {
 
                 // render from top to bottom
                 let mut curr_track = 0;
+
+                self.tv_vertex_array.bind();
+                self.tv_instance_buffer.bind();
+                self.tv_vertex_buffer.bind();
+                self.tv_index_buffer.bind();
                 
                 while (curr_track as f32) < track_pos + zoom_tracks {
                     let mut curr_bar_tick = 0.0;
@@ -288,10 +288,6 @@ impl Renderer for TrackViewRenderer {
 
                         bar_id += 1;
                         if bar_id >= BAR_BUFFER_SIZE {
-                            self.tv_vertex_array.bind();
-                            self.tv_instance_buffer.bind();
-                            self.tv_vertex_buffer.bind();
-                            self.tv_index_buffer.bind();
                             self.tv_instance_buffer.set_data(self.bars_render.as_slice(), glow::DYNAMIC_DRAW);
                             // self.gl.use_program(Some(self.tv_program.program));
                             self.gl.draw_elements_instanced(
@@ -304,10 +300,6 @@ impl Renderer for TrackViewRenderer {
                     }
 
                     if bar_id != 0 {
-                        self.tv_vertex_array.bind();
-                        self.tv_instance_buffer.bind();
-                        self.tv_vertex_buffer.bind();
-                        self.tv_index_buffer.bind();
                         self.tv_instance_buffer.set_data(self.bars_render.as_slice(), glow::DYNAMIC_DRAW);
                         // self.gl.use_program(Some(self.tv_program.program));
                         self.gl.draw_elements_instanced(
@@ -334,6 +326,11 @@ impl Renderer for TrackViewRenderer {
 
                 let all_render_notes = self.render_notes.read().unwrap();
 
+                self.tv_notes_vao.bind();
+                self.tv_notes_ibo.bind();
+                self.tv_notes_vbo.bind();
+                self.tv_notes_ebo.bind();
+
                 if self.last_note_start.len() != all_render_notes.len() {
                     self.last_note_start = vec![0; all_render_notes.len()];
                     self.first_render_note = vec![0; all_render_notes.len()];
@@ -341,7 +338,7 @@ impl Renderer for TrackViewRenderer {
                 
                 let track_start = {
                     let mut track_start = 0;
-                    for track in 0..all_render_notes.len() {
+                    for track in 1..=all_render_notes.len() {
                         if track as f32 >= track_pos { break; }
                         track_start += 1;
                     }
@@ -366,10 +363,6 @@ impl Renderer for TrackViewRenderer {
                         continue;
                     }
 
-                    let mut curr_channel = 0;
-
-                    let mut curr_note = 0;
-
                     let mut n_off = self.first_render_note[curr_track as usize];
                     if self.last_time > tick_pos {
                         if n_off == 0 {
@@ -391,8 +384,6 @@ impl Renderer for TrackViewRenderer {
                         }
                         self.first_render_note[curr_track as usize] = n_off;
                     }
-
-                    let mut note_idx = n_off;
 
                     let note_end = {
                         let mut e = n_off;
@@ -424,10 +415,6 @@ impl Renderer for TrackViewRenderer {
                             note_id += 1;
 
                             if note_id >= NOTE_BUFFER_SIZE {
-                                self.tv_notes_vao.bind();
-                                self.tv_notes_ibo.bind();
-                                self.tv_notes_vbo.bind();
-                                self.tv_notes_ebo.bind();
                                 self.tv_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
                                 self.gl.draw_elements_instanced(
                                     glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
@@ -440,10 +427,6 @@ impl Renderer for TrackViewRenderer {
                 }
 
                 if note_id != 0 {
-                    self.tv_notes_vao.bind();
-                    self.tv_notes_ibo.bind();
-                    self.tv_notes_vbo.bind();
-                    self.tv_notes_ebo.bind();
                     self.tv_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
                     self.gl.draw_elements_instanced(
                         glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, note_id as i32);
@@ -462,6 +445,10 @@ impl Renderer for TrackViewRenderer {
 
     fn set_active(&mut self, is_active: bool) {
         self.render_active = is_active;
+    }
+
+    fn update_ppq(&mut self, ppq: u16) {
+        self.ppq = ppq;
     }
 
     /*fn set_ghost_notes(&mut self, _notes: Arc<Mutex<Vec<crate::app::main_window::GhostNote>>>) {

@@ -1,6 +1,8 @@
+#![warn(unused)]
+
 use eframe::egui::{self, RichText, Ui};
 
-use crate::{app::custom_widgets::{NumberField, NumericField}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use std::any::Any;
 
@@ -108,12 +110,12 @@ impl ESSettingsWindow {
         self.is_shown = true;
     }
 
-    pub fn use_midi_devices(&mut self, devices: Arc<Mutex<MIDIDevices>>) {
-        self.midi_devices = Some(devices);
+    pub fn use_midi_devices(&mut self, devices: &Arc<Mutex<MIDIDevices>>) {
+        self.midi_devices = Some(devices.clone());
     }
 
-    pub fn use_playback_manager(&mut self, playback_manager: Arc<Mutex<PlaybackManager>>) {
-        self.playback_manager = Some(playback_manager);
+    pub fn use_playback_manager(&mut self, playback_manager: &Arc<Mutex<PlaybackManager>>) {
+        self.playback_manager = Some(playback_manager.clone());
     }
 
     fn draw_general_tab(&mut self, ui: &mut Ui) {
@@ -195,9 +197,23 @@ impl ESSettingsWindow {
             }
         }
     }
+}
 
-    pub fn draw_window(&mut self, ctx: &egui::Context) -> bool {
-        if !self.is_shown { return false; }
+impl Dialog for ESSettingsWindow {
+    fn show(&mut self) -> () {
+        self.is_shown = true
+    }
+
+    fn close(&mut self) -> () {
+        self.is_shown = false
+    }
+
+    fn is_showing(&self) -> bool {
+        self.is_shown
+    }
+
+    fn draw(&mut self, ctx: &egui::Context, _image_resources: &crate::app::util::image_loader::ImageResources) -> () {
+        if !self.is_shown { return; }
         egui::Window::new(RichText::new("Editor Settings").size(10.0))
             .collapsible(false)
             .show(ctx, |ui| {
@@ -234,10 +250,5 @@ impl ESSettingsWindow {
                     });
                 })
             });
-        return true;
-    }
-
-    pub fn is_showing(&self) -> bool {
-        self.is_shown
     }
 }

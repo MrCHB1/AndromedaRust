@@ -20,6 +20,8 @@ rounded-div = "0.1.3"
 rayon = "1.11.0"
 png = "0.18.0"
 image = "0.25.8"
+url = "2.5.7"
+as-any = "0.3.2"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["libloaderapi", "minwindef", "mmsystem"] }

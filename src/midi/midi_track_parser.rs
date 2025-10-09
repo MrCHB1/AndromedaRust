@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet, VecDeque}, fs::File, sync::{Arc, Mutex}};
+use std::{collections::{HashMap, VecDeque}, fs::File, sync::{Arc, Mutex}};
 
 use crate::{editor::util::MIDITick, midi::{events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::{MetaEvent, MetaEventType}, note::Note}, io::buffered_reader::BufferedByteReader}};
 

@@ -1,3 +1,6 @@
+#![deny(unused)]
+#![deny(deprecated)]
+
 mod midi;
 mod app;
 mod editor;

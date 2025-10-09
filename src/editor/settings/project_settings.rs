@@ -1,10 +1,10 @@
-use eframe::egui::{self, RichText, Ui};
+use eframe::egui::{self, RichText};
 
-use crate::editor::project_data::{ProjectData, ProjectInfo};
-use std::sync::{Arc, Mutex};
+use crate::{app::ui::dialog::Dialog, editor::project_data::ProjectData};
+use std::{cell::RefCell, rc::Rc};
 
 pub struct ProjectSettings {
-    pub project_data: Arc<Mutex<ProjectData>>,
+    pub project_data: Rc<RefCell<ProjectData>>,
     is_showing: bool,
 }
 
@@ -18,29 +18,35 @@ impl Default for ProjectSettings {
 }
 
 impl ProjectSettings {
-    pub fn new(project_data: &Arc<Mutex<ProjectData>>) -> Self {
+    pub fn new(project_data: &Rc<RefCell<ProjectData>>) -> Self {
         Self { 
             project_data: project_data.clone(),
             is_showing: false
         }
     }
+}
 
-    pub fn show(&mut self) {
+impl Dialog for ProjectSettings {
+    fn show(&mut self) {
         self.is_showing = true;
     }
 
-    pub fn hide(&mut self) {
+    fn close(&mut self) {
         self.is_showing = false;
     }
 
-    pub fn draw_window(&mut self, ctx: &egui::Context) -> bool {
-        if !self.is_showing { return false; }
+    fn is_showing(&self) -> bool {
+        self.is_showing
+    }
+
+    fn draw(&mut self, ctx: &egui::Context, _image_resources: &crate::app::util::image_loader::ImageResources) {
+        if !self.is_showing { return; }
 
         egui::Window::new(RichText::new("Project Information").size(15.0))
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    let mut project_data = self.project_data.lock().unwrap();
+                    let mut project_data = self.project_data.borrow_mut();
 
                     ui.horizontal(|ui| {
                         ui.label("Name");
@@ -80,7 +86,5 @@ impl ProjectSettings {
                     });
                 });
             });
-
-        return true;
     }
 }
