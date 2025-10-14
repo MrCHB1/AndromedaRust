@@ -44,7 +44,7 @@ impl NoteCullHelper {
         
         if notes.is_empty() { return; }
 
-        if self.last_time[track] == time && self.last_zoom[track] == zoom { return; }
+        // if self.last_time[track] == time && self.last_zoom[track] == zoom { return; }
 
         let mut n_off = self.first_render[track];
         if self.last_time[track] > time {

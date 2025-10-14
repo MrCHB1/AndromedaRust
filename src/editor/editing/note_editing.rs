@@ -1536,7 +1536,15 @@ impl NoteEditing {
                 let notes = &mut notes[*track as usize];
                 for (i, ids) in note_ids.iter().enumerate() {
                     let length = notes[*ids].length as SignedMIDITick;
-                    notes[*ids].length = (length + length_deltas[i]) as MIDITick;
+                    *(notes[*ids].length_mut()) = (length + length_deltas[i]) as MIDITick;
+                }
+            },
+            EditorAction::ChannelChange(note_ids, channel_deltas, track) => {
+                let mut notes = self.notes.write().unwrap();
+                let notes = &mut notes[*track as usize];
+                for (i, ids) in note_ids.iter().enumerate() {
+                    let channel = notes[*ids].channel as i8;
+                    *(notes[*ids].channel_mut()) = (channel + channel_deltas[i]).clamp(0 ,16) as u8;
                 }
             },
             EditorAction::NotesMove(new_note_ids, old_note_ids, midi_pos_delta, track, update_selected) => {

@@ -10,7 +10,7 @@ use eframe::glow::HasContext;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
-use crate::editor::note_editing::GhostNote;
+use crate::editor::editing::note_editing::GhostNote;
 use crate::app::rendering::{
     buffers::*,
     shaders::*

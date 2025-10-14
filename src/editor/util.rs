@@ -253,7 +253,16 @@ pub fn get_absolute_max_tick_from_ids(notes: &Vec<Note>, ids: &Vec<usize>) -> Op
 
 // helper function for moving/modifying the ticks of notes lol
 pub fn manipulate_note_ticks(notes: &mut Vec<Note>, ids: &Vec<usize>, start_fn: impl Fn(MIDITick) -> MIDITick) -> (Vec<usize>, Vec<usize>, Vec<(SignedMIDITick, i16)>) {
-    let mut updates: Vec<(usize, Note, SignedMIDITick, MIDITick)> = ids.iter().rev().map(|&id| {
+    let ids_with_delta_pos: Vec<(usize, (SignedMIDITick, i16))> = ids.iter().map(|&id| {
+        let note = &mut notes[id];
+        let old_start = note.start();
+        *(note.start_mut()) = start_fn(note.start());
+        let new_start = note.start();
+        (id, (new_start as SignedMIDITick - old_start as SignedMIDITick, 0))
+    }).collect();
+
+    move_notes_to(notes, ids_with_delta_pos)
+    /*let mut updates: Vec<(usize, Note, SignedMIDITick, MIDITick)> = ids.iter().rev().map(|&id| {
         let mut note = notes.remove(id);
         let new_start = start_fn(note.start);
         let start_change = new_start as SignedMIDITick - note.start as SignedMIDITick;
@@ -279,6 +288,42 @@ pub fn manipulate_note_ticks(notes: &mut Vec<Note>, ids: &Vec<usize>, start_fn: 
     let ((old_ids, new_ids), changed_positions) = ids_with_pos.into_iter().unzip();
     //let (old_ids, new_ids, changed_posiitons) = ids_with_pos.into_iter().unzip();
     
+    (old_ids, new_ids, changed_positions)*/
+}
+
+/// Moves notes by [`ids_with_delta_pos`]. Returns two [`Vec<usize>`]s for ID preservation (usually utilized in undoing/redoing).
+/// This should only be called when notes have already moved but need to be re-sorted.
+/// [`ids_with_delta_pos`] must already be sorted by IDs and have no duplicate IDs.
+pub fn move_notes_to(notes: &mut Vec<Note>, ids_with_delta_pos: Vec<(usize, (SignedMIDITick, i16))>) -> (Vec<usize>, Vec<usize>, Vec<(SignedMIDITick, i16)>) {
+    let mut updates: Vec<(usize, Note, i32, u32, i16, u8)> = ids_with_delta_pos.iter().rev().map(|&(id, changed_pos)| {
+        let note = notes.remove(id);
+
+        let new_start = note.start();
+        let new_key = note.key();
+
+        let start_delta = changed_pos.0;
+        let key_delta = changed_pos.1;
+
+        (id, note, start_delta, new_start, key_delta, new_key)
+    }).collect();
+
+    updates.sort_by_key(|&(_, _, _, new_start, _, _)| new_start);
+    
+    let mut ids_with_pos = Vec::new();
+    let mut id_compensation = HashMap::new();
+
+    for (old_id, note, start_delta, _, key_delta, _) in updates.into_iter() {
+        let insert_idx = bin_search_notes(notes, note.start());
+        let offset = id_compensation.entry(insert_idx).or_insert(0);
+        let real_idx = insert_idx + *offset;
+        ids_with_pos.push(((old_id, real_idx), (start_delta, key_delta)));
+        notes.insert(insert_idx, note);
+        *offset += 1;
+    }
+
+    ids_with_pos.sort_by_key(|(ids, _)| ids.1);
+    let ((old_ids, new_ids), changed_positions) = ids_with_pos.into_iter().unzip();
+
     (old_ids, new_ids, changed_positions)
 }
 

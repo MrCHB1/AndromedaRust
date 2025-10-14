@@ -7,7 +7,7 @@ pub enum MenuItem {
     MenuButton(Option<Box<dyn FnMut(&mut MainWindow)>>), // just a regular button
     MenuButtonEnabled(Option<Box<dyn FnMut(&mut MainWindow)>>, Box<dyn Fn(&mut MainWindow) -> bool>),
     Separator,
-    SubMenu(Vec<(&'static str, MenuItem)>)
+    SubMenu(Vec<(String, MenuItem)>)
 }
 
 pub enum MenuLabelType {
@@ -16,7 +16,7 @@ pub enum MenuLabelType {
 }
 
 pub enum MenuType {
-    Menu(Vec<(&'static str, MenuItem)>),
+    Menu(Vec<(String, MenuItem)>),
     DirectAction(Box<dyn FnMut(&mut MainWindow)>)
 }
 
@@ -30,7 +30,7 @@ impl MainMenuBar {
         Self { menu: Vec::new() }
     }
 
-    pub fn add_menu(&mut self, name: &'static str, item: Vec<(&'static str, MenuItem)>) {
+    pub fn add_menu(&mut self, name: &'static str, item: Vec<(String, MenuItem)>) {
         self.menu.push((MenuLabelType::Text(name), MenuType::Menu(item)))
     }
 
@@ -68,11 +68,11 @@ impl MainMenuBar {
         ));
     }
 
-    fn draw_menu_items(parent: &mut MainWindow, ui: &mut Ui, menu_items: &mut Vec<(&str, MenuItem)>) {
+    fn draw_menu_items(parent: &mut MainWindow, ui: &mut Ui, menu_items: &mut Vec<(String, MenuItem)>) {
         for (label, menu_item) in menu_items.iter_mut() {
             match menu_item {
                 MenuItem::MenuButton(action) => {
-                    if ui.button(*label).clicked() {
+                    if ui.button(label.as_str()).clicked() {
                         if let Some(action) = action.as_mut() {
                             action(parent);
                             ui.close_menu();
@@ -83,12 +83,12 @@ impl MainMenuBar {
                     ui.separator();
                 },
                 MenuItem::SubMenu(sub_menu_items) => {
-                    ui.menu_button(*label, |ui| {
+                    ui.menu_button(label.as_str(), |ui| {
                         Self::draw_menu_items(parent, ui, sub_menu_items);
                     });
                 },
                 MenuItem::MenuButtonEnabled(action, enabled) => {
-                    if ui.add_enabled(enabled(parent), egui::Button::new(*label)).clicked() {
+                    if ui.add_enabled(enabled(parent), egui::Button::new(label.as_str())).clicked() {
                         if let Some(action) = action.as_mut() {
                             action(parent);
                             ui.close_menu();

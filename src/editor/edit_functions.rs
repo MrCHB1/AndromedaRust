@@ -4,7 +4,8 @@ use eframe::{
     egui::{self, RichText},
 };
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog, util::image_loader::ImageResources}, editor::{actions::{EditorAction, EditorActions}, note_editing::NoteEditing, util::{bin_search_notes, get_min_max_keys_in_selection, manipulate_note_lengths, manipulate_note_ticks, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog, util::image_loader::ImageResources}, editor::{actions::{EditorAction, EditorActions}, util::{bin_search_notes, get_min_max_keys_in_selection, manipulate_note_lengths, manipulate_note_ticks, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::editor::editing::note_editing::NoteEditing;
 
 // modular edit_function
 pub enum EditFunction {

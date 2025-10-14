@@ -6,7 +6,8 @@ use crate::app::view_settings::{VS_PianoRoll_DataViewState,
 ViewSettings};
 use crate::audio::event_playback::PlaybackManager;
 use crate::editor::midi_bar_cacher::BarCacher;
-use crate::editor::note_editing::GhostNote;
+//use crate::editor::note_editing::GhostNote;
+use crate::editor::editing::note_editing::GhostNote;
 use crate::editor::project_data::ProjectData;
 use crate::midi::events::note::Note;
 use std::cell::RefCell;
@@ -339,8 +340,8 @@ impl DataViewRenderer {
 
                 note_culler.update_cull_for_track(nav_curr_track, tick_pos_offs, zoom_ticks);
                 let (note_start, note_end) = note_culler.get_track_cull_range(nav_curr_track);
+                
                 let n_off = note_start;
-
                 for note in &notes[n_off..note_end] {
                     let trk_chan = ((nav_curr_track as usize) << 4) | (note.channel() as usize);
                     {

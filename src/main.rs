@@ -1,5 +1,5 @@
-#![deny(unused)]
-#![deny(deprecated)]
+//#![deny(unused)]
+//#![deny(deprecated)]
 
 mod midi;
 mod app;

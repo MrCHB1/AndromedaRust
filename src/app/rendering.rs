@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
 use eframe::egui::Vec2;
 use eframe::glow;
 use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
-use crate::editor::note_editing::GhostNote;
+use crate::editor::editing::note_editing::GhostNote;
 
 pub mod buffers;
 pub mod piano_roll;

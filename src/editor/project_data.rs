@@ -1,7 +1,7 @@
 // houses all information such as notes, tempos, control/meta events, etc.
 // kinda like midi_file.rs but editable lol
 
-use crate::midi::{events::{channel_event::ChannelEvent, meta_event::{MetaEvent, MetaEventType}, note::Note}, midi_file};
+use crate::{editor::tempo_map::TempoMap, midi::{events::{channel_event::ChannelEvent, meta_event::{MetaEvent, MetaEventType}, note::Note}, midi_file}};
 use std::sync::{Arc, RwLock};
 
 pub fn tempo_as_bytes(tempo: f32) -> [u8; 3] {
@@ -42,7 +42,8 @@ pub struct ProjectData {
     // 16 channels per track. each channel contains vector of notes
     pub notes: Arc<RwLock<Vec<Vec<Note>>>>,
     pub global_metas: Arc<RwLock<Vec<MetaEvent>>>,
-    pub channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>
+    pub channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+    pub tempo_map: Arc<RwLock<TempoMap>>
 }
 
 impl ProjectData {
@@ -85,6 +86,12 @@ impl ProjectData {
             *(self.notes.write().unwrap()) = std::mem::take(&mut file.notes);
             *(self.global_metas.write().unwrap()) = std::mem::take(&mut file.global_meta_events);
             *(self.channel_events.write().unwrap()) = std::mem::take(&mut file.channel_events);
+        }
+
+        {
+            let mut tempo_map = self.tempo_map.write().unwrap();
+            // tempo_map.meta_events = self.global_metas.clone();
+            tempo_map.rebuild_tempo_map();
         }
         
         project_info.name = "";
@@ -132,6 +139,13 @@ impl ProjectData {
                     data: vec![0x04, 0x02, 0x18, 0x08] // 4:4
                 }
             ];
+        }
+
+        {
+            // ...and rebuild the tempo map
+            let mut tempo_map = self.tempo_map.write().unwrap();
+            tempo_map.meta_events = self.global_metas.clone();
+            tempo_map.rebuild_tempo_map();
         }
         /*self.global_metas = Arc::new(Mutex::new(vec![
             MetaEvent {

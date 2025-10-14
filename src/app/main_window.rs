@@ -4,7 +4,13 @@ use crate::{
         custom_widgets::{NumberField, NumericField}, rendering::{data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, RenderManager, RenderType, Renderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::Dialog, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, 
         audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_devices::MIDIDevices}, 
         editor::{
-            edit_functions::EFChopDialog, meta_editing::{MetaEditing, MetaEventInsertDialog}, midi_bar_cacher::BarCacher, navigation::{TrackViewNavigation, GLOBAL_ZOOM_FACTOR}, note_editing::{note_flags::*, NoteEditing}, playhead::Playhead, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, track_editing::TrackEditing, util::{get_mouse_midi_pos, path_rel_to_abs, MIDITick}}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
+            edit_functions::EFChopDialog, editing::lua_note_editing::LuaNoteEditing, midi_bar_cacher::BarCacher, navigation::{TrackViewNavigation, GLOBAL_ZOOM_FACTOR}, playhead::Playhead, plugins::{plugin_andromeda_obj::AndromedaObj, plugin_lua::PluginLua, PluginLoader}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{get_mouse_midi_pos, path_rel_to_abs, MIDITick}}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
+use crate::editor::editing::{
+    meta_editing::{MetaEditing, MetaEventInsertDialog},
+    note_editing::{NoteEditing, note_flags::*},
+    track_editing::TrackEditing
+};
+
 
 use eframe::{
     egui::{self, Color32, Pos2, RichText, Shape, Stroke, Ui, Vec2}, egui_glow::CallbackFn, glow::HasContext
@@ -178,7 +184,10 @@ pub struct MainWindow {
     dialogs: HashMap<&'static str, Box<dyn Dialog>>,
 
     // images
-    image_resources: Option<ImageResources>
+    image_resources: Option<ImageResources>,
+
+    // plugin stuff
+    plugin_loader: Option<PluginLoader>
 }
 
 impl MainWindow {
@@ -204,9 +213,10 @@ impl MainWindow {
             let playback_manager = Arc::new(Mutex::new(
                 PlaybackManager::new(
                     s.kdmapi.as_ref().unwrap().clone(),
-                    project_data.notes.clone(),
-                    project_data.global_metas.clone(),
-                    project_data.channel_events.clone()
+                    &project_data.notes,
+                    &project_data.global_metas,
+                    &project_data.channel_events,
+                    &project_data.tempo_map
                 )
             ));
             // s.settings_window.use_midi_devices(midi_devices.clone());
@@ -231,6 +241,12 @@ impl MainWindow {
         }
         s.editor_actions = Rc::new(RefCell::new(EditorActions::new(256)));
         s.editor_functions = Rc::new(RefCell::new(EditFunctions::default()));
+
+        {
+            let mut plugin_loader = PluginLoader::new();
+            plugin_loader.load_plugins(&path_rel_to_abs("./assets/plugins/custom".into())).unwrap();
+            s.plugin_loader = Some(plugin_loader);
+        }
         s
     }
 
@@ -412,7 +428,7 @@ impl MainWindow {
             let editor_tool = &self.editor_tool;
             let render_manager = self.render_manager.as_ref().unwrap();
             self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.editor_actions, &self.toolbar_settings)));
-            self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher, &self.editor_actions)));
+            self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher, &self.editor_actions, &project_data.tempo_map)));
             self.track_editing = Arc::new(Mutex::new(TrackEditing::new(&self.project_data, &self.editor_tool, &self.editor_actions, &self.nav.as_ref().unwrap(), &self.track_view_nav.as_ref().unwrap())))
         }
 
@@ -421,65 +437,87 @@ impl MainWindow {
 
     fn init_main_menu(&mut self) {
         let image_resources = self.image_resources.as_ref().unwrap();
+        let plugins = self.plugin_loader.as_ref().unwrap();
 
         let mut menu_bar = MainMenuBar::new();
         menu_bar.add_menu_image_action("logo_small", Box::new(|mw| {mw.show_dialog("EditorInfo"); }), image_resources);
 
         menu_bar.add_menu("File", vec![
-            ("New Project", MenuItem::MenuButton(Some(Box::new(|mw| { mw.make_new_project(); })))),
-            ("Import MIDI file", MenuItem::MenuButton(Some(Box::new(|mw| { mw.import_midi_file(); })))),
-            ("Export MIDI file", MenuItem::MenuButton(Some(Box::new(|mw| { mw.export_midi_file(); }))))
+            ("New Project".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.make_new_project(); })))),
+            ("Import MIDI file".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.import_midi_file(); })))),
+            ("Export MIDI file".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.export_midi_file(); }))))
         ]);
         menu_bar.add_menu("Edit", vec![
-            ("Undo", MenuItem::MenuButtonEnabled(Some(Box::new(|mw| { mw.undo(); })), Box::new(|mw| { mw.can_undo() }))),
-            ("Redo", MenuItem::MenuButtonEnabled(Some(Box::new(|mw| { mw.redo(); })), Box::new(|mw| { mw.can_redo() }))),
-            ("", MenuItem::Separator),
-            ("Insert...", MenuItem::SubMenu(vec![
-                ("Time Signature", MenuItem::MenuButton(Some(Box::new(|mw| { mw.insert_meta(MetaEventType::TimeSignature); })))),
-                ("Tempo", MenuItem::MenuButton(Some(Box::new(|mw| { mw.insert_meta(MetaEventType::Tempo); }))))
+            ("Undo".into(), MenuItem::MenuButtonEnabled(Some(Box::new(|mw| { mw.undo(); })), Box::new(|mw| { mw.can_undo() }))),
+            ("Redo".into(), MenuItem::MenuButtonEnabled(Some(Box::new(|mw| { mw.redo(); })), Box::new(|mw| { mw.can_redo() }))),
+            ("".into(), MenuItem::Separator),
+            ("Insert...".into(), MenuItem::SubMenu(vec![
+                ("Time Signature".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.insert_meta(MetaEventType::TimeSignature); })))),
+                ("Tempo".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.insert_meta(MetaEventType::Tempo); }))))
             ]))
         ]);
         menu_bar.add_menu("Options", vec![
-            ("Preferences...", MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("EditorSettings"); }))))
+            ("Preferences...".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("EditorSettings"); }))))
         ]);
         menu_bar.add_menu("Project", vec![
-            ("Project settings...", MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("ProjectSettings"); }))))
+            ("Project settings...".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("ProjectSettings"); }))))
         ]);
         menu_bar.add_menu("Tools", vec![
-            ("Editing", MenuItem::SubMenu(vec![
-                ("Flip X (Tick-wise)", MenuItem::MenuButtonEnabled(
+            ("Editing".into(), MenuItem::SubMenu(vec![
+                ("Flip X (Tick-wise)".into(), MenuItem::MenuButtonEnabled(
                     Some(Box::new(|mw| { mw.apply_function(EditFunction::FlipX(Vec::new())); })),
                     Box::new(|mw| {  
                         let note_editing = mw.note_editing.lock().unwrap();
                         note_editing.is_any_note_selected()
                     })
                 )),
-                ("Flip Y (Key-wise)", MenuItem::MenuButtonEnabled(
+                ("Flip Y (Key-wise)".into(), MenuItem::MenuButtonEnabled(
                     Some(Box::new(|mw| { mw.apply_function(EditFunction::FlipY(Vec::new())); })),
                     Box::new(|mw| {  
                         let note_editing = mw.note_editing.lock().unwrap();
                         note_editing.is_any_note_selected()
                     })
                 )),
-                ("", MenuItem::Separator),
-                ("Stretch selection...", MenuItem::MenuButtonEnabled(
+                ("".into(), MenuItem::Separator),
+                ("Stretch selection...".into(), MenuItem::MenuButtonEnabled(
                     Some(Box::new(|mw| { mw.apply_function(EditFunction::Stretch(Vec::new(), 0.0)); })),
                     Box::new(|mw| {  
                         let note_editing = mw.note_editing.lock().unwrap();
                         note_editing.is_any_note_selected()
                     })
                 )),
-                ("Chop selection...", MenuItem::MenuButtonEnabled(
+                ("Chop selection...".into(), MenuItem::MenuButtonEnabled(
                     Some(Box::new(|mw| { mw.apply_function(EditFunction::Chop(Vec::new(), 0)); })),
                     Box::new(|mw| {  
                         let note_editing = mw.note_editing.lock().unwrap();
                         note_editing.is_any_note_selected()
                     })
-                ))
+                )),
+                ("".into(), MenuItem::Separator),
+                ("Plugins".into(), MenuItem::SubMenu(vec![
+                    ("Manipulate...".into(), MenuItem::SubMenu({
+                        let mut manip_plugins_buttons = Vec::new();
+                        for plugin in plugins.manip_plugins.iter() {
+                            let plugin_name = {
+                                let plugin = plugin.borrow();
+                                plugin.plugin_name.clone()
+                            };
+                            
+                            let plugin = plugin.clone();
+                            manip_plugins_buttons.push((plugin_name, MenuItem::MenuButton(Some(Box::new(move |mw| { 
+                                mw.run_manip_plugin(plugin.clone());
+                            })))));
+                        }
+                        manip_plugins_buttons
+                    })),
+                    ("Generate...".into(), MenuItem::SubMenu(vec![
+
+                    ])),
+                ]))
             ]))
         ]);
         menu_bar.add_menu("Help", vec![
-            ("Manual", MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("EditorManualDialog"); }))))
+            ("Manual".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("EditorManualDialog"); }))))
         ]);
         self.menu_bar = Some(Arc::new(RwLock::new(menu_bar)));
     }
@@ -635,6 +673,41 @@ impl MainWindow {
             }
             // _ => todo!("Implement other functions")
         }
+    }
+
+    pub fn run_manip_plugin(&mut self, plugin: Rc<RefCell<PluginLua>>) {
+        let (lua, apply_fn) = {
+            let p = plugin.borrow();
+            (p.lua.clone(), p.on_apply_fn.clone())
+        };
+
+        if apply_fn.is_none() { return; }
+        let apply_fn = apply_fn.unwrap();
+
+        let track_idx = self.get_current_track().unwrap() as usize;
+
+        lua.globals().set("curr_track", track_idx).unwrap();
+
+        let mut lua_editing = LuaNoteEditing::new(self.note_editing.clone());
+
+        let andromeda_obj = AndromedaObj::new(&self.project_data);
+        let andromeda_obj = lua.create_userdata(andromeda_obj).unwrap();
+        lua.globals().set("andromeda", andromeda_obj).unwrap();
+        
+        match lua.scope(|scope| {
+            let note_track_ref = scope.create_userdata_ref_mut(&mut lua_editing)?;
+            apply_fn.call::<()>(note_track_ref)?;
+            Ok(())
+        }) {
+            Ok(_) => {
+                let mut editor_actions = self.editor_actions.borrow_mut();
+                lua_editing.apply_changes(track_idx as u16, &mut editor_actions);
+            },
+            Err(lua_error) => {
+                let plugin = plugin.borrow();
+                println!("[PluginError] (While running {}): \n{}", plugin.plugin_name, lua_error);
+            }
+        };
     }
 
     pub fn show_dialog(&mut self, name: &'static str) {

@@ -1,6 +1,6 @@
 use eframe::egui::{self, RichText};
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, editor::{actions::{EditorAction, EditorActions}, midi_bar_cacher::BarCacher, project_data::tempo_as_bytes, util::MIDITick}, midi::events::meta_event::{MetaEvent, MetaEventType}};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, editor::{actions::{EditorAction, EditorActions}, midi_bar_cacher::BarCacher, project_data::tempo_as_bytes, tempo_map::TempoMap, util::MIDITick}, midi::events::meta_event::{MetaEvent, MetaEventType}};
 
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
@@ -11,20 +11,23 @@ pub struct MetaEditing {
     editor_actions: Rc<RefCell<EditorActions>>,
 
     tmp_del_metas: VecDeque<MetaEvent>,
+    tempo_map: Arc<RwLock<TempoMap>>
 }
 
 impl MetaEditing {
     pub fn new(
         global_metas: &Arc<RwLock<Vec<MetaEvent>>>,
         bar_cacher: &Arc<Mutex<BarCacher>>,
-        editor_actions: &Rc<RefCell<EditorActions>>
+        editor_actions: &Rc<RefCell<EditorActions>>,
+        tempo_map: &Arc<RwLock<TempoMap>>,
     ) -> Self {
         Self {
             bar_cacher: bar_cacher.clone(),
             global_metas: global_metas.clone(),
             editor_actions: editor_actions.clone(),
 
-            tmp_del_metas: VecDeque::new()
+            tmp_del_metas: VecDeque::new(),
+            tempo_map: tempo_map.clone()
         }
     }
 
@@ -60,6 +63,11 @@ impl MetaEditing {
             };
 
             // println!("{:?}", metas.iter().map(|m| (m.event_type, &m.data)).collect::<Vec<_>>());
+
+            if meta_event.event_type == MetaEventType::Tempo {
+                let mut tempo_map = self.tempo_map.write().unwrap();
+                tempo_map.rebuild_tempo_map();
+            }
         
             if replace_meta {
                 metas[insert_idx].data = meta_event.data;
@@ -90,6 +98,11 @@ impl MetaEditing {
                     }
                 }
 
+                {
+                    let mut tempo_map = self.tempo_map.write().unwrap();
+                    tempo_map.rebuild_tempo_map();
+                }
+
                 self.regenerate_bars();
             },
             EditorAction::DeleteMeta(meta_ids) => {
@@ -101,6 +114,11 @@ impl MetaEditing {
                     for id in meta_ids.iter().rev() {
                         let meta = metas.remove(*id);
                         self.tmp_del_metas.push_back(meta);
+                    }
+
+                    {
+                        let mut tempo_map = self.tempo_map.write().unwrap();
+                        tempo_map.rebuild_tempo_map();
                     }
                 }
 

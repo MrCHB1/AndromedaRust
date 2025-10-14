@@ -22,6 +22,9 @@ png = "0.18.0"
 image = "0.25.8"
 url = "2.5.7"
 as-any = "0.3.2"
+mlua = { version = "0.11.4", features = ["luajit", "vendored"] }
+include_dir = "0.7"
+luajit-src = "210.6.1"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["libloaderapi", "minwindef", "mmsystem"] }

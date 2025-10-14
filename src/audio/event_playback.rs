@@ -1,7 +1,7 @@
 #![warn(unused)]
 use std::{sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, RwLock}, time::{Duration, Instant}};
 
-use crate::{audio::{midi_audio_engine::MIDIAudioEngine}, editor::{project_data::bytes_as_tempo, util::{bin_search_notes_exact, MIDITick, MIDITickAtomic}}, midi::events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::{MetaEvent, MetaEventType}, note::Note}};
+use crate::{audio::midi_audio_engine::MIDIAudioEngine, editor::{tempo_map::TempoMap, util::{bin_search_notes_exact, MIDITick, MIDITickAtomic}}, midi::events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::MetaEvent, note::Note}};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::thread;
 use std::sync::MutexGuard;
@@ -130,9 +130,9 @@ pub struct PlaybackManager {
     pub playback_start_pos: MIDITick,
     pub playback_pos_ticks: Arc<MIDITickAtomic>,
 
+    tempo_map: Arc<RwLock<TempoMap>>,
     start_time: Arc<Mutex<Instant>>,
     start_pos_secs_from_ticks: f32,
-    tempo_map: Arc<RwLock<Vec<(MIDITick, f32)>>>,
     batch_size: Arc<Mutex<MidiEventBatchSize>>,
 
     play_at_mouse: bool,
@@ -142,15 +142,16 @@ pub struct PlaybackManager {
 impl PlaybackManager {
     pub fn new(
         device: Arc<Mutex<dyn MIDIAudioEngine + Send>>,
-        notes: Arc<RwLock<Vec<Vec<Note>>>>,
-        meta_events: Arc<RwLock<Vec<MetaEvent>>>,
-        channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+        notes: &Arc<RwLock<Vec<Vec<Note>>>>,
+        meta_events: &Arc<RwLock<Vec<MetaEvent>>>,
+        channel_events: &Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+        tempo_map: &Arc<RwLock<TempoMap>>,
     ) -> Self {
         let (tx, rx) = bounded(100000);
         let (notify_tx, notify_rx) = bounded::<()>(1);
         
         Self {
-            device, notes, meta_events, channel_events,
+            device: device.clone(), notes: notes.clone(), meta_events: meta_events.clone(), channel_events: channel_events.clone(),
             tx, rx,
             notify_tx: Arc::new(notify_tx),
             notify_rx: Arc::new(notify_rx),
@@ -161,7 +162,7 @@ impl PlaybackManager {
             playback_pos_ticks: Arc::new(MIDITickAtomic::new(0)),
             start_time: Arc::new(Mutex::new(Instant::now())),
             start_pos_secs_from_ticks: 0.0f32,
-            tempo_map: Arc::new(RwLock::new(Vec::new())),
+            tempo_map: tempo_map.clone(),
             batch_size: Arc::new(Mutex::new(MidiEventBatchSize::BatchSize(4096))),
             play_at_mouse: false,
             mouse_last_key: 0
@@ -188,14 +189,14 @@ impl PlaybackManager {
         if !self.playing { self.playback_start_pos }
         else { 
             //self.playback_pos_ticks.load(Ordering::SeqCst)
-            let tempo_map = self.tempo_map.read().unwrap();
 
             let elapsed = {
                 let st = self.start_time.lock().unwrap();
                 st.elapsed().as_secs_f32() + self.start_pos_secs_from_ticks
             };
 
-            Self::secs_to_ticks_from_map(&tempo_map, self.ppq, elapsed) as MIDITick
+            let tempo_map = self.tempo_map.read().unwrap();
+            tempo_map.secs_to_ticks_from_map(self.ppq, elapsed) as MIDITick
         }
     }
 
@@ -250,64 +251,6 @@ impl PlaybackManager {
         *batch_size = size;
     }
 
-    fn build_tempo_map(&self) -> Vec<(MIDITick, f32)> {
-        let meta = self.meta_events.read().unwrap();
-        meta.iter()
-            .filter(|m| m.event_type == MetaEventType::Tempo)
-            .map(|m| (m.tick, bytes_as_tempo(&m.data)))
-            .collect::<Vec<_>>()
-    }
-
-    fn ticks_to_secs_from_map(tempo_map: &[(MIDITick, f32)], ppq: u16, tick: f32) -> f32 {
-        let mut last_tick = 0.0_f32;
-        let mut last_tempo = if !tempo_map.is_empty() { tempo_map[0].1 } else { 120.0 }; // fallback
-        let mut seconds = 0.0_f32;
-
-        for &(ev_tick, ev_tempo) in tempo_map.iter().skip(1) {
-            let ev_tick_f = ev_tick as f32;
-            if ev_tick_f > tick { break; }
-            let delta_ticks = ev_tick_f - last_tick;
-            let us_per_qn = 60_000_000.0_f32 / last_tempo as f32;
-            let sec_per_tick = us_per_qn / 1_000_000.0_f32 / ppq as f32;
-            seconds += delta_ticks * sec_per_tick;
-            last_tick = ev_tick_f;
-            last_tempo = ev_tempo;
-        }
-
-        let delta_ticks = tick - last_tick;
-        let us_per_qn = 60_000_000.0_f32 / last_tempo as f32;
-        let sec_per_tick = us_per_qn / 1_000_000.0_f32 / ppq as f32;
-        seconds + delta_ticks * sec_per_tick
-    }
-
-    fn secs_to_ticks_from_map(tempo_map: &[(MIDITick, f32)], ppq: u16, secs: f32) -> f32 {
-        let mut last_tick = 0.0_f32;
-        let mut last_tempo = if !tempo_map.is_empty() { tempo_map[0].1 } else { 120.0 }; // fallback
-        let mut elapsed_secs = 0.0_f32;
-
-        for &(ev_tick, ev_tempo) in tempo_map.iter().skip(1) {
-            let ev_tick_f = ev_tick as f32;
-
-            let delta_ticks = ev_tick_f - last_tick;
-            let us_per_qn = 60_000_000.0_f32 / last_tempo as f32;
-            let sec_per_tick = us_per_qn / 1_000_000.0_f32 / ppq as f32;
-            let delta_secs = delta_ticks * sec_per_tick;
-        
-            if elapsed_secs + delta_secs > secs {
-                let rem = secs - elapsed_secs;
-                return last_tick + rem / sec_per_tick;
-            }
-
-            elapsed_secs += delta_secs;
-            last_tick = ev_tick_f;
-            last_tempo = ev_tempo;
-        }
-
-        let us_per_qn = 60_000_000.0_f32 / last_tempo;
-        let sec_per_tick = us_per_qn / 1_000_000.0_f32 / ppq as f32;
-        last_tick + (secs - elapsed_secs) / sec_per_tick
-    }
-
     pub fn reset_events(&mut self) {
         // clear event pool
         while let Ok(_) = self.rx.try_recv() {}
@@ -334,13 +277,13 @@ impl PlaybackManager {
         let start_time = self.start_time.clone();
 
         {
-            let mut tempo_map = tempo_map.write().unwrap();
-            *tempo_map = self.build_tempo_map();
+            // let mut tempo_map = tempo_map.write().unwrap();
+            // *tempo_map = build_tempo_map(&self.meta_events);
         }
 
         let start_pos_secs_from_ticks = {
             let tempo_map = tempo_map.read().unwrap();
-            self.start_pos_secs_from_ticks = Self::ticks_to_secs_from_map(&tempo_map, ppq, playback_pos.load(Ordering::SeqCst) as f32);
+            self.start_pos_secs_from_ticks = tempo_map.ticks_to_secs_from_map(ppq, playback_pos.load(Ordering::SeqCst) as f32);
             self.start_pos_secs_from_ticks
         };
 
@@ -383,7 +326,7 @@ impl PlaybackManager {
 
                 {
                     let tempo_map = tempo_map.read().unwrap();
-                    playback_pos.store(Self::secs_to_ticks_from_map(&tempo_map, ppq, elapsed) as MIDITick, Ordering::SeqCst);
+                    playback_pos.store(tempo_map.secs_to_ticks_from_map(ppq, elapsed) as MIDITick, Ordering::SeqCst);
                 }
 
                 // first the control events / other stuff
