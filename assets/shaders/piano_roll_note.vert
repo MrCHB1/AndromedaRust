@@ -25,6 +25,7 @@ void main() {
 
     if ((noteMeta & uint(1 << 13)) != uint(0)) {
         n_color = vec3(1.0, 0.5, 0.5);
+        color2 = vec3(0.9, 0.4, 0.4);
     }
 
     float grayFactor = float((noteMeta & (uint(3) << uint(14))) >> uint(14)) / 2.0;

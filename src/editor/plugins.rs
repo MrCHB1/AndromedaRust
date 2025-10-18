@@ -14,7 +14,6 @@ use include_dir::include_dir;
 static BUILTIN_PLUGIN_NAMES: &[&'static str] = &[
     "flip_x",
     "flip_y",
-    "humanize",
 ];
 
 pub enum PluginType {

@@ -165,4 +165,37 @@ impl ProjectData {
             }
         ]));*/
     }
+
+    pub fn validate_tracks(&mut self, track: u16) {
+        let mut notes = self.notes.write().unwrap();
+        let mut ch_evs = self.channel_events.write().unwrap();
+
+        let last_len = notes.len();
+        let new_len = track + 1;
+        let len_change = new_len as i32 - last_len as i32;
+        if len_change == 0 { return; }
+
+        if len_change < 0 {
+            for _ in 0..(-len_change) {
+                let can_remove = notes.last().map_or(false, |n| n.is_empty())
+                    && ch_evs.last().map_or(false, |c| c.is_empty());
+
+                if can_remove {
+                    notes.pop();
+                    ch_evs.pop();
+                } else {
+                    break;
+                }
+            }
+        } else {
+            for _ in 0..len_change {
+                notes.push(Vec::new());
+                ch_evs.push(Vec::new());
+            }
+
+            assert!(notes.len() == ch_evs.len());
+        }
+
+        println!("Using {} tracks", notes.len());
+    }
 }

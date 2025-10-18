@@ -4,6 +4,7 @@ use crate::editor::navigation::TrackViewNavigation;
 use crate::editor::project_data::ProjectData;
 use crate::midi::events::note::Note;
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 use eframe::egui::Vec2;
@@ -336,7 +337,7 @@ impl Renderer for TrackViewRenderer {
                     self.first_render_note = vec![0; all_render_notes.len()];
                 }
                 
-                let track_start = {
+                /*let track_start = {
                     let mut track_start = 0;
                     for track in 1..=all_render_notes.len() {
                         if track as f32 >= track_pos { break; }
@@ -352,7 +353,12 @@ impl Renderer for TrackViewRenderer {
                         track_end += 1;
                     }
                     track_end
-                };
+                };*/
+
+                // O(n) -> O(1)
+                let total_tracks = all_render_notes.len() as isize;
+                let track_start = (track_pos.ceil() as isize - 1).clamp(0, total_tracks) as usize;
+                let track_end = ((track_pos + zoom_tracks).ceil() as isize).clamp(0, total_tracks) as usize;
 
                 let mut note_id = 0;
                 let mut curr_track = track_start;
@@ -371,6 +377,12 @@ impl Renderer for TrackViewRenderer {
                                 n_off += 1;
                             }
                         } else {
+                            if n_off > notes.len() {
+                                self.first_render_note[curr_track] = 0;
+                                self.last_note_start[curr_track] = 0;
+                                n_off = notes.len();
+                            }
+
                             for note in notes[0..n_off].iter().rev() {
                                 if (note.end() as f32) <= tick_pos { break; }
                                 n_off -= 1;
@@ -385,14 +397,17 @@ impl Renderer for TrackViewRenderer {
                         self.first_render_note[curr_track as usize] = n_off;
                     }
 
-                    let note_end = {
+                    /*let note_end = {
                         let mut e = n_off;
                         for note in &notes[n_off..notes.len()] {
                             if note.start() as f32 > tick_pos + zoom_ticks { break; }
                             e += 1;
                         }
                         e
-                    };
+                    };*/
+
+                    // TEST: Binary search instead of linear search
+                    let note_end = n_off + notes[n_off..].partition_point(|note| note.start() as f32 <= tick_pos + zoom_ticks);
 
                     for note in &notes[n_off..note_end] {
                         // if notes.is_empty() { curr_channel += 1; continue; }

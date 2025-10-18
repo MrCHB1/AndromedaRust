@@ -3,7 +3,7 @@
 
 use std::collections::{VecDeque};
 
-use crate::{editor::util::{MIDITick, SignedMIDITick}, midi::events::note::Note};
+use crate::{editor::util::{MIDITick, SignedMIDITick}, midi::events::{channel_event::ChannelEvent, note::Note}};
 
 #[derive(Clone)]
 pub enum EditorAction {
@@ -29,6 +29,17 @@ pub enum EditorAction {
     Duplicate(Vec<usize>, MIDITick, u16, u16), // (note_ids, paste_tick, source track/channel, destination track/channel)
     AddMeta(Vec<usize>),
     DeleteMeta(Vec<usize>),
+    AddTrack(
+        u16, // index of the track that got added
+        Option<VecDeque<(Vec<Note>, Vec<ChannelEvent>)>>, // only used for undoing/redoing
+        bool, // if this track is the last track
+    ),
+    RemoveTrack(
+        u16, // index of the track that got removed
+        Option<VecDeque<(Vec<Note>, Vec<ChannelEvent>)>>, // only used for undoing/redoing,
+        bool // if this track is the last track
+    ),
+    SwapTracks(u16, u16),
     Bulk(Vec<EditorAction>) // for bulk actions
 }
 
@@ -155,6 +166,15 @@ impl EditorActions {
             },
             EditorAction::DeleteMeta(meta_ids) => {
                 EditorAction::AddMeta(meta_ids)
+            },
+            EditorAction::AddTrack(track, deleted_tracks, last_track) => {
+                EditorAction::RemoveTrack(track, deleted_tracks, last_track)
+            },
+            EditorAction::RemoveTrack(track, deleted_tracks, last_track) => {
+                EditorAction::AddTrack(track, deleted_tracks, last_track)
+            },
+            EditorAction::SwapTracks(track_1, track_2) => {
+                EditorAction::SwapTracks(track_1, track_2)
             },
             EditorAction::Bulk(actions) => {
                 {

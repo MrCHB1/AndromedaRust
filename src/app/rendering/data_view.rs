@@ -285,9 +285,14 @@ impl DataViewRenderer {
                     continue;
                 }
 
-                note_culler.update_cull_for_track(curr_track, tick_pos_offs, zoom_ticks);
-                let (note_start, note_end) = note_culler.get_track_cull_range(curr_track);
-                let n_off = note_start;
+                note_culler.update_cull_for_track(curr_track, tick_pos_offs, zoom_ticks, false);
+                let (note_start, mut note_end) = note_culler.get_track_cull_range(curr_track);
+                let mut n_off = note_start;
+                
+                if note_end > notes.len() { 
+                    note_culler.update_cull_for_track(curr_track, tick_pos_offs, zoom_ticks, true);
+                    (n_off, note_end) = note_culler.get_track_cull_range(curr_track);
+                }
 
                 let mut curr_handle = 0;
 
@@ -338,7 +343,7 @@ impl DataViewRenderer {
             if !notes.is_empty() {
                 let mut curr_handle = 0;
 
-                note_culler.update_cull_for_track(nav_curr_track, tick_pos_offs, zoom_ticks);
+                note_culler.update_cull_for_track(nav_curr_track, tick_pos_offs, zoom_ticks, false);
                 let (note_start, note_end) = note_culler.get_track_cull_range(nav_curr_track);
                 
                 let n_off = note_start;

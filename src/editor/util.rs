@@ -262,68 +262,82 @@ pub fn manipulate_note_ticks(notes: &mut Vec<Note>, ids: &Vec<usize>, start_fn: 
     }).collect();
 
     move_notes_to(notes, ids_with_delta_pos)
-    /*let mut updates: Vec<(usize, Note, SignedMIDITick, MIDITick)> = ids.iter().rev().map(|&id| {
-        let mut note = notes.remove(id);
-        let new_start = start_fn(note.start);
-        let start_change = new_start as SignedMIDITick - note.start as SignedMIDITick;
-        note.start = new_start;
-        (id, note, start_change, new_start)
-    }).collect();
-
-    updates.sort_by_key(|&(_, _, _, new_start)| new_start);
-
-    let mut ids_with_pos = Vec::new();
-
-    let mut id_compensation = HashMap::new();
-    for (old_id, note, start_change, _) in updates.into_iter() {
-        let insert_idx = bin_search_notes(notes, note.start);
-        let offset = id_compensation.entry(insert_idx).or_insert(0);
-        let real_idx = insert_idx + *offset;
-        ids_with_pos.push(((old_id, real_idx), (start_change, 0)));
-        notes.insert(insert_idx, note);
-        *offset += 1;
-    }
-
-    ids_with_pos.sort_by_key(|(ids, _)| ids.1);
-    let ((old_ids, new_ids), changed_positions) = ids_with_pos.into_iter().unzip();
-    //let (old_ids, new_ids, changed_posiitons) = ids_with_pos.into_iter().unzip();
-    
-    (old_ids, new_ids, changed_positions)*/
 }
 
 /// Moves notes by [`ids_with_delta_pos`]. Returns two [`Vec<usize>`]s for ID preservation (usually utilized in undoing/redoing).
 /// This should only be called when notes have already moved but need to be re-sorted.
 /// [`ids_with_delta_pos`] must already be sorted by IDs and have no duplicate IDs.
 pub fn move_notes_to(notes: &mut Vec<Note>, ids_with_delta_pos: Vec<(usize, (SignedMIDITick, i16))>) -> (Vec<usize>, Vec<usize>, Vec<(SignedMIDITick, i16)>) {
-    let mut updates: Vec<(usize, Note, i32, u32, i16, u8)> = ids_with_delta_pos.iter().rev().map(|&(id, changed_pos)| {
-        let note = notes.remove(id);
+    let total = notes.len();
+    let moved_count = ids_with_delta_pos.len();
 
-        let new_start = note.start();
-        let new_key = note.key();
+    let old_notes = std::mem::take(notes);
 
-        let start_delta = changed_pos.0;
-        let key_delta = changed_pos.1;
+    let mut kept = Vec::with_capacity(total - moved_count);
+    let mut moved = Vec::with_capacity(moved_count);
 
-        (id, note, start_delta, new_start, key_delta, new_key)
-    }).collect();
+    let mut ids_iter = ids_with_delta_pos.iter();
+    let mut next = ids_iter.next();
 
-    updates.sort_by_key(|&(_, _, _, new_start, _, _)| new_start);
-    
-    let mut ids_with_pos = Vec::new();
-    let mut id_compensation = HashMap::new();
+    for (idx, note) in old_notes.into_iter().enumerate() {
+        if let Some(&(move_id, (start_delta, key_delta))) = next {
+            if idx == move_id {
+                moved.push((move_id, note, start_delta, key_delta));
+                next = ids_iter.next();
+                continue;
+            }
+        }
 
-    for (old_id, note, start_delta, _, key_delta, _) in updates.into_iter() {
-        let insert_idx = bin_search_notes(notes, note.start());
-        let offset = id_compensation.entry(insert_idx).or_insert(0);
-        let real_idx = insert_idx + *offset;
-        ids_with_pos.push(((old_id, real_idx), (start_delta, key_delta)));
-        notes.insert(insert_idx, note);
-        *offset += 1;
+        kept.push(note);
     }
 
-    ids_with_pos.sort_by_key(|(ids, _)| ids.1);
-    let ((old_ids, new_ids), changed_positions) = ids_with_pos.into_iter().unzip();
+    moved.sort_unstable_by_key(|&(_, note, _, _)| note.start());
+    
+    let mut kept_iter = kept.into_iter().peekable();
+    let mut moved_iter = moved.into_iter().peekable();
 
+    let mut merged = Vec::with_capacity(total);
+    let mut old_ids = Vec::with_capacity(moved_count);
+    let mut new_ids = Vec::with_capacity(moved_count);
+    let mut changed_positions = Vec::with_capacity(moved_count);
+
+    let mut write_idx = 0;
+
+    loop {
+        match (kept_iter.peek(), moved_iter.peek()) {
+            (Some(k), Some((_, mnote, _, _))) => {
+                if k.start() <= mnote.start() {
+                    merged.push(kept_iter.next().unwrap());
+                    write_idx += 1;
+                } else {
+                    let (old_id, note, start_delta, key_delta) = moved_iter.next().unwrap();
+                    old_ids.push(old_id);
+                    new_ids.push(write_idx);
+                    changed_positions.push((start_delta, key_delta));
+                    merged.push(note);
+                    write_idx += 1;
+                }
+            }
+            (Some(_), None) => {
+                merged.extend(kept_iter.by_ref());
+                break;
+            }
+            (None, Some(_)) => {
+                while let Some((old_id, note, start_delta, key_delta)) = moved_iter.next() {
+                    old_ids.push(old_id);
+                    new_ids.push(write_idx);
+                    changed_positions.push((start_delta, key_delta));
+                    merged.push(note);
+                    write_idx += 1;
+                }
+                break;
+            }
+            (None, None) => { break; }
+        }
+    }
+
+    *notes = merged;
+    
     (old_ids, new_ids, changed_positions)
 }
 

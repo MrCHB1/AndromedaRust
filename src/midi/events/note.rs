@@ -79,6 +79,11 @@ impl Note {
     }
 
     #[inline(always)]
+    pub fn set_key(&mut self, key: u8) {
+        *self.key_mut() = key;
+    }
+
+    #[inline(always)]
     pub fn set_end(&mut self, end: MIDITick) {
         self.set_length(end - self.start());
     }

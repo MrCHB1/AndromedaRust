@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 
 use mlua::{Function, IntoLua, Lua, UserData};
 
-use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::NoteEditing, util::{get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::NoteEditing, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::Note};
 
 impl UserData for Note {
     fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
@@ -44,6 +44,8 @@ pub struct LuaNoteEditing {
     pub delta_note_lengths: HashMap<usize, SignedMIDITick>,
     pub delta_note_channels: HashMap<usize, i8>,
     pub delta_note_velocities: HashMap<usize, i8>,
+
+    pub notes_to_add: Vec<Note>
 }
 
 impl LuaNoteEditing {
@@ -54,6 +56,7 @@ impl LuaNoteEditing {
             delta_note_lengths: HashMap::new(),
             delta_note_channels: HashMap::new(),
             delta_note_velocities: HashMap::new(),
+            notes_to_add: Vec::new(),
         }
     }
 
@@ -122,6 +125,7 @@ impl LuaNoteEditing {
         let dt_velocities: Vec<(usize, i8)> = self.delta_note_velocities.into_iter().map(|(k, v)| (k, v)).collect();
         let mut dt_position: Vec<(usize, (SignedMIDITick, i16))> = self.delta_note_pos.into_iter().map(|(k, v)| (k, v)).collect();
         let dt_length: Vec<(usize, SignedMIDITick)> = self.delta_note_lengths.into_iter().map(|(k, v)| (k, v)).collect();
+        let mut notes_to_add = self.notes_to_add;
 
         // 1. apply note channel changes
         if !dt_channels.is_empty() {
@@ -149,6 +153,71 @@ impl LuaNoteEditing {
             dt_position.sort_by_key(|&(id, _)| id);
             let (old_ids, new_ids, changed_pos) = move_notes_to(trk, dt_position);
             bulk_actions.push(EditorAction::NotesMove(old_ids, new_ids, changed_pos, track, true));
+        }
+
+        if !notes_to_add.is_empty() {
+            notes_to_add.sort_unstable_by_key(|&n| n.start());
+
+            let notes = note_editing.lock().unwrap();
+            let notes = notes.get_notes();
+            let mut notes = notes.write().unwrap();
+            let trk = &mut notes[track as usize];
+            let old_notes = std::mem::take(trk);
+
+            // build merged notes instead of insert every note
+            let mut merged: Vec<Note> = Vec::with_capacity(trk.len() + notes_to_add.len());
+            // make iterators for old notes and notes to add
+            let mut track_iter = old_notes.into_iter().peekable();
+            let mut notes_add_iter = notes_to_add.into_iter().peekable();
+
+            let mut write_idx = 0;
+            let mut ids = Vec::new();
+
+            loop {
+                match (track_iter.peek(), notes_add_iter.peek()) {
+                    (Some(t_note), Some(a_note)) => {
+                        if t_note.start() <= a_note.start() {
+                            merged.push(track_iter.next().unwrap());
+                            write_idx += 1;
+                        } else {
+                            let added_note = notes_add_iter.next().unwrap();
+                            merged.push(added_note);
+                            ids.push(write_idx);
+                            write_idx += 1;
+                        }
+                    },
+                    (Some(_), None) => {
+                        merged.extend(track_iter.by_ref());
+                        break;
+                    },
+                    (None, Some(_)) => {
+                        while let Some(added_note) = notes_add_iter.next() {
+                            merged.push(added_note);
+                            ids.push(write_idx);
+                            write_idx += 1;
+                        }
+                        break;
+                    },
+                    (None, None) => { break; }
+                }
+            }
+
+            *trk = merged;
+
+            bulk_actions.push(EditorAction::PlaceNotes(ids, None, track));
+
+            // hehe old, slow code :3
+
+            /*let mut id_compensation = HashMap::new();
+
+            for note in notes_to_add.into_iter() {
+                let insert_idx = bin_search_notes(&trk, note.start());
+                let offset = id_compensation.entry(insert_idx).or_insert(0);
+                let real_idx = insert_idx + *offset;
+                ids.push(real_idx);
+                trk.insert(insert_idx, note);
+                *offset += 1;
+            }*/
         }
 
         if !bulk_actions.is_empty() { editor_actions.register_action(EditorAction::Bulk(bulk_actions)); }
@@ -242,6 +311,17 @@ impl UserData for LuaNoteEditing {
             let table = Self::range_as_lua_table(lua, min_key, max_key)?;
 
             Ok(Some(table))
+        });
+
+        methods.add_method_mut("create_note", |_, this, (start, length, channel, key, velocity): (MIDITick, MIDITick, u8, u8, u8)| {
+            this.notes_to_add.push(Note {
+                start,
+                length,
+                channel,
+                key,
+                velocity
+            });
+            Ok(())
         });
     }
 }

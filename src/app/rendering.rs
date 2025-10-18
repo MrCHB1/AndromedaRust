@@ -15,7 +15,7 @@ pub trait Renderer {
     fn draw(&mut self);
     fn set_ghost_notes(&mut self, _notes: Arc<Mutex<Vec<GhostNote>>>) {}
     fn clear_ghost_notes(&mut self) {}
-    fn set_selected(&mut self, _selected_ids: Arc<Mutex<Vec<usize>>>) {}
+    fn set_selected(&mut self, _selected_ids: &Arc<Mutex<Vec<usize>>>) {}
     fn window_size(&mut self, _size: Vec2) {}
     fn update_ppq(&mut self, _ppq: u16) {}
     fn time_changed(&mut self, _time: u64) {}

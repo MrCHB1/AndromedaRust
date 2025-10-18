@@ -20,7 +20,8 @@ pub struct NumericField<T> {
     min_value: Option<T>,
     max_value: Option<T>,
     value: T,
-    pub changed: bool
+    pub changed: bool,
+    pub on_change: Option<Box<dyn Fn() -> () + Send>>
 }
 
 impl<T> NumericField<T>
@@ -33,7 +34,8 @@ where
             min_value,
             max_value,
             value: initial,
-            changed: false
+            changed: false,
+            on_change: None,
         }
     }
 
@@ -62,8 +64,9 @@ where
     }
 
     pub fn set_value(&mut self, val: T) {
-        self.value = val;
+        // self.value = val;
         self.buffer = val.to_string();
+        self.update_buffer();
     }
 }
 

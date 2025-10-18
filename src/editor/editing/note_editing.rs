@@ -2,7 +2,7 @@
 use eframe::egui::{self, Ui};
 
 use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::{data_view::DataViewRenderer, RenderManager, Renderer}}, editor::{actions::{EditorAction, EditorActions}, navigation::PianoRollNavigation, util::{bin_search_notes, find_note_at, get_min_max_ticks_in_selection, get_mouse_midi_pos, get_notes_in_range, MIDITick, SignedMIDITick}}, midi::events::note::Note};
-use std::{cell::RefCell, collections::{HashMap, VecDeque}, rc::Rc, sync::{Arc, Mutex, RwLock}};
+use std::{cell::RefCell, collections::{HashMap, HashSet, VecDeque}, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
 // flags
 pub mod note_flags {
@@ -37,6 +37,11 @@ impl GhostNote {
     #[inline(always)]
     pub fn get_note(&self) -> &Note {
         &self.note
+    }
+
+    #[inline(always)]
+    pub fn into_note(self) -> Note {
+        self.note
     }
 }
 
@@ -180,25 +185,36 @@ impl NoteEditing {
     fn move_selected_ids_to_ghost_note(&mut self, curr_track: u16) {
         let sel = self.selected_notes_ids.lock().unwrap();
         if sel.is_empty() { println!("No selected notes to make as ghost notes"); return; }
+        assert!(sel.is_sorted(), "Selected IDs have to be sorted");
 
-        let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[curr_track as usize];
+        let sel_ = sel.clone();
+        drop(sel);
 
-        let mut ghost_notes = self.ghost_notes.lock().unwrap();
-        ghost_notes.clear();
+        let selected_set: HashSet<usize> = sel_.into_iter().collect();
 
-        let mut rem_offset = 0;
-        for id in sel.iter() {
-            let real_id = *id - rem_offset;
+        let old_notes = {
+            let mut notes = self.notes.write().unwrap();
+            std::mem::take(&mut notes[curr_track as usize])
+        };
 
-            let note = notes.remove(real_id);
-            let ghost_note = GhostNote {
-                id: Some(*id),
-                note
-            };
-            ghost_notes.push(ghost_note);
+        let mut new_notes = Vec::with_capacity(old_notes.len() - selected_set.len());
+        let mut ghost_notes_local = Vec::with_capacity(selected_set.len());
+        for (idx, note) in old_notes.into_iter().enumerate() {
+            if selected_set.contains(&idx) {
+                ghost_notes_local.push(GhostNote { id: Some(idx as usize), note });
+            } else {
+                new_notes.push(note);
+            }
+        }
 
-            rem_offset += 1;
+        {
+            let mut notes = self.notes.write().unwrap();
+            notes[curr_track as usize] = new_notes;
+        }
+
+        {
+            let mut ghost_notes = self.ghost_notes.lock().unwrap();
+            *ghost_notes = ghost_notes_local;
         }
     }
 
@@ -225,6 +241,9 @@ impl NoteEditing {
         // lets see if we are over a note
         // ...but only if we aren't over the ui
         // first, reset the flag for the mouse being over any note
+
+        let rect = ui.min_rect();
+
         self.flags &= !NOTE_EDIT_MOUSE_OVER_NOTE;
         if self.flags & NOTE_EDIT_MOUSE_OVER_UI == 0 {
             let curr_mouse_over_note_idx = {
@@ -237,20 +256,35 @@ impl NoteEditing {
             self.curr_mouse_over_note_idx = curr_mouse_over_note_idx;
             
             // we are over a note!
-            if curr_mouse_over_note_idx.is_some() {
+            if let Some(idx) = curr_mouse_over_note_idx {
                 self.flags |= NOTE_EDIT_MOUSE_OVER_NOTE;
 
                 // now check if the mouse is at the note's end (for length changing)
                 let nav = self.nav.lock().unwrap();
-                self.is_at_note_end = {
+                let notes = self.notes.read().unwrap();
+                let notes = &notes[curr_track as usize];
+                let note = &notes[idx];
+
+                let note_screen_width = (note.length() as f32 / nav.zoom_ticks_smoothed) * rect.width();
+                let dist_to_end = (note.end() as f32 - mouse_midi_pos.0 as f32) / nav.zoom_ticks_smoothed * rect.width();
+
+                const MIN_DRAGGABLE_WIDTH: f32 = 6.0f32;
+                const END_REGION: f32 = 4.0f32;
+
+                self.is_at_note_end = if note_screen_width > MIN_DRAGGABLE_WIDTH {
+                    dist_to_end >= 0.0 && dist_to_end < END_REGION
+                } else {
+                    false
+                };
+
+                /*self.is_at_note_end = {
                     let notes = self.notes.read().unwrap();
                     let notes = &notes[curr_track as usize];
 
                     let note = &notes[curr_mouse_over_note_idx.unwrap()];
                     let dist = (note.end() as f32 - mouse_midi_pos.0 as f32) / nav.zoom_ticks_smoothed * 960.0;
                     dist < 2.0
-                };
-
+                };*/
             } else {
                 self.is_at_note_end = false;
             }
@@ -861,6 +895,7 @@ impl NoteEditing {
                     } else {
                         // multiple notes have been dragged
                         self.finalize_multi_note_drag();
+                        self.update_render_selected_notes();
                     }
                     self.flags &= !(NOTE_EDIT_DRAGGING | NOTE_EDIT_MULTIEDIT);
                 } else if self.flags & NOTE_EDIT_LENGTH_CHANGE != 0 {
@@ -905,6 +940,7 @@ impl NoteEditing {
                     } else {
                         // multiple notes have been dragged
                         self.finalize_multi_note_drag();
+                        self.update_render_selected_notes();
                     }
                     self.flags &= !(NOTE_EDIT_DRAGGING | NOTE_EDIT_MULTIEDIT);
                 } else if self.flags & NOTE_EDIT_LENGTH_CHANGE != 0 {
@@ -941,10 +977,12 @@ impl NoteEditing {
                         *sel = selected;
                     }
 
-                    {
+                    self.update_render_selected_notes();
+
+                    /*{
                         let mut render_manger = self.render_manager.lock().unwrap();
-                        render_manger.get_active_renderer().lock().unwrap().set_selected(self.selected_notes_ids.clone());
-                    }
+                        render_manger.get_active_renderer().lock().unwrap().set_selected(&self.selected_notes_ids);
+                    }*/
                 }
             }
         }
@@ -1017,19 +1055,40 @@ impl NoteEditing {
     fn delete_notes(&mut self, mut ids: Vec<usize>, curr_track: u16) {
         let mut notes_deleted_deque = VecDeque::with_capacity(ids.len());
 
-        //let mut ids = ids.lock().unwrap();
-        let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[curr_track as usize];
+        let id_set: HashSet<usize> = ids.into_iter().collect();
 
+        //let mut ids = ids.lock().unwrap();
+        let old_notes = {
+            let mut notes = self.notes.write().unwrap();
+            std::mem::take(&mut notes[curr_track as usize])
+        };
+
+        let mut new_notes = Vec::with_capacity(old_notes.len() - id_set.len());
+        for (idx, note) in old_notes.into_iter().enumerate() {
+            if id_set.contains(&idx) {
+                notes_deleted_deque.push_back(note);
+            } else {
+                new_notes.push(note);
+            }
+        }
+
+        {
+            let mut notes = self.notes.write().unwrap();
+            notes[curr_track as usize] = new_notes;
+        }
+
+        let mut applied_ids: Vec<usize> = id_set.into_iter().collect();
+        applied_ids.sort_unstable_by_key(|&id| id);
+
+        /* old code!!!!
         let mut applied_ids = std::mem::take(&mut ids);
         applied_ids.sort_by_key(|id| *id);
 
         for &id in applied_ids.iter().rev() {
             let removed_note = notes.remove(id);
             notes_deleted_deque.push_front(removed_note); // push to front to overall maintain a sorted deleted array
-        }
+        }*/
 
-        // self.note_user_deleted.push_front(notes_deleted_deque);
         let mut editor_actions = self.editor_actions.borrow_mut();
         editor_actions.register_action(EditorAction::DeleteNotes(applied_ids, Some(notes_deleted_deque), curr_track));
     }
@@ -1041,6 +1100,7 @@ impl NoteEditing {
                 let mut sel = self.selected_notes_ids.lock().unwrap();
                 std::mem::take(&mut *sel)
             };
+            self.update_render_selected_notes();
 
             self.delete_notes(selected, curr_track);
         }
@@ -1112,9 +1172,6 @@ impl NoteEditing {
     fn duplicate_notes(&mut self, note_ids: Vec<usize>, paste_tick: MIDITick, track_src: u16, track_dst: u16, select_duplicate: bool) -> Vec<usize> {
         let mut notes = self.notes.write().unwrap();
 
-        // let (src_track, src_channel) = decode_note_group(note_group_src);
-        // let (dst_track, dst_channel) = decode_note_group(note_group_dst);
-
         let (mut notes_src, mut notes_dst) =
             if track_src == track_dst {
                 (&mut notes[track_src as usize], None)
@@ -1128,30 +1185,6 @@ impl NoteEditing {
                         Some(&mut low[track_dst as usize]))
                 }
             };
-            /*if src_track == dst_track && src_channel == dst_channel {
-                (&mut notes[src_track as usize], None)
-            } else {
-                if src_track != dst_track {
-                    let (low, high) = notes.split_at_mut(std::cmp::max(src_track, dst_track) as usize);
-                    if src_track < dst_track {
-                        (&mut low[src_track as usize][src_channel as usize],
-                        Some(&mut high[0][dst_channel as usize]))
-                    } else {
-                        (&mut high[0][src_channel as usize],
-                        Some(&mut low[dst_track as usize][dst_channel as usize]))
-                    }
-                } else {
-                    let track_notes = &mut notes[src_track as usize];
-                    let (low, high) = track_notes.split_at_mut(std::cmp::max(src_channel, dst_channel) as usize);
-                    if src_channel < dst_channel {
-                        (&mut low[src_channel as usize],
-                        Some(&mut high[0]))
-                    } else {
-                        (&mut high[0],
-                        Some(&mut low[dst_channel as usize]))
-                    }
-                }
-            };*/
 
         let mut paste_ids = Vec::new();
 
@@ -1224,6 +1257,8 @@ impl NoteEditing {
                 *offset += 1;
             }
         }
+
+        self.update_render_selected_notes();
 
         let mut editor_actions = self.editor_actions.borrow_mut();
         editor_actions.register_action(EditorAction::Duplicate(paste_ids.clone(), paste_tick, track_src, track_dst));
@@ -1329,6 +1364,121 @@ impl NoteEditing {
 
     fn apply_ghost_notes(&mut self, action: EditorAction) {
         let curr_track = self.get_current_track();
+        
+        let is_moving_selected = {
+            let sel = self.selected_notes_ids.lock().unwrap();
+            !sel.is_empty()
+        };
+
+        let ghost_notes = {
+            let mut ghost_notes = self.ghost_notes.lock().unwrap();
+            std::mem::take(&mut *ghost_notes)
+        };
+
+        if ghost_notes.is_empty() { return; }
+
+        let old_notes = {
+            let mut notes = self.notes.write().unwrap();
+            std::mem::take(&mut notes[curr_track as usize])
+        };
+
+        let mut ghost_note_pairs: Vec<(Option<usize>, Note)> = ghost_notes
+            .into_iter()
+            .map(|gn| (gn.id.map(|i| i as usize), gn.into_note()))
+            .collect();
+
+        let mut n_iter = old_notes.into_iter().peekable();
+        let mut g_iter = ghost_note_pairs.into_iter().peekable();
+
+        let mut merged: Vec<Note> = Vec::with_capacity(
+            n_iter.size_hint().0 + g_iter.size_hint().0
+        );
+
+        let mut old_ids = Vec::new();
+        let mut new_ids = Vec::new();
+
+        let mut write_idx = 0;
+        loop {
+            match (n_iter.peek(), g_iter.peek()) {
+                (Some(n), Some((_, gnote))) => {
+                    if n.start <= gnote.start {
+                        let nval = n_iter.next().unwrap();
+                        merged.push(nval);
+                        write_idx += 1;
+                    } else {
+                        let (old_id_opt, gval) = g_iter.next().unwrap();
+                        let old_id = old_id_opt.unwrap_or(write_idx);
+                        old_ids.push(old_id);
+                        new_ids.push(write_idx);
+                        merged.push(gval);
+                        write_idx += 1;
+                    }
+                }
+                (Some(_), None) => { // only notes are left
+                    merged.extend(n_iter.by_ref());
+                    break;
+                }
+                (None, Some(_)) => { // only ghost notes are left
+                    while let Some((old_id_opt, gval)) = g_iter.next() {
+                        let old_id = old_id_opt.unwrap_or(write_idx);
+                        old_ids.push(old_id);
+                        new_ids.push(write_idx);
+                        merged.push(gval);
+                        write_idx += 1;
+                    }
+                    break;
+                }
+                (None, None) => break
+            }
+        }
+
+        {
+            let mut notes = self.notes.write().unwrap();
+            notes[curr_track as usize] = merged;
+        }
+
+        if is_moving_selected {
+            let mut sel = self.selected_notes_ids.lock().unwrap();
+            for (i, &new_idx) in new_ids.iter().enumerate() {
+                if i < sel.len() {
+                    sel[i] = new_idx;
+                }
+            }
+        }
+
+        let mut editor_actions = self.editor_actions.borrow_mut();
+        match action {
+            EditorAction::PlaceNotes(_, _, _) => {
+                editor_actions.register_action(EditorAction::PlaceNotes(new_ids, None, curr_track));
+            }
+            EditorAction::NotesMove(id_override, _, position_deltas, _, update_selected) => {
+                // before registering, make sure we actually have moved the notes lol
+                let valid_register = {
+                    let mut vreg = false;
+                    for (tick, key) in position_deltas.iter() {
+                        if *tick != 0 || *key != 0 { vreg = true; break; }
+                    }
+                    vreg
+                };
+
+                if valid_register {
+                    editor_actions.register_action(EditorAction::NotesMove(
+                        if id_override.len() > 0 {
+                            id_override
+                        } else {
+                            old_ids
+                        },
+                        new_ids,
+                        position_deltas,
+                        curr_track,
+                        update_selected
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        /*let curr_track = self.get_current_track();
         let mut notes = self.notes.write().unwrap();
         let mut ghost_notes = self.ghost_notes.lock().unwrap();
         let notes = &mut notes[curr_track as usize];
@@ -1399,14 +1549,7 @@ impl NoteEditing {
             _ => {}
         }
 
-        {
-            //let notes = self.notes.lock().unwrap();
-            //let notes = &notes[curr_track as usize][curr_channel as usize];
-            println!("{}", notes.is_sorted_by(|a, b| a.start <= b.start));
-        }
-        
-
-        ghost_notes.clear();
+        ghost_notes.clear();*/
     }
 
     fn snap_tick(&self, tick: SignedMIDITick) -> SignedMIDITick {
@@ -1491,6 +1634,11 @@ impl NoteEditing {
         self.flags & NOTE_EDIT_ERASING != 0
     }
 
+    fn update_render_selected_notes(&self) {
+        let mut render_manger = self.render_manager.lock().unwrap();
+        render_manger.get_active_renderer().lock().unwrap().set_selected(&self.selected_notes_ids);
+    }
+
     // helper function to delete notes
 
     pub fn apply_action(&mut self, action: &mut EditorAction) {
@@ -1548,46 +1696,74 @@ impl NoteEditing {
                 }
             },
             EditorAction::NotesMove(new_note_ids, old_note_ids, midi_pos_delta, track, update_selected) => {
-                let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[*track as usize];
+                let mut notes_ = self.notes.write().unwrap();
+                let notes = std::mem::take(&mut notes_[*track as usize]);
+                drop(notes_);
 
-                
-                let mut ids_with_pos = old_note_ids.iter().enumerate()
-                    .map(|(i, old_id)| (old_id, &new_note_ids[i], &midi_pos_delta[i]))
-                    .collect::<Vec<(&_, &_, &_)>>();
-                ids_with_pos.sort_by_key(|&(_, new_ids, _)| new_ids);
-
-                // remove notes by descending order
-                let mut notes_removed_tmp = Vec::with_capacity(new_note_ids.len());
-                for (&old_id, &new_id, &pos_delta) in ids_with_pos.iter().rev() {
-                    let mut note = notes.remove(new_id);
-                    let (new_start, new_key) = {
-                        let mut new_start = note.start as SignedMIDITick + pos_delta.0;
-                        let mut new_key = note.key as i16 + pos_delta.1;
-                        if new_start < 0 { new_start = 0 }
-                        if new_key > 127 { new_key = 127; }
-                        if new_key < 0 { new_key = 0; }
-                        (new_start as MIDITick, new_key as u8)
-                    };
-                    note.start = new_start;
-                    note.key = new_key;
-                    notes_removed_tmp.push((old_id, note));
+                let total = notes.len();
+                if total == 0 || new_note_ids.is_empty() {
+                    let mut notes_ = self.notes.write().unwrap();
+                    notes_[*track as usize] = notes;
+                    return;
                 }
 
-                // sort
-                notes_removed_tmp.sort_by_key(|(id, _)| *id);
-                let mut old_ids_sorted = Vec::new();
-
-                for (old_id, note) in notes_removed_tmp.into_iter() {
-                    //let insert_idx = bin_search_notes(notes, note.start);
-                    let insert_idx = old_id;
-                    old_ids_sorted.push(old_id);
-                    notes.insert(insert_idx, note);
+                let mut move_map: HashMap<usize, (usize, _)> = HashMap::with_capacity(new_note_ids.len());
+                for (i, &old_idx) in old_note_ids.iter().enumerate() {
+                    let new_idx = new_note_ids[i];
+                    let pos_delta = midi_pos_delta[i];
+                    move_map.insert(new_idx, (old_idx, pos_delta));
                 }
+
+                let mut result = Vec::with_capacity(total);
+                for _ in 0..total { result.push(None); }
+                let mut non_moved = Vec::with_capacity(total - move_map.len());
+
+                for (idx, mut note) in notes.into_iter().enumerate() {
+                    if let Some(&(target_idx, pos_delta)) = move_map.get(&idx) {
+                        let (new_start, new_key) = {
+                            let mut ns = note.start as SignedMIDITick + pos_delta.0;
+                            let mut nk = note.key as i16 + pos_delta.1;
+                            if ns < 0 { ns = 0; }
+                            if nk > 127 { nk = 127; }
+                            if nk < 0 { nk = 0; }
+                            (ns as MIDITick, nk as u8)
+                        };
+                        note.start = new_start;
+                        note.key = new_key;
+
+                        result[target_idx] = Some(note);
+                    } else {
+                        non_moved.push(note);
+                    }
+                }
+
+                let mut keep_iter = non_moved.into_iter();
+                for slot in result.iter_mut() {
+                    if slot.is_none() {
+                        if let Some(k) = keep_iter.next() {
+                            *slot = Some(k);
+                        } else {
+                            panic!("Logic error while moving notes: Not enough non-moved notes to fill result");
+                        }
+                    }
+                }
+
+                let merged = result.into_iter().map(|opt| opt.expect("All note slots filled")).collect();
+
+                {
+                    let mut notes = self.notes.write().unwrap();
+                    notes[*track as usize] = merged;
+                }
+
+                let mut old_ids_sorted = old_note_ids.clone();
+                old_ids_sorted.sort_unstable();
 
                 if *update_selected {
-                    let mut selected = self.selected_notes_ids.lock().unwrap();
-                    *selected = old_ids_sorted
+                    {
+                        let mut selected = self.selected_notes_ids.lock().unwrap();
+                        *selected = old_ids_sorted;
+                    }
+                    self.update_render_selected_notes();
                 }
             },
             EditorAction::NotesMoveImmediate(note_ids, midi_pos_delta, track) => {

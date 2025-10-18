@@ -1,6 +1,7 @@
 #![warn(unused)]
 use crate::editor::util::MIDITick;
 
+#[derive(Clone)]
 pub enum ChannelEventType {
     NoteOff(u8),
     NoteOn(u8, u8),
@@ -11,6 +12,7 @@ pub enum ChannelEventType {
     PitchBend(u8, u8)
 }
 
+#[derive(Clone)]
 pub struct ChannelEvent {
     pub tick: MIDITick,
     pub channel: u8,

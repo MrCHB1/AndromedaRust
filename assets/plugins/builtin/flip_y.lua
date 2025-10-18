@@ -1,5 +1,5 @@
 local P = {}
-P.plugin_name = "Flip Y (Tick-wise)"
+P.plugin_name = "Flip Y (Key-wise)"
 -- only for categorical purposes. does not affect the actual functionality of the plugin
 P.plugin_type = "manipulate"
 -- no fields AT ALL means it runs immediately

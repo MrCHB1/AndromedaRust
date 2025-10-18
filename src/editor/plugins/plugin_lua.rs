@@ -2,20 +2,18 @@ use mlua::{Error, Function, Lua, Table};
 use crate::{editor::{plugins::PluginType}};
 use std::{path::PathBuf, rc::Rc};
 
-// will have to eventually use this for everything else
-// pub struct LuaNotes(pub Arc<RwLock<Vec<Vec<Note>>>>, pub Arc<Mutex<Vec<usize>>>);
-
-/*impl IntoLua for &mut Note {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<mlua::Value> {
-        Ok(self.))
-    }
-}*/
+pub struct PluginInfo {
+    pub author: Option<String>,
+    pub description: Option<String>,
+}
 
 pub struct PluginLua {
     pub plugin_name: String,
     pub plugin_type: PluginType,
+    pub plugin_info: Option<PluginInfo>,
     pub on_apply_fn: Option<Function>,
     pub lua: Rc<Lua>,
+    pub dialog_field_table: Option<Table>,
     loaded: bool,
 }
 
@@ -24,8 +22,10 @@ impl PluginLua {
         Self {
             plugin_name: "unnamed plugin".into(),
             plugin_type: PluginType::Manipluate,
+            plugin_info: None,
             lua: Rc::new(Lua::new()),
             on_apply_fn: None,
+            dialog_field_table: None,
             loaded: false
         }
     }
@@ -67,11 +67,23 @@ impl PluginLua {
             }
         };
 
+        // plugin info
+        if let Ok(plugin_info) = globals.get::<Table>("plugin_info") {
+            let author = plugin_info.get::<String>("author").ok();
+            let description = plugin_info.get::<String>("description").ok();
+            self.plugin_info = Some(PluginInfo {
+                author,
+                description
+            });
+        }
+
         let on_apply = globals.get::<mlua::Function>("on_apply")?;
+        let dialog_field_table = globals.get::<Table>("dialog_fields").ok();
         
         self.plugin_name = plugin_name.unwrap();
         self.plugin_type = plugin_type;
         self.on_apply_fn = Some(on_apply);
+        self.dialog_field_table = dialog_field_table;
         self.loaded = true;
 
         Ok(())

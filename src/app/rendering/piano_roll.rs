@@ -8,6 +8,7 @@ use eframe::egui::Vec2;
 use eframe::glow;
 use eframe::glow::HasContext;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 use crate::editor::editing::note_editing::GhostNote;
@@ -87,7 +88,7 @@ pub struct PianoRollRenderer {
     note_cull_helper: Arc<Mutex<NoteCullHelper>>,
 
     pub ghost_notes: Option<Arc<Mutex<Vec<GhostNote>>>>,
-    pub selected: Arc<Mutex<Vec<usize>>>,
+    pub selected: HashSet<usize>,
     render_active: bool,
 }
 
@@ -204,7 +205,7 @@ impl PianoRollRenderer {
             note_cull_helper: note_cull_helper.clone(),
 
             ghost_notes: None,
-            selected: Arc::new(Mutex::new(Vec::new())),
+            selected: HashSet::new(),
             render_active: false
         }
     }
@@ -408,11 +409,16 @@ impl Renderer for PianoRollRenderer {
                                     continue;
                                 }
 
-                                note_culler.update_cull_for_track(curr_track, tick_pos_offs, zoom_ticks);
-                                let (note_start, note_end) = note_culler.get_track_cull_range(curr_track);
-                                let n_off = note_start;
+                                note_culler.update_cull_for_track(curr_track, tick_pos_offs, zoom_ticks, false);
+                                let (note_start, mut note_end) = note_culler.get_track_cull_range(curr_track);
+                                let mut n_off = note_start;
 
                                 let mut curr_note = 0;
+                                
+                                if note_end > notes.len() { 
+                                    note_culler.update_cull_for_track(curr_track, tick_pos_offs, zoom_ticks, true);
+                                    (n_off, note_end) = note_culler.get_track_cull_range(curr_track);
+                                }
 
                                 for note in &notes[n_off..note_end] {
                                     if note.key() as f32 + 1.0 < key_pos || note.key() as f32 > key_pos + zoom_keys {
@@ -495,7 +501,7 @@ impl Renderer for PianoRollRenderer {
                             if !notes.is_empty() {
                                 let mut curr_note = 0;
 
-                                note_culler.update_cull_for_track(nav_curr_track, tick_pos_offs, zoom_ticks);
+                                note_culler.update_cull_for_track(nav_curr_track, tick_pos_offs, zoom_ticks, false);
                                 let (note_start, note_end) = note_culler.get_track_cull_range(nav_curr_track);
                                 let n_off = note_start;
                                 let mut note_idx = n_off;
@@ -531,7 +537,6 @@ impl Renderer for PianoRollRenderer {
                                     }
                                     e
                                 };*/
-
                                 for note in &notes[n_off..note_end] {
                                     if note.key() as f32 + 1.0 < key_pos || (note.key() as f32) > key_pos + zoom_keys {
                                         curr_note += 1;
@@ -542,7 +547,6 @@ impl Renderer for PianoRollRenderer {
                                     let trk_chan = ((nav_curr_track as usize) << 4) | (note.channel() as usize);
 
                                     {
-                                        let sel_lock = self.selected.lock().unwrap();
                                         let note_bottom = (note.key as f32 - key_pos) / zoom_keys;
                                         let note_top = ((note.key as f32 + 1.0) - key_pos) / zoom_keys;
 
@@ -564,32 +568,12 @@ impl Renderer for PianoRollRenderer {
                                                     note_meta |= 1 << 12;
                                                 }
 
-                                                if sel_lock.contains(&note_idx) {
+                                                if self.selected.contains(&note_idx) {
                                                     note_meta |= 1 << 13;
                                                 }
 
                                                 note_meta
-                                                /*let color = if sel_lock.contains(&note_idx) {
-                                                    SELECTED
-                                                } else {
-                                                    self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0))
-                                                };
-
-                                                if note_playing {
-                                                    [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
-                                                } else {
-                                                    color
-                                                }*/
                                             },
-                                            /*2: {
-                                                let color = self.note_colors.get_and_mix(trk_chan, &BLACK, NOTE_BORDER_DARKNESS);
-
-                                                if note_playing {
-                                                    [color[0] + 0.5, color[1] + 0.5, color[2] + 0.5]
-                                                } else{
-                                                    color
-                                                }
-                                            }*/
                                         };
                                     }
 
@@ -603,7 +587,6 @@ impl Renderer for PianoRollRenderer {
                                         self.gl.use_program(Some(self.pr_notes_program.program));
                                         self.gl.draw_elements_instanced(
                                             glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
-                                        // rendered_notes += note_id;
                                         note_id = 0;
                                     }
 
@@ -831,8 +814,9 @@ impl Renderer for PianoRollRenderer {
         }*/
     }*/
 
-    fn set_selected(&mut self, selected_ids: Arc<Mutex<Vec<usize>>>) {
-        self.selected = selected_ids;
+    fn set_selected(&mut self, selected_ids: &Arc<Mutex<Vec<usize>>>) {
+        let sel = selected_ids.lock().unwrap();
+        self.selected = HashSet::from_iter((*sel).clone());
     }
 
     fn set_active(&mut self, is_active: bool) {

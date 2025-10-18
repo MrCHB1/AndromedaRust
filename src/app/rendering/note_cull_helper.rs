@@ -35,7 +35,7 @@ impl NoteCullHelper {
         }
     }
 
-    pub fn update_cull_for_track(&mut self, track: u16, time: f32, zoom: f32) {
+    pub fn update_cull_for_track(&mut self, track: u16, time: f32, zoom: f32, force: bool) {
         self.sync_cull_array_lengths();
 
         let track = track as usize;
@@ -43,6 +43,11 @@ impl NoteCullHelper {
         let notes = &notes[track as usize];
         
         if notes.is_empty() { return; }
+
+        if force {
+            self.first_render[track] = 0;
+            self.end_render[track] = 0;
+        }
 
         // if self.last_time[track] == time && self.last_zoom[track] == zoom { return; }
 
@@ -54,6 +59,12 @@ impl NoteCullHelper {
                     n_off += 1;
                 }
             } else {
+                if n_off > notes.len() { // hmm.. we should recalculate the cull then
+                    self.first_render[track] = 0;
+                    self.last_start[track] = 0;
+                    return;
+                 }
+
                 for note in notes[0..n_off].iter().rev() {
                     if (note.end() as f32) <= time { break; }
                     n_off -= 1;
@@ -69,13 +80,15 @@ impl NoteCullHelper {
             self.first_render[track] = n_off;
         }
 
-        let mut e = n_off;
+        /*let mut e = n_off;
         for note in &notes[n_off..notes.len()] {
             if note.start() as f32 > time + zoom { break; }
             e += 1;
-        }
+        }*/
 
-        self.end_render[track] = e;
+        // TEST: Binary search instead of linear search
+        let note_end = n_off + notes[n_off..].partition_point(|note| note.start() as f32 <= time + zoom);
+        self.end_render[track] = note_end;
 
         self.last_time[track] = time;
         self.last_zoom[track] = zoom;
