@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 
 use mlua::{Function, IntoLua, Lua, UserData};
 
-use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::{note_sequence_funcs::{extract_notes, merge_notes, merge_notes_and_return_ids, move_each_note_by}, NoteEditing}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::{self, Note}};
+use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::{note_sequence_funcs::{extract_notes, merge_notes, merge_notes_and_preserve_deltas, merge_notes_and_return_ids, move_each_note_by}, NoteEditing}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::{self, Note}};
 
 impl UserData for Note {
     fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
@@ -149,13 +149,17 @@ impl LuaNoteEditing {
 
             let mut note_editing = note_editing.lock().unwrap();
             let old_notes = note_editing.take_notes_in_track(track);
-            let (mut notes_to_move, old_notes) = extract_notes(old_notes, &ids);
-            notes_to_move.sort_by_key(|n| n.start());
+            let (notes_to_move, old_notes) = extract_notes(old_notes, &ids); // O(n)
+        
+            // group notes with deltas so sorting notes validates what deltas point to
+            let mut notes_to_move_with_delta: Vec<(Note, _)> = notes_to_move.into_iter().zip(delta_pos).collect(); // because of into_iter, it shouldn't have extra allocations
+            notes_to_move_with_delta.sort_unstable_by_key(|(n, _)| n.start()); // inplace, maybe?
+            let (notes_to_move, delta) = notes_to_move_with_delta.into_iter().unzip(); // O(???)
 
-            let merged = merge_notes(old_notes, notes_to_move);
+            let (merged, note_ids) = merge_notes_and_return_ids(old_notes, notes_to_move); // O(n+k)
             note_editing.set_notes_in_track(track, merged);
 
-            bulk_actions.push(EditorAction::NotesMove(ids, delta_pos, track, true));
+            bulk_actions.push(EditorAction::NotesMove(note_ids, delta, track, true));
         }
 
         if !notes_to_add.is_empty() {

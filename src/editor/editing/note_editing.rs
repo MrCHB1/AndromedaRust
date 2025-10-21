@@ -1063,7 +1063,6 @@ impl NoteEditing {
 
                 *notes_deleted = Some(deleted);
             },
-            // NEEDS FIX: note deltas being applied twice after applying a plugin...
             EditorAction::NotesMove(note_ids, delta_pos, track, selected) => {
                 let old_notes = self.take_notes_in_track(*track);
                 let (notes_to_move, old_notes) = extract_notes(old_notes, &note_ids);
@@ -1071,9 +1070,7 @@ impl NoteEditing {
                 let notes_with_dt = move_each_note_by(notes_to_move, &delta_pos);
                 let (notes_to_move, notes_dt): (_, Vec<_>) = notes_with_dt.into_iter().unzip();
 
-                // even doing this doesn't work... can someone PLEASE help me
-                // been at this all day without luck
-                let (merged, new_ids, notes_dt) = merge_notes_and_preserve_deltas(old_notes, notes_to_move, notes_dt);
+                let (merged, new_ids) = merge_notes_and_return_ids(old_notes, notes_to_move);
                 self.set_notes_in_track(*track, merged);
 
                 *note_ids = new_ids;
