@@ -4,10 +4,10 @@ use crate::{
         custom_widgets::{NumberField, NumericField}, rendering::{data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, RenderManager, RenderType, Renderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::Dialog, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, 
         audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_devices::MIDIDevices}, 
         editor::{
-            edit_functions::EFChopDialog, midi_bar_cacher::BarCacher, navigation::{TrackViewNavigation, GLOBAL_ZOOM_FACTOR}, playhead::Playhead, plugins::{plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_lua::PluginLua, PluginLoader}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{get_mouse_midi_pos, path_rel_to_abs, MIDITick}}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
+            edit_functions::EFChopDialog, editing::note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, midi_bar_cacher::BarCacher, navigation::{TrackViewNavigation, GLOBAL_ZOOM_FACTOR}, playhead::Playhead, plugins::{plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_lua::PluginLua, PluginLoader}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{get_mouse_midi_pos, path_rel_to_abs, MIDITick}}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
 use crate::editor::editing::{
     meta_editing::{MetaEditing, MetaEventInsertDialog},
-    note_editing::{NoteEditing, note_flags::*},
+    note_editing::{NoteEditing, note_edit_flags::*},
     track_editing::TrackEditing
 };
 
@@ -451,13 +451,14 @@ impl MainWindow {
     fn init_note_editing(&mut self) {
         {
             let project_data = self.project_data.borrow();
-            let notes = &project_data.notes;
+            // let notes = &project_data.notes;
             let metas = &project_data.global_metas;
 
             let nav = self.nav.as_ref().unwrap();
             let editor_tool = &self.editor_tool;
             let render_manager = self.render_manager.as_ref().unwrap();
-            self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.editor_actions, &self.toolbar_settings)));
+            // self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.editor_actions, &self.toolbar_settings)));
+            self.note_editing = Arc::new(Mutex::new(NoteEditing::new(&self.project_data, nav, editor_tool, &self.editor_actions, &self.toolbar_settings, render_manager, self.data_view_renderer.as_ref().unwrap())));
             self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher, &self.editor_actions, &project_data.tempo_map)));
             self.track_editing = Arc::new(Mutex::new(TrackEditing::new(&self.project_data, &self.editor_tool, &self.editor_actions, &self.nav.as_ref().unwrap(), self.track_view_nav.as_ref().unwrap(), self.view_settings.as_ref().unwrap())))
         }
@@ -494,7 +495,7 @@ impl MainWindow {
         ]);
         menu_bar.add_menu("Tools", vec![
             ("Editing".into(), MenuItem::SubMenu(vec![
-                ("Flip X (Tick-wise)".into(), MenuItem::MenuButtonEnabled(
+                /*("Flip X (Tick-wise)".into(), MenuItem::MenuButtonEnabled(
                     Some(Box::new(|mw| { mw.apply_function(EditFunction::FlipX(Vec::new())); })),
                     Box::new(|mw| {  
                         let note_editing = mw.note_editing.lock().unwrap();
@@ -523,7 +524,7 @@ impl MainWindow {
                         note_editing.is_any_note_selected()
                     })
                 )),
-                ("".into(), MenuItem::Separator),
+                ("".into(), MenuItem::Separator),*/
                 ("Plugins".into(), MenuItem::SubMenu(vec![
                     ("Manipulate...".into(), MenuItem::SubMenu({
                         let mut manip_plugins_buttons = Vec::new();
@@ -663,7 +664,7 @@ impl MainWindow {
     }
 
     pub fn apply_function(&mut self, function_type: EditFunction) {
-        match function_type {
+        /*match function_type {
             EditFunction::FlipX(_) => {
                 let note_editing = self.note_editing.lock().unwrap();
                 let notes = note_editing.get_notes();
@@ -722,7 +723,7 @@ impl MainWindow {
                 self.show_dialog("ChopDialog");
             }
             // _ => todo!("Implement other functions")
-        }
+        }*/
     }
 
     pub fn run_plugin(&mut self, plugin: Rc<RefCell<PluginLua>>) {
@@ -894,9 +895,9 @@ impl MainWindow {
                 note_editing.on_mouse_down();
                 
                 // if changing length of notes, don't play
-                if note_editing.get_flags() & NOTE_EDIT_LENGTH_CHANGE != 0 {
-                    return;
-                }
+                // if note_editing.get_flags() & NOTE_EDIT_LENGTH_CHANGE != 0 {
+                //     return;
+                // }
 
                 if let Some(playback_manager) = self.playback_manager.as_ref() {
                     let nav = self.nav.as_ref().unwrap();
@@ -1080,10 +1081,10 @@ impl MainWindow {
         }
 
         // shift updates
-        {
-            let mut note_editing = self.note_editing.lock().unwrap();
-            note_editing.set_key_shift_flag(ui.input(|i| i.modifiers.shift));
-        }
+        // {
+        //     let mut note_editing = self.note_editing.lock().unwrap();
+        //     note_editing.set_key_shift_flag(ui.input(|i| i.modifiers.shift));
+        // }
     }
 
     pub fn get_current_track(&self) -> Option<u16> {
@@ -1317,7 +1318,8 @@ impl MainWindow {
         let mut track_editing = self.track_editing.lock().unwrap();
 
         note_editing.update_from_ui(ui);
-        note_editing.set_mouse_over_ui(self.mouse_over_ui);
+        // note_editing.set_mouse_over_ui(self.mouse_over_ui);
+        note_editing.set_flag(NOTE_EDIT_MOUSE_OVER_UI, self.mouse_over_ui);
 
         track_editing.update_from_ui(ui);
         track_editing.set_mouse_over_ui(self.mouse_over_ui);
@@ -1330,7 +1332,12 @@ impl MainWindow {
 
             if note_editing.get_can_draw_selection_box() {
                 let (tl, br) = note_editing.get_selection_range_ui(ui);
-                let is_eraser = note_editing.is_eraser_active();
+                let is_eraser = {
+                    let editor_tool = self.editor_tool.borrow();
+                    editor_tool.get_tool() == EditorTool::Eraser
+                };
+
+                // let is_eraser = note_editing.is_eraser_active();
 
                 let rect = egui::Rect::from_min_max(
                     egui::Pos2 { x: tl.0, y: tl.1 },

@@ -238,17 +238,25 @@ pub fn get_min_max_ticks_in_selection(notes: &Vec<Note>, ids: &Vec<usize>) -> Op
 pub fn get_absolute_max_tick_from_ids(notes: &Vec<Note>, ids: &Vec<usize>) -> Option<MIDITick> {
     if ids.is_empty() { return None; }
 
-    let last_idx = ids.len() - 1;
-    let mut assumed_max_tick = notes[last_idx].start + notes[last_idx].length;
+    let mut max_tick = 0;
+    for &id in ids.iter() {
+        let note = &notes[id];
+        if note.start() + note.length() >= max_tick {
+            max_tick = note.start() + note.length();
+        }
+    }
+
+    Some(max_tick)
+    // let mut assumed_max_tick = notes[last_idx].start + notes[last_idx].length;
 
     // refine the assumed last tick starting from the end
-    for id in ids.iter().rev() {
+    /*for id in ids.iter().rev() {
         let note = notes[*id];
         if note.start + note.length > assumed_max_tick { assumed_max_tick = note.start + note.length; }
         if note.start < notes[last_idx].start && note.start + note.length < notes[last_idx].start { return Some(assumed_max_tick); }
-    }
+    }*/
 
-    return Some(assumed_max_tick);
+    // return Some(assumed_max_tick);
 }
 
 // helper function for moving/modifying the ticks of notes lol

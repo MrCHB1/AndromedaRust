@@ -41,7 +41,7 @@ impl EditFunctions {
                 println!("{:?}", new_ids);
                 *sel_note_ids = new_ids.clone();
 
-                editor_actions.register_action(EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track, true));
+                // editor_actions.register_action(EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track, true));
             },
             EditFunction::FlipY(note_ids) => {
                 let mut changed_positions = Vec::new();
@@ -73,7 +73,7 @@ impl EditFunctions {
                 *sel_note_ids = new_ids.clone();
 
                 editor_actions.register_action(EditorAction::Bulk(vec![
-                    EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track, true),
+                    // EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track, true),
                     EditorAction::LengthChange(note_ids, changed_lengths, curr_track),
                 ]));
             },

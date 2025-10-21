@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 
 use mlua::{Function, IntoLua, Lua, UserData};
 
-use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::NoteEditing, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::{note_sequence_funcs::{extract_notes, merge_notes, merge_notes_and_return_ids, move_each_note_by}, NoteEditing}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::{self, Note}};
 
 impl UserData for Note {
     fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
@@ -144,80 +144,30 @@ impl LuaNoteEditing {
         }
 
         if !dt_position.is_empty() {
-            let notes = note_editing.lock().unwrap();
-            let notes = notes.get_notes();
-            let mut notes = notes.write().unwrap();
-            let trk = &mut notes[track as usize];
-
-            // sort dt_pos by ids
             dt_position.sort_by_key(|&(id, _)| id);
-            let (old_ids, new_ids, changed_pos) = move_notes_to(trk, dt_position);
-            bulk_actions.push(EditorAction::NotesMove(old_ids, new_ids, changed_pos, track, true));
+            let (ids, delta_pos): (Vec<usize>, Vec<_>) = dt_position.into_iter().unzip();
+
+            let mut note_editing = note_editing.lock().unwrap();
+            let old_notes = note_editing.take_notes_in_track(track);
+            let (mut notes_to_move, old_notes) = extract_notes(old_notes, &ids);
+            notes_to_move.sort_by_key(|n| n.start());
+
+            let merged = merge_notes(old_notes, notes_to_move);
+            note_editing.set_notes_in_track(track, merged);
+
+            bulk_actions.push(EditorAction::NotesMove(ids, delta_pos, track, true));
         }
 
         if !notes_to_add.is_empty() {
             notes_to_add.sort_unstable_by_key(|&n| n.start());
 
-            let notes = note_editing.lock().unwrap();
-            let notes = notes.get_notes();
-            let mut notes = notes.write().unwrap();
-            let trk = &mut notes[track as usize];
-            let old_notes = std::mem::take(trk);
+            let mut note_editing = note_editing.lock().unwrap();
 
-            // build merged notes instead of insert every note
-            let mut merged: Vec<Note> = Vec::with_capacity(trk.len() + notes_to_add.len());
-            // make iterators for old notes and notes to add
-            let mut track_iter = old_notes.into_iter().peekable();
-            let mut notes_add_iter = notes_to_add.into_iter().peekable();
-
-            let mut write_idx = 0;
-            let mut ids = Vec::new();
-
-            loop {
-                match (track_iter.peek(), notes_add_iter.peek()) {
-                    (Some(t_note), Some(a_note)) => {
-                        if t_note.start() <= a_note.start() {
-                            merged.push(track_iter.next().unwrap());
-                            write_idx += 1;
-                        } else {
-                            let added_note = notes_add_iter.next().unwrap();
-                            merged.push(added_note);
-                            ids.push(write_idx);
-                            write_idx += 1;
-                        }
-                    },
-                    (Some(_), None) => {
-                        merged.extend(track_iter.by_ref());
-                        break;
-                    },
-                    (None, Some(_)) => {
-                        while let Some(added_note) = notes_add_iter.next() {
-                            merged.push(added_note);
-                            ids.push(write_idx);
-                            write_idx += 1;
-                        }
-                        break;
-                    },
-                    (None, None) => { break; }
-                }
-            }
-
-            *trk = merged;
-
+            let old_notes = note_editing.take_notes_in_track(track);
+            let (merged, ids) = merge_notes_and_return_ids(old_notes, notes_to_add);
+            
+            note_editing.set_notes_in_track(track, merged);
             bulk_actions.push(EditorAction::PlaceNotes(ids, None, track));
-
-            // hehe old, slow code :3
-
-            /*let mut id_compensation = HashMap::new();
-
-            for note in notes_to_add.into_iter() {
-                let insert_idx = bin_search_notes(&trk, note.start());
-                let offset = id_compensation.entry(insert_idx).or_insert(0);
-                let real_idx = insert_idx + *offset;
-                ids.push(real_idx);
-                trk.insert(insert_idx, note);
-                *offset += 1;
-            }*/
         }
 
         if !bulk_actions.is_empty() { editor_actions.register_action(EditorAction::Bulk(bulk_actions)); }

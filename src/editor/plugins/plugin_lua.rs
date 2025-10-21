@@ -1,4 +1,4 @@
-use mlua::{Error, Function, Lua, Table};
+use mlua::{Error, Function, Lua, Table, Value};
 use crate::{editor::{plugins::PluginType}};
 use std::{path::PathBuf, rc::Rc};
 
@@ -42,8 +42,26 @@ impl PluginLua {
 
     pub fn load_plugin_from_str(&mut self, src_code: &String) -> Result<(), Error> {
         if self.loaded { return Ok(()); }
-
         let lua = &mut self.lua;
+
+        let disallowed_modules = vec!["socket", "os", "package"];
+        let globals = lua.globals();
+        let require: Function = globals.get("require")?;
+        let require_strip = lua.create_function(move |lua, name: String| {
+            if disallowed_modules.iter().any(|&m| m == name) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "for security reasons, usage of module '{}' is not allowed",
+                    name
+                )));
+            }
+
+            require.call::<Value>(name)
+        })?;
+
+        globals.set("require", require_strip)?;
+        globals.set("os", Value::Nil)?;
+        globals.set("package", Value::Nil)?;
+
         let globals = lua.load(src_code).eval::<Table>()?;
 
         let plugin_name = globals.get::<String>("plugin_name");

@@ -10,19 +10,19 @@ pub enum EditorAction {
     // used from pencil
     PlaceNotes(
         Vec<usize>, // note ids,
-        Option<VecDeque<Note>>, // only used when undoing or redoing
+        Option<Vec<Note>>, // only used when undoing or redoing
         u16 // note group (track)
     ),
     // used from pencil or eraser
     DeleteNotes(
         Vec<usize>, // note ids
-        Option<VecDeque<Note>>, // can be by user or from undo/redo
+        Option<Vec<Note>>, // can be by user or from undo/redo
         u16 // note group (track)
     ),
     LengthChange(Vec<usize>, Vec<SignedMIDITick>, u16), // this action stores the change in length of notes.
     VelocityChange(Vec<usize>, Vec<i8>, u16),
     ChannelChange(Vec<usize>, Vec<i8>, u16),
-    NotesMove(Vec<usize>, Vec<usize>, Vec<(SignedMIDITick, i16)>, u16, bool), // stores change in tick and key. last bool is if we should update selected notes ids
+    NotesMove(Vec<usize>, Vec<(SignedMIDITick, i16)>, u16, bool), // stores change in tick and key. last bool is if we should update selected notes ids
     NotesMoveImmediate(Vec<usize>, Vec<(SignedMIDITick, i16)>, u16), // stores change in tick and key without keeping track of the old note ids. this is unsafe lol
     Select(Vec<usize>, u16), // pretty straightforward
     Deselect(Vec<usize>, u16),
@@ -146,8 +146,8 @@ impl EditorActions {
             EditorAction::VelocityChange(note_id, velocity_delta, note_group) => {
                 EditorAction::VelocityChange(note_id, velocity_delta.iter().map(|l| -l).collect(), note_group)
             },
-            EditorAction::NotesMove(note_id, new_note_id, midi_pos_delta, note_group, update_selected_ids) => {
-                EditorAction::NotesMove(new_note_id, note_id, midi_pos_delta.iter().map(|delta| (-delta.0, -delta.1)).collect(), note_group, update_selected_ids)
+            EditorAction::NotesMove(note_id, midi_pos_delta, note_group, update_selected_ids) => {
+                EditorAction::NotesMove(note_id, midi_pos_delta.iter().map(|delta| (-delta.0, -delta.1)).collect(), note_group, update_selected_ids)
             },
             EditorAction::NotesMoveImmediate(note_id, midi_pos_delta, note_group) => {
                 EditorAction::NotesMoveImmediate(note_id, midi_pos_delta.iter().map(|delta| (-delta.0, -delta.1)).collect(), note_group)
