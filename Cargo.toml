@@ -26,5 +26,5 @@ mlua = { version = "0.11.4", features = ["luajit", "vendored"] }
 include_dir = "0.7"
 luajit-src = "210.6.1"
 
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["libloaderapi", "minwindef", "mmsystem"] }
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows", target_os = "macos"))'.dependencies]
+kdmapi-rs = { package = "kdmapi", git = "https://github.com/BlackMIDIDevs/kdmapi-rs", rev = "994220f" }
