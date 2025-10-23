@@ -4,7 +4,7 @@ use eframe::{
     egui::{self, RichText},
 };
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog, util::image_loader::ImageResources}, editor::{actions::{EditorAction, EditorActions}, util::{bin_search_notes, get_min_max_keys_in_selection, manipulate_note_lengths, manipulate_note_ticks, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog, util::image_loader::ImageResources}, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{bin_search_notes, get_min_max_keys_in_selection, manipulate_note_lengths, manipulate_note_ticks, MIDITick, SignedMIDITick}}, midi::events::note::Note};
 use crate::editor::editing::note_editing::NoteEditing;
 
 // modular edit_function
@@ -14,7 +14,8 @@ pub enum EditFunction {
     Stretch(Vec<usize>, f32),
     //               max
     //               tick len
-    Chop(Vec<usize>, MIDITick)
+    Chop(Vec<usize>, MIDITick),
+    SliceAtTick(Vec<usize>, MIDITick),
 }
 
 #[derive(Default)]
@@ -60,21 +61,30 @@ impl EditFunctions {
             EditFunction::Stretch(note_ids, factor) => {
                 if factor == 1.0 { return; }
 
-                // and because im lazy we change the lengths first
-                let changed_lengths = manipulate_note_lengths(notes, &note_ids, |note_length| {
-                    (note_length as f32 * factor).round() as MIDITick
-                });
+                let old_notes = std::mem::take(notes);
+                let (mut notes_to_stretch, remaining_notes) = extract(old_notes, &note_ids);
+                let first_tick = notes_to_stretch[0].start();
+                
+                let (pos_change, length_change): (Vec<_>, Vec<_>) = notes_to_stretch.iter_mut().map(|note| {
+                    let old_length = note.length();
+                    let old_tick = note.start();
+                    
+                    let new_length = (old_length as f32 * factor).round() as MIDITick;
+                    let new_tick = ((old_tick - first_tick) as f32 * factor).round() as MIDITick + first_tick;
 
-                let (old_ids, new_ids, changed_positions) = manipulate_note_ticks(notes, &note_ids, |note_start| {
-                    (note_start as f32 * factor).round() as MIDITick
-                });
+                    *(note.start_mut()) = new_tick;
+                    *(note.length_mut()) = new_length;
 
-                // update selected note ids to the new ids to prevent index invalidation
-                *sel_note_ids = new_ids.clone();
+                    ((new_tick as SignedMIDITick - old_tick as SignedMIDITick, 0i16), new_length as SignedMIDITick - old_length as SignedMIDITick)
+                }).collect();
+
+                let (merged, new_ids) = merge_notes_and_return_ids(remaining_notes, notes_to_stretch);
+                *notes = merged;
 
                 editor_actions.register_action(EditorAction::Bulk(vec![
                     // EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track, true),
-                    EditorAction::LengthChange(note_ids, changed_lengths, curr_track),
+                    EditorAction::LengthChange(note_ids, length_change, curr_track),
+                    EditorAction::NotesMove(new_ids, pos_change, curr_track, true),
                 ]));
             },
             EditFunction::Chop(note_ids, max_len) => {
@@ -118,17 +128,9 @@ impl EditFunctions {
                 // sort chopped in ascending order
                 new_notes.sort_by_key(|n| n.start());
 
-                let mut chopped_ids = Vec::new();
-
-                // move new chopped notes to our actual note array
-                for note in new_notes.drain(..) {
-                    let new_note_idx = bin_search_notes(notes, note.start());
-                    chopped_ids.push(new_note_idx);
-                    notes.insert(new_note_idx, note);
-                }
-                
-                // sort the chopped ids just in case
-                chopped_ids.sort();
+                let old_notes = std::mem::take(notes);
+                let (merged, chopped_ids) = merge_notes_and_return_ids(old_notes, new_notes);
+                *notes = merged;
 
                 // println!("{:?}", chopped_ids);
 
@@ -136,6 +138,45 @@ impl EditFunctions {
                 editor_actions.register_action(EditorAction::Bulk(vec![
                     EditorAction::PlaceNotes(chopped_ids, None, curr_track),
                     EditorAction::LengthChange(note_ids, changed_lengths, curr_track),
+                ]));
+            },
+            EditFunction::SliceAtTick(note_ids, slice_tick) => {
+                let mut changed_lengths = Vec::with_capacity(sel_note_ids.len());
+                let mut new_notes = Vec::with_capacity(sel_note_ids.len());
+                
+                for &id in note_ids.iter() {
+                    let note = &mut notes[id];
+                    let start = note.start();
+                    let end = note.end();
+
+                    // check if the slice tick is between the note, and if it is, make new notes for merging
+                    if start < slice_tick && end > slice_tick {
+                        let left_len = slice_tick - start;
+                        let right_len = end - slice_tick;
+                        if left_len == 0 || right_len == 0 { continue; }
+                        
+                        let old_length = note.length();
+                        let new_length = left_len;
+                        *(note.length_mut()) = new_length;
+                        changed_lengths.push(new_length as SignedMIDITick - old_length as SignedMIDITick);
+
+                        new_notes.push(Note {
+                            start: slice_tick,
+                            length: right_len,
+                            channel: note.channel(),
+                            key: note.key(),
+                            velocity: note.velocity()
+                        });
+                    }
+                }
+
+                let old_notes = std::mem::take(notes);
+                let (new_notes, new_ids) = merge_notes_and_return_ids(old_notes, new_notes);
+                *notes = new_notes;
+
+                editor_actions.register_action(EditorAction::Bulk(vec![
+                    EditorAction::PlaceNotes(new_ids, None, curr_track),
+                    EditorAction::LengthChange(note_ids, changed_lengths, curr_track)
                 ]));
             }
         }
@@ -223,8 +264,8 @@ impl Dialog for EFStretchDialog {
                             let curr_track = note_editing.get_current_track();
                             let notes = &mut notes[curr_track as usize];
 
-                            let mut editor_actions = self.edit_actions.borrow_mut();
-                            self.edit_functions.borrow_mut().apply_function(notes, &mut sel_notes, EditFunction::Stretch(sel_notes_copy, self.stretch_factor.value() as f32), curr_track, &mut editor_actions);
+                            let mut editor_actions = self.edit_actions.try_borrow_mut().unwrap();
+                            self.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Stretch(sel_notes_copy, self.stretch_factor.value() as f32), curr_track, &mut editor_actions);
                         }
                         self.close();
                     }
@@ -305,8 +346,8 @@ impl Dialog for EFChopDialog {
                             let curr_track = note_editing.get_current_track();
                             let notes = &mut notes[curr_track as usize];
 
-                            let mut editor_actions = self.edit_actions.borrow_mut();
-                            self.edit_functions.borrow_mut().apply_function(notes, &mut sel_notes, EditFunction::Chop(sel_notes_copy, self.target_tick_len.value()), curr_track, &mut editor_actions);
+                            let mut editor_actions = self.edit_actions.try_borrow_mut().unwrap();
+                            self.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Chop(sel_notes_copy, self.target_tick_len.value()), curr_track, &mut editor_actions);
                         }
                         self.close();
                     }

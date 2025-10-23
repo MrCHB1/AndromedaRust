@@ -39,7 +39,7 @@ impl PluginDialog {
 
         self.fields.clear();
         
-        let plugin = plugin.borrow();
+        let plugin = plugin.try_borrow().unwrap();
         if let Some(fields) = plugin.dialog_field_table.as_ref() {
             if fields.is_empty() {
                 drop(plugin);
@@ -105,7 +105,7 @@ impl PluginDialog {
         let plugin = self.plugin.as_ref().unwrap();
 
         let (lua, apply_fn) = {
-            let p = plugin.borrow();
+            let p = plugin.try_borrow().unwrap();
             (p.lua.clone(), p.on_apply_fn.clone())
         };
 
@@ -120,11 +120,11 @@ impl PluginDialog {
             Ok(())
         }) {
             Ok(_) => {
-                let mut editor_actions = self.editor_actions.borrow_mut();
+                let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
                 lua_note_editing.apply_changes(self.curr_track as u16, &mut editor_actions);
             },
             Err(lua_error) => {
-                let plugin = plugin.borrow();
+                let plugin = plugin.try_borrow().unwrap();
                 println!("[PluginError] (While running {}): \n{}", plugin.plugin_name, lua_error);
             }
         }
@@ -221,7 +221,7 @@ impl Dialog for PluginDialog {
 
         let plugin_window_title = {
             let plugin = self.plugin.as_ref().unwrap();
-            let plugin = plugin.borrow();
+            let plugin = plugin.try_borrow().unwrap();
             plugin.plugin_name.clone()
         };
 
@@ -231,7 +231,7 @@ impl Dialog for PluginDialog {
             .show(ctx, |ui| {
                 {
                     let plugin = self.plugin.as_ref().unwrap();
-                    let plugin = plugin.borrow();
+                    let plugin = plugin.try_borrow().unwrap();
                     if let Some(plugin_info) = plugin.plugin_info.as_ref() {
                         if let Some(desc) = plugin_info.description.as_ref() {
                             ui.label(desc);
@@ -252,7 +252,7 @@ impl Dialog for PluginDialog {
                             field.show(&label, ui, None);
                             if field.changed() {
                                 let plugin = self.plugin.as_ref().unwrap();
-                                let mut plugin = plugin.borrow_mut();
+                                let mut plugin = plugin.try_borrow_mut().unwrap();
                                 let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
                                 
                                 let val = field.value();
@@ -269,7 +269,7 @@ impl Dialog for PluginDialog {
                                 
                                 if ui.add(slider).changed() {
                                     let plugin = self.plugin.as_ref().unwrap();
-                                    let mut plugin = plugin.borrow_mut();
+                                    let mut plugin = plugin.try_borrow_mut().unwrap();
                                     let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
                                     
                                     dialog_fields
@@ -283,7 +283,7 @@ impl Dialog for PluginDialog {
                                 ui.label(&*label);
                                 if ui.text_edit_singleline(value).changed() {
                                     let plugin = self.plugin.as_ref().unwrap();
-                                    let mut plugin = plugin.borrow_mut();
+                                    let mut plugin = plugin.try_borrow_mut().unwrap();
                                     let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
                                     
                                     dialog_fields
@@ -297,7 +297,7 @@ impl Dialog for PluginDialog {
                                 ui.label(&*label);
                                 if ui.checkbox(value, "").changed() {
                                     let plugin = self.plugin.as_ref().unwrap();
-                                    let mut plugin = plugin.borrow_mut();
+                                    let mut plugin = plugin.try_borrow_mut().unwrap();
                                     let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
                                     
                                     dialog_fields
@@ -313,7 +313,7 @@ impl Dialog for PluginDialog {
                                     .selected_text(&value_labels[*value])
                                     .show_index(ui, &mut *value, value_labels.len(), |i| &value_labels[i]).changed() {
                                         let plugin = self.plugin.as_ref().unwrap();
-                                        let mut plugin = plugin.borrow_mut();
+                                        let mut plugin = plugin.try_borrow_mut().unwrap();
                                         let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
 
                                         dialog_fields

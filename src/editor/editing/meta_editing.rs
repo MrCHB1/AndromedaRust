@@ -1,6 +1,6 @@
 use eframe::egui::{self, RichText};
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, editor::{actions::{EditorAction, EditorActions}, midi_bar_cacher::BarCacher, project_data::tempo_as_bytes, tempo_map::TempoMap, util::MIDITick}, midi::events::meta_event::{MetaEvent, MetaEventType}};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, editor::{actions::{EditorAction, EditorActions}, midi_bar_cacher::BarCacher, tempo_map::TempoMap, util::{tempo_as_bytes, MIDITick}}, midi::events::meta_event::{MetaEvent, MetaEventType}};
 
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
@@ -11,7 +11,8 @@ pub struct MetaEditing {
     editor_actions: Rc<RefCell<EditorActions>>,
 
     tmp_del_metas: VecDeque<MetaEvent>,
-    tempo_map: Arc<RwLock<TempoMap>>
+    tempo_map: Arc<RwLock<TempoMap>>,
+    pub ppq: u16,
 }
 
 impl MetaEditing {
@@ -27,7 +28,8 @@ impl MetaEditing {
             editor_actions: editor_actions.clone(),
 
             tmp_del_metas: VecDeque::new(),
-            tempo_map: tempo_map.clone()
+            tempo_map: tempo_map.clone(),
+            ppq: 960,
         }
     }
 
@@ -75,7 +77,7 @@ impl MetaEditing {
             } else {
                 metas.insert(insert_idx, meta_event);
 
-                let mut editor_actions = self.editor_actions.borrow_mut();
+                let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
                 editor_actions.register_action(EditorAction::AddMeta(vec![insert_idx]));
             }
         }

@@ -1,8 +1,8 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
 use eframe::egui::Vec2;
 use eframe::glow;
-use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::ProjectData}};
-use crate::editor::editing::note_editing::GhostNote;
+use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project::project_manager::{self, ProjectManager}}, midi::events::note::Note};
+use crate::editor::project::project_data::ProjectData;
 
 pub mod buffers;
 pub mod piano_roll;
@@ -13,7 +13,7 @@ pub mod note_cull_helper;
 
 pub trait Renderer {
     fn draw(&mut self);
-    fn set_ghost_notes(&mut self, _notes: Arc<Mutex<Vec<GhostNote>>>) {}
+    fn set_ghost_notes(&mut self, _notes: Arc<Mutex<Vec<Note>>>) {}
     fn clear_ghost_notes(&mut self) {}
     fn set_selected(&mut self, _selected_ids: &Arc<Mutex<Vec<usize>>>) {}
     fn window_size(&mut self, _size: Vec2) {}
@@ -45,7 +45,7 @@ impl Default for RenderManager {
 impl RenderManager {
     pub fn init_renderers(
         &mut self,
-        project_data: Rc<RefCell<ProjectData>>,
+        project_manager: Arc<RwLock<ProjectManager>>,
         gl: Option<Arc<glow::Context>>,
         nav: Arc<Mutex<PianoRollNavigation>>,
         track_view_nav: Arc<Mutex<TrackViewNavigation>>,
@@ -64,7 +64,7 @@ impl RenderManager {
             println!("init piano roll renderer");
             let piano_roll_renderer = Arc::new(Mutex::new(unsafe {
                 PianoRollRenderer::new(
-                    &project_data,
+                    &project_manager,
                     &view_settings,
                     &nav,
                     &gl,
@@ -78,7 +78,7 @@ impl RenderManager {
             println!("init track view renderer");
             let track_view_renderer = Arc::new(Mutex::new(unsafe {
                 TrackViewRenderer::new(
-                    &project_data,
+                    &project_manager,
                     &track_view_nav,
                     &gl,
                     &bar_cacher,

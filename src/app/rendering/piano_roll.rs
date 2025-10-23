@@ -3,7 +3,8 @@ use crate::app::rendering::Renderer;
 use crate::app::shared::NoteColors;
 use crate::audio::event_playback::PlaybackManager;
 use crate::editor::midi_bar_cacher::BarCacher;
-use crate::editor::project_data::ProjectData;
+use crate::editor::project::project_data::ProjectData;
+use crate::editor::project::project_manager::ProjectManager;
 use eframe::egui::Vec2;
 use eframe::glow;
 use eframe::glow::HasContext;
@@ -87,14 +88,14 @@ pub struct PianoRollRenderer {
 
     note_cull_helper: Arc<Mutex<NoteCullHelper>>,
 
-    pub ghost_notes: Option<Arc<Mutex<Vec<GhostNote>>>>,
+    pub ghost_notes: Option<Arc<Mutex<Vec<Note>>>>,
     pub selected: HashSet<usize>,
     render_active: bool,
 }
 
 impl PianoRollRenderer {
     pub unsafe fn new(
-        project_data: &Rc<RefCell<ProjectData>>,
+        project_manager: &Arc<RwLock<ProjectManager>>,
         view_settings: &Arc<Mutex<ViewSettings>>,
         nav: &Arc<Mutex<PianoRollNavigation>>,
         gl: &Arc<glow::Context>,
@@ -172,8 +173,8 @@ impl PianoRollRenderer {
         pr_notes_color_tex.load_texture("./shaders/textures/notes.png", 16, 1);*/
 
         let notes = {
-            let project_data = project_data.borrow();
-            project_data.notes.clone()
+            let project_manager = project_manager.read().unwrap();
+            project_manager.get_notes().clone()
         };
 
         Self {
@@ -342,6 +343,7 @@ impl Renderer for PianoRollRenderer {
                     let mut note_colors = self.note_colors.lock().unwrap();
 
                     let all_render_notes = self.render_notes.read().unwrap();
+                    if all_render_notes.is_empty() { return; }
                     // resize last_note_start and first_render_note if notes changed size
                     /*if self.last_note_start.len() != all_render_notes.len() {
                         self.last_note_start = vec![0; all_render_notes.len()];
@@ -741,7 +743,7 @@ impl Renderer for PianoRollRenderer {
                         self.pr_notes_ebo.bind();
 
                         for note in notes.iter() {
-                            let note = note.get_note();
+                            // let note = note.get_note();
                             let note_bottom = (note.key as f32 - key_pos) / zoom_keys;
                             let note_top = ((note.key as f32 + 1.0) - key_pos) / zoom_keys;
 
@@ -788,7 +790,7 @@ impl Renderer for PianoRollRenderer {
         }
     }
 
-    fn set_ghost_notes(&mut self, notes: Arc<Mutex<Vec<GhostNote>>>) {
+    fn set_ghost_notes(&mut self, notes: Arc<Mutex<Vec<Note>>>) {
         self.ghost_notes = Some(notes);
     }
 

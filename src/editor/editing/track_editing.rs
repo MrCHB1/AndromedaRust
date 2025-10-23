@@ -1,9 +1,9 @@
 #![warn(unused)]
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
-use eframe::egui::Ui;
+use eframe::egui::{self, Ui};
 
-use crate::{app::{main_window::{EditorTool, EditorToolSettings}, rendering::note_cull_helper::NoteCullHelper, view_settings::ViewSettings}, editor::{actions::{EditorAction, EditorActions}, navigation::{PianoRollNavigation, TrackViewNavigation}, project_data::{self, ProjectData}, util::{get_mouse_track_view_pos, MIDITick}}, midi::events::{channel_event::ChannelEvent, note::Note}};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings}, rendering::note_cull_helper::NoteCullHelper, view_settings::ViewSettings}, editor::{actions::{EditorAction, EditorActions}, navigation::{PianoRollNavigation, TrackViewNavigation}, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{get_mouse_track_view_pos, MIDITick}}, midi::events::{channel_event::ChannelEvent, note::Note}};
 
 pub mod track_flags {
     pub const TRACK_EDIT_FLAGS_NONE: u16 = 0x0;
@@ -17,25 +17,24 @@ use track_flags::*;
 // because im a lazy mf, i put note track editing as a separate file
 #[derive(Default)]
 pub struct TrackEditing {
-    // notes: Arc<RwLock<Vec<Vec<Note>>>>,
-    // ch_evs: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
-    project_data: Rc<RefCell<ProjectData>>,
+    project_manager: Arc<RwLock<ProjectManager>>,
+    // project_manager: Arc<RwLock<ProjectManager>>,
     view_settings: Arc<Mutex<ViewSettings>>,
 
     editor_tool: Rc<RefCell<EditorToolSettings>>,
     editor_actions: Rc<RefCell<EditorActions>>,
     pr_nav: Arc<Mutex<PianoRollNavigation>>,
     nav: Arc<Mutex<TrackViewNavigation>>,
-    ppq: u16,
 
     curr_mouse_track_pos: (MIDITick, u16),
     right_clicked_track: u16,
-    flags: u16
+    flags: u16,
+    pub ppq: u16,
 }
 
 impl TrackEditing {
     pub fn new(
-        project_data: &Rc<RefCell<ProjectData>>,
+        project_manager: &Arc<RwLock<ProjectManager>>,
         editor_tool: &Rc<RefCell<EditorToolSettings>>,
         editor_actions: &Rc<RefCell<EditorActions>>,
 
@@ -44,14 +43,9 @@ impl TrackEditing {
 
         view_settings: &Arc<Mutex<ViewSettings>>,
     ) -> Self {
-        let ppq = {
-            let project_data = project_data.borrow();
-            project_data.project_info.ppq
-        };
-
         Self {
-            project_data: project_data.clone(),
-            ppq,
+            project_manager: project_manager.clone(),
+            // ppq,
             editor_tool: editor_tool.clone(),
             editor_actions: editor_actions.clone(),
 
@@ -61,7 +55,8 @@ impl TrackEditing {
             curr_mouse_track_pos: (0, 0),
             view_settings: view_settings.clone(),
             flags: TRACK_EDIT_FLAGS_NONE,
-            right_clicked_track: 0
+            right_clicked_track: 0,
+            ppq: 960,
         }
     }
 
@@ -128,21 +123,33 @@ impl TrackEditing {
 
     }
 
+    pub fn on_key_down(&mut self, ui: &mut Ui) {
+        let curr_track = self.get_pianoroll_track();
+
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowUp) && i.modifiers.command) {
+            if curr_track > 0 { self.change_track(curr_track - 1); }
+        }
+
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowDown) && i.modifiers.command) {
+            if curr_track < u16::MAX { self.change_track(curr_track + 1); }
+        }
+    }
+
     pub fn insert_track(&mut self, track: u16) {
         let track_count = self.get_used_track_count();
         if track >= track_count { return; }
 
         self.insert_notes_and_ch_evs(track, Vec::new(), Vec::new());
 
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         editor_actions.register_action(EditorAction::AddTrack(track, None, false));
     }
 
     fn insert_notes_and_ch_evs(&mut self, track: u16, notes: Vec<Note>, ch_evs: Vec<ChannelEvent>) {
-        let project_data = self.project_data.borrow();
+        let project_manager = self.project_manager.read().unwrap();
         let (mut notes_, mut ch_evs_) = (
-            project_data.notes.write().unwrap(),
-            project_data.channel_events.write().unwrap()
+            project_manager.get_notes().write().unwrap(),
+            project_manager.get_channel_evs().write().unwrap()
         );
 
         notes_.insert(track as usize, notes);
@@ -168,7 +175,7 @@ impl TrackEditing {
             let mut removed_track_queue = VecDeque::new();
             removed_track_queue.push_back((removed_track_notes, removed_track_ch_evs)); 
 
-            let mut editor_actions = self.editor_actions.borrow_mut();
+            let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
             editor_actions.register_action(EditorAction::RemoveTrack(track, Some(removed_track_queue), removed_first));
         }
 
@@ -181,22 +188,20 @@ impl TrackEditing {
     }
 
     pub fn remove_note_and_ch_evs(&mut self, track: u16) -> (Vec<Note>, Vec<ChannelEvent>) {
-        let project_data = self.project_data.borrow();
-
+        let project_manager = self.project_manager.read().unwrap();
         let (mut notes, mut ch_evs) = (
-            project_data.notes.write().unwrap(),
-            project_data.channel_events.write().unwrap()
+            project_manager.get_notes().write().unwrap(),
+            project_manager.get_channel_evs().write().unwrap()
         );
 
         (notes.remove(track as usize), ch_evs.remove(track as usize))
     }
 
     pub fn append_empty_track(&mut self) {
-        let project_data = self.project_data.borrow();
-
+        let project_manager = self.project_manager.read().unwrap();
         let (mut notes, mut ch_evs) = (
-            project_data.notes.write().unwrap(),
-            project_data.channel_events.write().unwrap()
+            project_manager.get_notes().write().unwrap(),
+            project_manager.get_channel_evs().write().unwrap()
         );
 
         notes.push(Vec::new());
@@ -204,11 +209,10 @@ impl TrackEditing {
     }
 
     pub fn pop_track(&mut self) {
-        let project_data = self.project_data.borrow();
-
+        let project_manager = self.project_manager.read().unwrap();
         let (mut notes, mut ch_evs) = (
-            project_data.notes.write().unwrap(),
-            project_data.channel_events.write().unwrap()
+            project_manager.get_notes().write().unwrap(),
+            project_manager.get_channel_evs().write().unwrap()
         );
 
         notes.pop();
@@ -224,8 +228,8 @@ impl TrackEditing {
     }
 
     pub fn get_used_track_count(&self) -> u16 {
-        let project_data = self.project_data.borrow();
-        let notes = project_data.notes.read().unwrap();
+        let project_manager = self.project_manager.read().unwrap();
+        let notes = project_manager.get_notes().read().unwrap();
         notes.len() as u16
     }
 
@@ -236,8 +240,9 @@ impl TrackEditing {
         }
 
         {
-            let mut project_data = self.project_data.borrow_mut();
-            project_data.validate_tracks(new_track);
+            //let mut project_data = self.project_data.try_borrow_mut().unwrap();
+            let mut project_manager = self.project_manager.write().unwrap();
+            project_manager.get_project_data_mut().validate_tracks(new_track);
         }
 
         {
@@ -250,7 +255,9 @@ impl TrackEditing {
         let track_count = self.get_used_track_count();
 
         {
-            let mut project_data = self.project_data.borrow_mut();
+            let mut project_manager = self.project_manager.write().unwrap();
+            let project_data = project_manager.get_project_data_mut();
+            
             if track_1 >= track_count || track_2 >= track_count {
                 project_data.validate_tracks(track_1.max(track_2));
             }
@@ -265,7 +272,7 @@ impl TrackEditing {
         }
 
         if allow_register {
-            let mut editor_actions = self.editor_actions.borrow_mut();
+            let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
             editor_actions.register_action(EditorAction::SwapTracks(track_1, track_2));
         }
 

@@ -1,4 +1,3 @@
-pub mod project_data;
 pub mod navigation;
 pub mod util;
 pub mod actions;
@@ -10,3 +9,4 @@ pub mod keybinds;
 pub mod plugins;
 pub mod editing;
 pub mod tempo_map;
+pub mod project;

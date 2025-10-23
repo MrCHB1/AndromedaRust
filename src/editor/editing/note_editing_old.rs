@@ -366,7 +366,7 @@ impl NoteEditing {
                         let notes = self.notes.read().unwrap();
                         let note = &notes[curr_track as usize][clicked_note_idx];
 
-                        let mut tbs = self.toolbar_settings.borrow_mut();
+                        let mut tbs = self.toolbar_settings.try_borrow_mut().unwrap();
                         tbs.note_gate.set_value(note.length());
                         tbs.note_velocity.set_value(note.velocity());
                         tbs.note_channel.set_value(note.channel() + 1);
@@ -874,12 +874,12 @@ impl NoteEditing {
         let length_diff = note.length as SignedMIDITick - old_length as SignedMIDITick;
 
         {
-            let mut tbs = self.toolbar_settings.borrow_mut();
+            let mut tbs = self.toolbar_settings.try_borrow_mut().unwrap();
             tbs.note_gate.set_value(note.length());
         }
 
         if length_diff != 0 {
-            let mut editor_actions = self.editor_actions.borrow_mut();
+            let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
             editor_actions.register_action(EditorAction::LengthChange(
                 vec![note_id],
                 vec![length_diff],
@@ -912,7 +912,7 @@ impl NoteEditing {
         }
 
         if !length_diffs.is_empty() {
-            let mut editor_actions = self.editor_actions.borrow_mut();
+            let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
             editor_actions.register_action(EditorAction::LengthChange(
                 valid_note_ids,
                 length_diffs,
@@ -1018,7 +1018,7 @@ impl NoteEditing {
 
                     {
                         let mut sel = self.selected_notes_ids.lock().unwrap();
-                        let mut editor_actions = self.editor_actions.borrow_mut();
+                        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
 
                         if !selected.is_empty() {
                             editor_actions.register_action(EditorAction::Select(selected.clone(), curr_track));
@@ -1081,7 +1081,7 @@ impl NoteEditing {
 */
     fn delete_notes(&mut self, ids: Vec<usize>, curr_track: u16) {
         let (deleted_ids, notes_deleted) = self.extract_notes(ids, curr_track);
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         editor_actions.register_action(EditorAction::DeleteNotes(deleted_ids, Some(notes_deleted), curr_track));
     }
 
@@ -1094,7 +1094,7 @@ impl NoteEditing {
         };
 
         let (deleted_ids, notes_deleted) = self.extract_notes(selected, curr_track);
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         editor_actions.register_action(EditorAction::Bulk(vec![
             EditorAction::Deselect(deleted_ids.clone(), curr_track),
             EditorAction::DeleteNotes(deleted_ids, Some(notes_deleted), curr_track)   
@@ -1137,7 +1137,7 @@ impl NoteEditing {
     /// - [`NoteSelectionType::Deselect`]: removes selection until none of [`ids`] is present in the selection.
     fn select_notes(&mut self, track: u16, ids: Vec<usize>, select_type: NoteSelectionType) {
         let mut sel = self.selected_notes_ids.lock().unwrap();
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
 
         match select_type {
             NoteSelectionType::NewSelect => {
@@ -1175,7 +1175,7 @@ impl NoteEditing {
             key
         };
 
-        let tbs = self.toolbar_settings.borrow_mut();
+        let tbs = self.toolbar_settings.try_borrow_mut().unwrap();
         let gn_length = tbs.note_gate.value() as MIDITick;
         let gn_velocity = tbs.note_velocity.value() as u8;
         let gn_channel = tbs.note_channel.value() as u8 - 1;
@@ -1265,7 +1265,7 @@ impl NoteEditing {
 
         self.update_render_selected_notes();
 
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         editor_actions.register_action(EditorAction::Duplicate(paste_ids, paste_tick, track_src, track_dst));
 
         /*let mut notes = self.notes.write().unwrap();
@@ -1358,7 +1358,7 @@ impl NoteEditing {
 
         self.update_render_selected_notes();
 
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         editor_actions.register_action(EditorAction::Duplicate(paste_ids.clone(), paste_tick, track_src, track_dst));
         paste_ids*/
     }
@@ -1565,7 +1565,7 @@ impl NoteEditing {
             }
         }
 
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         match action {
             EditorAction::PlaceNotes(_, _, _) => {
                 editor_actions.register_action(EditorAction::PlaceNotes(new_ids, None, curr_track));
@@ -1636,7 +1636,7 @@ impl NoteEditing {
         }
 
         // register action
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         match action {
             EditorAction::PlaceNotes(_, _, _) => {
                 editor_actions.register_action(EditorAction::PlaceNotes(new_ids, None, curr_track));
@@ -1678,7 +1678,7 @@ impl NoteEditing {
     }
 
     fn get_min_snap_tick_length(&self) -> u16 {
-        let editor_tool = self.editor_tool.borrow();
+        let editor_tool = self.editor_tool.try_borrow().unwrap();
         let snap_ratio = editor_tool.snap_ratio;
         if snap_ratio.0 == 0 { return 1; }
         return ((self.ppq as u32 * 4 * snap_ratio.0 as u32)
@@ -1994,7 +1994,7 @@ impl NoteEditing {
         }
 
         let editor_tool = {
-            let editor_tool = self.editor_tool.borrow();
+            let editor_tool = self.editor_tool.try_borrow().unwrap();
             editor_tool.get_tool()
         };
 

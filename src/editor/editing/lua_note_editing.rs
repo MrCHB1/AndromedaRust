@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 
 use mlua::{Function, IntoLua, Lua, UserData};
 
-use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::{note_sequence_funcs::{extract_notes, merge_notes, merge_notes_and_preserve_deltas, merge_notes_and_return_ids, move_each_note_by}, NoteEditing}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::{self, Note}};
+use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::{note_sequence_funcs::{extract_with, merge_notes_and_return_ids}, NoteEditing}, util::{get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::{Note}};
 
 impl UserData for Note {
     fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
@@ -65,6 +65,16 @@ impl LuaNoteEditing {
     fn change_note_from_lua(&mut self, lua: &Lua, func: &Function, note: &mut Note) -> mlua::Result<()> {
         lua.scope(|scope| {
             let note_ref = scope.create_userdata_ref_mut(note)?;
+            func.call::<()>(note_ref)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// Helper function for calling an immutable lua function
+    fn call_lua_note_fn(&self, lua: &Lua, func: &Function, note: &Note) -> mlua::Result<()> {
+        lua.scope(|scope| {
+            let note_ref = scope.create_userdata_ref(note)?;
             func.call::<()>(note_ref)?;
             Ok(())
         })?;
@@ -149,13 +159,12 @@ impl LuaNoteEditing {
 
             let mut note_editing = note_editing.lock().unwrap();
             let old_notes = note_editing.take_notes_in_track(track);
-            let (notes_to_move, old_notes) = extract_notes(old_notes, &ids); // O(n)
-        
-            // group notes with deltas so sorting notes validates what deltas point to
-            let mut notes_to_move_with_delta: Vec<(Note, _)> = notes_to_move.into_iter().zip(delta_pos).collect(); // because of into_iter, it shouldn't have extra allocations
-            notes_to_move_with_delta.sort_unstable_by_key(|(n, _)| n.start()); // inplace, maybe?
-            let (notes_to_move, delta) = notes_to_move_with_delta.into_iter().unzip(); // O(???)
-
+            
+            // group notes with delta while extracting them to prevent delta pos index invalidation when sorting by note start
+            let (mut notes_with_delta, old_notes) = extract_with(old_notes, &ids, delta_pos); // O(n)
+            notes_with_delta.sort_unstable_by_key(|(n, _)| n.start());
+            let (notes_to_move, delta) = notes_with_delta.into_iter().unzip();
+    
             let (merged, note_ids) = merge_notes_and_return_ids(old_notes, notes_to_move); // O(n+k)
             note_editing.set_notes_in_track(track, merged);
 
@@ -185,7 +194,7 @@ impl UserData for LuaNoteEditing {
             
             let notes = {
                 let note_editing = this.note_editing.lock().unwrap();
-                note_editing.get_notes()
+                note_editing.get_notes().clone()
             };
 
             let mut notes = notes.write().unwrap();
@@ -202,7 +211,7 @@ impl UserData for LuaNoteEditing {
             
             let (notes, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes(), note_editing.get_selected_note_ids())
+                (note_editing.get_notes().clone(), note_editing.get_selected_note_ids().clone())
             };
 
             let mut notes = notes.write().unwrap();
@@ -218,13 +227,33 @@ impl UserData for LuaNoteEditing {
             Ok(())
         });
 
+        methods.add_method("iter_selected", |lua, this, func: Function| {
+            let curr_track: usize = lua.globals().get("curr_track")?;
+
+            let (notes, sel_ids) = {
+                let note_editing = this.note_editing.lock().unwrap();
+                (note_editing.get_notes().clone(), note_editing.get_selected_note_ids().clone())
+            };
+
+            let notes = notes.read().unwrap();
+            let track = &notes[curr_track];
+
+            let sel_ids = sel_ids.lock().unwrap();
+            for &sel_id in sel_ids.iter() {
+                let note = &track[sel_id];
+                this.call_lua_note_fn(lua, &func, note)?;
+            }
+
+            Ok(())
+        });
+
         // inclusive: if note lengths are considered
         methods.add_method::<_, _, Option<mlua::Table>>("get_selection_tick_range", |lua, this, inclusive: bool| {
             let curr_track: usize = lua.globals().get("curr_track")?;
 
             let (notes, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes(), note_editing.get_selected_note_ids())
+                (note_editing.get_notes().clone(), note_editing.get_selected_note_ids().clone())
             };
 
             let sel_ids = sel_ids.lock().unwrap();
@@ -251,7 +280,7 @@ impl UserData for LuaNoteEditing {
 
             let (notes, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes(), note_editing.get_selected_note_ids())
+                (note_editing.get_notes().clone(), note_editing.get_selected_note_ids().clone())
             };
 
             let sel_ids = sel_ids.lock().unwrap();

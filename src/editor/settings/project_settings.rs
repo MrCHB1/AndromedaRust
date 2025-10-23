@@ -1,26 +1,27 @@
 use eframe::egui::{self, RichText};
 
-use crate::{app::ui::dialog::Dialog, editor::project_data::ProjectData};
-use std::{cell::RefCell, rc::Rc};
+use crate::{app::ui::dialog::Dialog, editor::{midi_bar_cacher::BarCacher, project::{project_data::ProjectData, project_manager::ProjectManager}}};
+use core::f32;
+use std::sync::{Arc, RwLock, Mutex};
 
 pub struct ProjectSettings {
-    pub project_data: Rc<RefCell<ProjectData>>,
+    pub project_manager: Arc<RwLock<ProjectManager>>,
     is_showing: bool,
 }
 
 impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
-            project_data: Default::default(),
+            project_manager: Default::default(),
             is_showing: false
         }
     }
 }
 
 impl ProjectSettings {
-    pub fn new(project_data: &Rc<RefCell<ProjectData>>) -> Self {
+    pub fn new(project_data: &Arc<RwLock<ProjectManager>>) -> Self {
         Self { 
-            project_data: project_data.clone(),
+            project_manager: project_data.clone(),
             is_showing: false
         }
     }
@@ -42,39 +43,51 @@ impl Dialog for ProjectSettings {
     fn draw(&mut self, ctx: &egui::Context, _image_resources: &crate::app::util::image_loader::ImageResources) {
         if !self.is_showing { return; }
 
+        let mut project_manager = self.project_manager.write().unwrap();
+
         egui::Window::new(RichText::new("Project Information").size(15.0))
+            .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    let mut project_data = self.project_data.borrow_mut();
+                // ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    {
+                        let project_info = project_manager.get_project_info_mut();
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Name");
+                            ui.text_edit_singleline(&mut project_info.name);
+                        });
 
-                    ui.horizontal(|ui| {
-                        ui.label("Name");
-                        let mut project_name = project_data.project_info.name;
-                        ui.add(egui::TextEdit::singleline(&mut project_name));
-                        //ui.text_edit_singleline(&mut project_data.project_info.name);
-                    });
+                        ui.horizontal(|ui| {
+                            ui.label("Author");
+                            ui.text_edit_singleline(&mut project_info.author);
+                        });
 
-                    ui.horizontal(|ui| {
-                        ui.label("Author");
-                        ui.text_edit_singleline(&mut project_data.project_info.author);
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Description");
-                        ui.text_edit_multiline(&mut project_data.project_info.description);
-                    });
+                        ui.horizontal(|ui| {
+                            ui.label("Description");
+                            ui.text_edit_multiline(&mut project_info.description);
+                        });
+                    }
 
                     ui.separator();
 
                     ui.horizontal(|ui| {
                         ui.label("PPQ");
-                        egui::ComboBox::from_label(format!("{}", project_data.project_info.ppq))
-                            .selected_text(format!("{}", project_data.project_info.ppq))
+
+                        // let mut project_manager = self.project_manager.write().unwrap();
+                        let ppq = project_manager.get_ppq();
+                        egui::ComboBox::from_label("")
+                            .selected_text(format!("{}", ppq))
                             .show_ui(ui, |ui| {
                                 let ppq_values = [96, 120, 192, 240, 384, 480, 768, 960, 1920, 3840];
+                                let old_value = ppq;
+                                let mut new_value = ppq;
                                 for ppq in ppq_values {
-                                    ui.selectable_value(&mut project_data.project_info.ppq, ppq, format!("{}", ppq));
+                                    ui.selectable_value(&mut new_value, ppq, format!("{}", ppq));
+                                }
+                                
+                                if new_value != old_value {
+                                    project_manager.change_ppq(new_value);
                                 }
                             });
                     });
@@ -85,6 +98,6 @@ impl Dialog for ProjectSettings {
                         }
                     });
                 });
-            });
+            //});
     }
 }

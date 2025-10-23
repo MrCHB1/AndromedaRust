@@ -437,3 +437,17 @@ pub fn get_mouse_track_view_pos(ui: &mut Ui, nav: &Arc<Mutex<TrackViewNavigation
 pub fn path_rel_to_abs(path: String) -> PathBuf {
     std::path::absolute(path).unwrap()
 }
+
+pub fn tempo_as_bytes(tempo: f32) -> [u8; 3] {
+    let tempo_conv = (60000000.0 / tempo) as u32;
+    return [
+        ((tempo_conv >> 16) & 0xFF) as u8,
+        ((tempo_conv >> 8) & 0xFF) as u8,
+        (tempo_conv & 0xFF) as u8
+    ];
+}
+
+pub fn bytes_as_tempo(bytes: &[u8]) -> f32 {
+    let bytes_conv = ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | (bytes[2] as u32);
+    return 60000000.0 / (bytes_conv as f32);
+}

@@ -1,7 +1,8 @@
 use crate::app::shared::NoteColors;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::navigation::TrackViewNavigation;
-use crate::editor::project_data::ProjectData;
+use crate::editor::project::project_data::ProjectData;
+use crate::editor::project::project_manager::ProjectManager;
 use crate::midi::events::note::Note;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -90,7 +91,7 @@ pub struct TrackViewRenderer {
 
 impl TrackViewRenderer {
     pub unsafe fn new(
-        project_data: &Rc<RefCell<ProjectData>>,
+        project_manager: &Arc<RwLock<ProjectManager>>,
         nav: &Arc<Mutex<TrackViewNavigation>>,
         gl: &Arc<glow::Context>,
         bar_cacher: &Arc<Mutex<BarCacher>>,
@@ -162,8 +163,8 @@ impl TrackViewRenderer {
         gl.vertex_attrib_divisor(2, 1);
 
         let notes = {
-            let project_data = project_data.borrow();
-            project_data.notes.clone()
+            let project_manager = project_manager.read().unwrap();
+            project_manager.get_notes().clone()
         };
 
         let last_note_start = {

@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
+use crate::editor::util::bytes_as_tempo;
 use crate::midi::events::meta_event::*;
 use crate::editor::{
-    project_data::bytes_as_tempo,
     util::MIDITick
 };
 

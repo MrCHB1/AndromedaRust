@@ -2,9 +2,9 @@
 use crate::{
     app::{
         custom_widgets::{NumberField, NumericField}, rendering::{data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, RenderManager, RenderType, Renderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::Dialog, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, 
-        audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_devices::MIDIDevices}, 
+        audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices}, 
         editor::{
-            edit_functions::EFChopDialog, editing::note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, midi_bar_cacher::BarCacher, navigation::{TrackViewNavigation, GLOBAL_ZOOM_FACTOR}, playhead::Playhead, plugins::{plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_lua::PluginLua, PluginLoader}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{get_mouse_midi_pos, path_rel_to_abs, MIDITick}}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
+            edit_functions::EFChopDialog, editing::{data_editing::{data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}, DataEditing}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI}, midi_bar_cacher::BarCacher, navigation::{TrackViewNavigation, GLOBAL_ZOOM_FACTOR}, playhead::Playhead, plugins::{plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_lua::PluginLua, PluginLoader}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{get_mouse_midi_pos, path_rel_to_abs, MIDITick}}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIEvent}};
 use crate::editor::editing::{
     meta_editing::{MetaEditing, MetaEventInsertDialog},
     note_editing::{NoteEditing, note_edit_flags::*},
@@ -27,7 +27,7 @@ use crate::{
         actions::{EditorActions},
         edit_functions::{EFStretchDialog, EditFunction, EditFunctions},
         navigation::PianoRollNavigation,
-        project_data::ProjectData
+        project::project_data::ProjectData
     },
     midi::{
         midi_file::MIDIFileWriter,
@@ -116,7 +116,8 @@ impl Default for ToolBarSettings {
 
 #[derive(Default)]
 pub struct MainWindow {
-    pub project_data: Rc<RefCell<ProjectData>>,
+    project_manager: Arc<RwLock<ProjectManager>>,
+    // pub project_data: Rc<RefCell<ProjectData>>,
     bar_cacher: Arc<Mutex<BarCacher>>,
     gl: Option<Arc<glow::Context>>,
     // renderer: Option<Arc<Mutex<dyn Renderer + Send + Sync>>>,
@@ -126,6 +127,7 @@ pub struct MainWindow {
     pub note_editing: Arc<Mutex<NoteEditing>>,
     pub meta_editing: Arc<Mutex<MetaEditing>>,
     pub track_editing: Arc<Mutex<TrackEditing>>,
+    pub data_editing: Arc<Mutex<DataEditing>>,
     nav: Option<Arc<Mutex<PianoRollNavigation>>>,
     track_view_nav: Option<Arc<Mutex<TrackViewNavigation>>>,
     view_settings: Option<Arc<Mutex<ViewSettings>>>,
@@ -186,8 +188,6 @@ impl MainWindow {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut s = Self::default();
 
-        // s.load_colors("./assets/shaders/textures/notes.png");
-
         // initialize settings
         s.settings = vec![
             Box::new(ESGeneralSettings::default()),
@@ -202,51 +202,83 @@ impl MainWindow {
             KDMAPI::new()
         )));
 
-        {
-            let project_data = s.project_data.borrow();
-            let playback_manager = Arc::new(Mutex::new(
-                PlaybackManager::new(
-                    s.kdmapi.as_ref().unwrap().clone(),
-                    &project_data.notes,
-                    &project_data.global_metas,
-                    &project_data.channel_events,
-                    &project_data.tempo_map
-                )
-            ));
-            // s.settings_window.use_midi_devices(midi_devices.clone());
-            // s.settings_window.use_playback_manager(playback_manager.clone());
-            s.playhead = Rc::new(RefCell::new(Playhead::new(0, &playback_manager)));
-            s.playback_manager = Some(playback_manager);
-        }
-
-        // s.project_settings = ProjectSettings::new(&s.project_data);
-        /*s.ghost_notes = Arc::new(Mutex::new(vec![GhostNote {
-            ..Default::default()
-        }]));*/
-        // s.project_data.lock().unwrap().new_empty_project();
-        {
-            let mut project_data = s.project_data.borrow_mut();
-            project_data.new_empty_project();
-
-            s.bar_cacher = Arc::new(Mutex::new(BarCacher::new(960, 
-                &project_data.global_metas
-            )));
-            s.note_culler = Arc::new(Mutex::new(NoteCullHelper::new(&project_data.notes)));
-        }
-        s.editor_actions = Rc::new(RefCell::new(EditorActions::new(256)));
-        s.editor_functions = Rc::new(RefCell::new(EditFunctions::default()));
-
-        {
-            let mut plugin_loader = PluginLoader::new();
-            plugin_loader.load_plugins(&path_rel_to_abs("./assets/plugins".into())).unwrap();
-            s.plugin_loader = Some(plugin_loader);
-        }
         s
+    }
+
+    fn on_gl_init(&mut self, ctx: &egui::Context) {
+        self.editor_actions = Rc::new(RefCell::new(EditorActions::new(256)));
+        self.editor_functions = Rc::new(RefCell::new(EditFunctions::default()));
+        
+        self.init_first_project();
+        self.init_playback();
+        
+        self.init_navigation();
+        self.init_view_settings();
+        self.init_colors();
+        self.init_render_manager();
+
+        self.init_note_editing();
+
+        let mut plugin_loader = PluginLoader::new();
+        plugin_loader.load_plugins(&path_rel_to_abs("./assets/plugins".into())).unwrap();
+        self.plugin_loader = Some(plugin_loader);
+        self.load_images(ctx);
+        self.init_main_menu();
+
+        self.init_dialogs();
+    }
+
+    fn init_first_project(&mut self) {
+        let mut project_manager = ProjectManager::new();
+        project_manager.new_empty_project();
+
+        self.note_culler = Arc::new(Mutex::new(NoteCullHelper::new(project_manager.get_notes())));
+        let project_manager_arc = Arc::new(RwLock::new(project_manager));
+
+        self.bar_cacher = Arc::new(Mutex::new(BarCacher::new(&project_manager_arc)));
+        self.project_manager = project_manager_arc;
+    }
+
+    fn init_playback(&mut self) {
+        let project_manager = self.project_manager.read().unwrap();
+        //let project_data = project_manager.get_project_data();
+
+        let playback_manager = PlaybackManager::new(
+            self.kdmapi.as_ref().unwrap().clone(),
+            project_manager.get_notes(),
+            project_manager.get_metas(),
+            project_manager.get_channel_evs(),
+            project_manager.get_tempo_map()
+        );
+        let playback_manager_arc = Arc::new(Mutex::new(playback_manager));
+        
+        let playhead = Playhead::new(0, &playback_manager_arc);
+        let playhead_rc = Rc::new(RefCell::new(playhead));
+
+        self.playback_manager = Some(playback_manager_arc);
+        self.playhead = playhead_rc;
     }
 
     fn load_images(&mut self, ctx: &egui::Context) {
         let mut image_resources = ImageResources::new();
-        let icon_names = ["logo", "logo_medium", "logo_small", "zoom_x_in", "zoom_x_out", "zoom_y_in", "zoom_y_out", "pencil", "select", "eraser"];
+        let icon_names = [
+            "logo",
+            "logo_medium",
+            "logo_small",
+            "zoom_x_in",
+            "zoom_x_out",
+            "zoom_y_in",
+            "zoom_y_out",
+            "pencil",
+            "select",
+            "eraser",
+            "copy",
+            "cut",
+            "paste",
+            "undo",
+            "redo"
+        ];
+
         for name in icon_names {
             image_resources.preload_image(ctx, path_rel_to_abs(format!("./assets/icons/{}.png", name)).to_str().unwrap(), String::from(name));
         }
@@ -259,7 +291,7 @@ impl MainWindow {
         dialogs_hashmap.insert("StretchDialog", Box::new(EFStretchDialog::new(&self.note_editing, &self.editor_functions, &self.editor_actions)));
         dialogs_hashmap.insert("ChopDialog", Box::new(EFChopDialog::new(&self.note_editing, &self.editor_functions, &self.editor_actions)));
         dialogs_hashmap.insert("EditorInfo", Box::new(EditorInfo::default()));
-        dialogs_hashmap.insert("ProjectSettings", Box::new(ProjectSettings::new(&self.project_data)));
+        dialogs_hashmap.insert("ProjectSettings", Box::new(ProjectSettings::new(&self.project_manager)));
         dialogs_hashmap.insert("InsertMetaDialog", Box::new(MetaEventInsertDialog::default()));
         // dialogs_hashmap.insert("PluginDialog", Box::new())
 
@@ -271,6 +303,7 @@ impl MainWindow {
         if let Some(playback_manager) = self.playback_manager.as_ref() {
             edit_settings_dialog.use_playback_manager(playback_manager);
         }
+
         dialogs_hashmap.insert("EditorSettings", Box::new(edit_settings_dialog));
 
         // lua plugins dialog
@@ -283,18 +316,22 @@ impl MainWindow {
 
     fn import_midi_file(&mut self) {
         {
-            let mut project_data = self.project_data.borrow_mut();
+            // let mut project_data = self.project_data.try_borrow_mut().unwrap();
             let midi_fd = rfd::FileDialog::new().add_filter("MIDI Files", &["mid", "midi"]);
             if let Some(file) = midi_fd.pick_file() {
                 let import_timer = Instant::now();
+                
                 let start = import_timer.elapsed().as_secs_f32();
-                project_data.import_from_midi_file(String::from(file.to_str().unwrap()));
+                let mut project_manager = self.project_manager.write().unwrap();
+                project_manager.import_from_midi_file(String::from(file.to_str().unwrap()));
                 let end = import_timer.elapsed().as_secs_f32();
+
                 println!("Imported MIDI in {}s", end - start);
+                
+                let ppq = project_manager.get_ppq();
+                self.update_global_ppq(ppq);
             }
         }
-
-        self.update_global_ppq();
     }
 
     fn export_midi_file(&mut self) {
@@ -303,14 +340,12 @@ impl MainWindow {
             let export_timer = Instant::now();
             let start = export_timer.elapsed().as_secs_f32();
 
-            let project_data = self.project_data.borrow();
+            let project_manager = self.project_manager.read().unwrap();
+            let ppq = project_manager.get_ppq();
 
-            // let mut midi_writer = MIDIFileWriter::new(project_data.project_info.ppq);
-            let notes = project_data.notes.read().unwrap();
-            let global_metas = project_data.global_metas.read().unwrap();
-            let channel_evs = project_data.channel_events.read().unwrap();
-
-            let ppq = project_data.project_info.ppq;
+            let notes = project_manager.get_notes().read().unwrap();
+            let global_metas = project_manager.get_metas().read().unwrap();
+            let channel_evs = project_manager.get_channel_evs().read().unwrap();
 
             // build tracks in parallel
             let per_track_chunks: Vec<Vec<MIDIEvent>> = notes.par_iter()
@@ -336,18 +371,12 @@ impl MainWindow {
         }
     }
 
-    fn update_global_ppq(&mut self) {
-        let ppq = {
-            let project_data = self.project_data.borrow();
-            project_data.project_info.ppq
-        };
-
-        if let Some(playback_manager) = self.playback_manager.as_mut() {
+    fn update_global_ppq(&self, ppq: u16) {
+        if let Some(playback_manager) = self.playback_manager.as_ref() {
             let mut playback_manager = playback_manager.lock().unwrap();
             playback_manager.ppq = ppq;
 
             let mut bar_cacher = self.bar_cacher.lock().unwrap();
-            bar_cacher.ppq = ppq;
             bar_cacher.clear_cache();
 
             let render_manager = self.render_manager.as_ref().unwrap();
@@ -358,6 +387,16 @@ impl MainWindow {
         if let Some(data_view_renderer) = self.data_view_renderer.as_ref() {
             let mut data_view_renderer = data_view_renderer.lock().unwrap();
             data_view_renderer.ppq = ppq;
+        }
+
+        {
+            let mut note_editing = self.note_editing.lock().unwrap();
+            let mut meta_editing = self.meta_editing.lock().unwrap();
+            let mut track_editing = self.track_editing.lock().unwrap();
+
+            note_editing.ppq = ppq;
+            meta_editing.ppq = ppq;
+            track_editing.ppq = ppq;
         }
     }
 
@@ -406,7 +445,7 @@ impl MainWindow {
 
         if let Some(playback_manager) = self.playback_manager.as_ref() {
             render_manager.init_renderers(
-                self.project_data.clone(), 
+                self.project_manager.clone(), 
                 Some(gl.clone()), 
                 self.nav.as_ref().unwrap().clone(), 
                 self.track_view_nav.as_ref().unwrap().clone(), 
@@ -419,7 +458,7 @@ impl MainWindow {
 
             self.data_view_renderer = Some(Arc::new(Mutex::new(unsafe {
                 DataViewRenderer::new(
-                    &self.project_data,
+                    &self.project_manager,
                     &view_settings,
                     self.nav.as_ref().unwrap(),
                     &gl,
@@ -435,35 +474,25 @@ impl MainWindow {
         self.render_manager = Some(Arc::new(Mutex::new(render_manager)));
     }
 
-    fn init_gl(&mut self) {
-        self.init_navigation();
-
-        // init view settings
-        self.init_view_settings();
-
-        // init colors
-        self.init_colors();
-
-        // init render manager
-        self.init_render_manager();
-    }
-
     fn init_note_editing(&mut self) {
         {
-            let project_data = self.project_data.borrow();
-            // let notes = &project_data.notes;
-            let metas = &project_data.global_metas;
+            // let project_data = self.project_data.try_borrow().unwrap();
+            let project_manager = self.project_manager.read().unwrap();
+
+            let notes = project_manager.get_notes();
+            let metas = project_manager.get_metas();
+            let ch_evs = project_manager.get_channel_evs();
+            let tempo_map = project_manager.get_tempo_map();
 
             let nav = self.nav.as_ref().unwrap();
             let editor_tool = &self.editor_tool;
             let render_manager = self.render_manager.as_ref().unwrap();
             // self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.editor_actions, &self.toolbar_settings)));
-            self.note_editing = Arc::new(Mutex::new(NoteEditing::new(&self.project_data, nav, editor_tool, &self.editor_actions, &self.toolbar_settings, render_manager, self.data_view_renderer.as_ref().unwrap())));
-            self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher, &self.editor_actions, &project_data.tempo_map)));
-            self.track_editing = Arc::new(Mutex::new(TrackEditing::new(&self.project_data, &self.editor_tool, &self.editor_actions, &self.nav.as_ref().unwrap(), self.track_view_nav.as_ref().unwrap(), self.view_settings.as_ref().unwrap())))
+            self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, &self.editor_actions, &self.toolbar_settings, render_manager, self.data_view_renderer.as_ref().unwrap())));
+            self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher, &self.editor_actions, tempo_map)));
+            self.track_editing = Arc::new(Mutex::new(TrackEditing::new(&self.project_manager, &self.editor_tool, &self.editor_actions, &self.nav.as_ref().unwrap(), self.track_view_nav.as_ref().unwrap(), self.view_settings.as_ref().unwrap())));
+            self.data_editing = Arc::new(Mutex::new(DataEditing::new(notes, ch_evs, self.view_settings.as_ref().unwrap(), &self.editor_tool, self.nav.as_ref().unwrap())));
         }
-
-        self.init_dialogs();
     }
 
     fn init_main_menu(&mut self) {
@@ -475,8 +504,10 @@ impl MainWindow {
 
         menu_bar.add_menu("File", vec![
             ("New Project".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.make_new_project(); })))),
+            ("Save Project (WIP)".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.save_project(); })))),
+            ("".into(), MenuItem::Separator),
             ("Import MIDI file".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.import_midi_file(); })))),
-            ("Export MIDI file".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.export_midi_file(); }))))
+            ("Export MIDI file".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.export_midi_file(); })))),
         ]);
         menu_bar.add_menu("Edit", vec![
             ("Undo".into(), MenuItem::MenuButtonEnabled(Some(Box::new(|mw| { mw.undo(); })), Box::new(|mw| { mw.can_undo() }))),
@@ -509,7 +540,7 @@ impl MainWindow {
                         note_editing.is_any_note_selected()
                     })
                 )),
-                ("".into(), MenuItem::Separator),
+                ("".into(), MenuItem::Separator),*/
                 ("Stretch selection...".into(), MenuItem::MenuButtonEnabled(
                     Some(Box::new(|mw| { mw.apply_function(EditFunction::Stretch(Vec::new(), 0.0)); })),
                     Box::new(|mw| {  
@@ -524,13 +555,26 @@ impl MainWindow {
                         note_editing.is_any_note_selected()
                     })
                 )),
-                ("".into(), MenuItem::Separator),*/
+                ("Slice notes at playhead".into(), MenuItem::MenuButtonEnabled(
+                    Some(Box::new(|mw| { 
+                        let playhead_pos = {
+                            let playhead = mw.playhead.borrow();
+                            playhead.start_tick
+                        };
+                        mw.apply_function(EditFunction::SliceAtTick(Vec::new(), playhead_pos));
+                    })),
+                    Box::new(|mw| {
+                        let note_editing = mw.note_editing.lock().unwrap();
+                        note_editing.is_any_note_selected()
+                    })
+                )),
+                ("".into(), MenuItem::Separator),
                 ("Plugins".into(), MenuItem::SubMenu(vec![
                     ("Manipulate...".into(), MenuItem::SubMenu({
                         let mut manip_plugins_buttons = Vec::new();
                         for plugin in plugins.manip_plugins.iter() {
                             let plugin_name = {
-                                let plugin = plugin.borrow();
+                                let plugin = plugin.try_borrow().unwrap();
                                 plugin.plugin_name.clone()
                             };
                             
@@ -545,7 +589,7 @@ impl MainWindow {
                         let mut gen_plugins_buttons = Vec::new();
                         for plugin in plugins.gen_plugins.iter() {
                             let plugin_name = {
-                                let plugin = plugin.borrow();
+                                let plugin = plugin.try_borrow().unwrap();
                                 plugin.plugin_name.clone()
                             };
                             
@@ -567,9 +611,8 @@ impl MainWindow {
 
     fn make_new_project(&mut self) {
         let is_empty = {
-            let project_data = self.project_data.borrow();
-            let notes = project_data.notes.read().unwrap();
-            notes.is_empty()
+            let project_manager = self.project_manager.read().unwrap();
+            project_manager.is_project_empty(false)
         };
 
         if !is_empty {
@@ -579,19 +622,19 @@ impl MainWindow {
             self.override_popup_func =
                 Some(Box::new(|main_window, _: &egui::Context| {
                     {
-                        let mut project_data = main_window.project_data.borrow_mut();
+                        let mut project_manager = main_window.project_manager.write().unwrap();
                         println!("Clearning notes...");
-                        project_data.new_empty_project();
+                        project_manager.new_empty_project();
                     }
 
                     {
                         println!("Removing action history...");
-                        let mut editor_actions = main_window.editor_actions.borrow_mut();
+                        let mut editor_actions = main_window.editor_actions.try_borrow_mut().unwrap();
                         editor_actions.clear_actions();
                     }
 
                     {
-                        let mut playhead = main_window.playhead.borrow_mut();
+                        let mut playhead = main_window.playhead.try_borrow_mut().unwrap();
                         playhead.set_start(0);
 
                         if let Some(nav) = main_window.nav.as_mut() {
@@ -602,16 +645,21 @@ impl MainWindow {
                 }));
         }
     }
+
+    fn save_project(&mut self) {
+        let mut project_manager = self.project_manager.write().unwrap();
+        project_manager.save_project();
+    }
     
     fn can_undo(&self) -> bool {
-        let editor_actions = self.editor_actions.borrow();
+        let editor_actions = self.editor_actions.try_borrow().unwrap();
         editor_actions.get_can_undo()
     }
 
-    fn undo(&mut self) {
+    fn undo(&self) {
         if !self.can_undo() { return; }
 
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         if let Some(action) = editor_actions.undo_action().as_mut() {
             let mut note_editing = self.note_editing.lock().unwrap();
             let mut meta_editing = self.meta_editing.lock().unwrap();
@@ -623,14 +671,14 @@ impl MainWindow {
     }
 
     fn can_redo(&self) -> bool {
-        let editor_actions = self.editor_actions.borrow();
+        let editor_actions = self.editor_actions.try_borrow().unwrap();
         editor_actions.get_can_redo()
     }
 
-    fn redo(&mut self) {
+    fn redo(&self) {
         if !self.can_redo() { return; }
 
-        let mut editor_actions = self.editor_actions.borrow_mut();
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         if let Some(action) = editor_actions.redo_action().as_mut() {
             let mut note_editing = self.note_editing.lock().unwrap();
             let mut meta_editing = self.meta_editing.lock().unwrap();
@@ -646,7 +694,7 @@ impl MainWindow {
             MetaEventType::TimeSignature | MetaEventType::Tempo => {
                 let meta_editing = self.meta_editing.clone();
                 let playhead_pos = {
-                    let playhead = self.playhead.borrow();
+                    let playhead = self.playhead.try_borrow().unwrap();
                     playhead.start_tick
                 };
 
@@ -664,8 +712,8 @@ impl MainWindow {
     }
 
     pub fn apply_function(&mut self, function_type: EditFunction) {
-        /*match function_type {
-            EditFunction::FlipX(_) => {
+        match function_type {
+            /*EditFunction::FlipX(_) => {
                 let note_editing = self.note_editing.lock().unwrap();
                 let notes = note_editing.get_notes();
                 let sel_notes = note_editing.get_selected_note_ids();
@@ -675,9 +723,9 @@ impl MainWindow {
                 let sel_notes_clone = sel_notes.clone();
 
                 if let Some(curr_track) = self.get_current_track() {
-                    let mut editor_actions = self.editor_actions.borrow_mut();
+                    let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
 
-                    let mut editor_functions = self.editor_functions.borrow_mut();
+                    let mut editor_functions = self.editor_functions.try_borrow_mut().unwrap();
                     editor_functions.apply_function(
                         &mut notes[curr_track as usize],
                         &mut sel_notes,
@@ -697,9 +745,9 @@ impl MainWindow {
                 let sel_notes_clone = sel_notes.clone();
 
                 if let Some(curr_track) = self.get_current_track() {
-                    let mut editor_actions = self.editor_actions.borrow_mut();
+                    let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
 
-                    let mut editor_functions = self.editor_functions.borrow_mut();
+                    let mut editor_functions = self.editor_functions.try_borrow_mut().unwrap();
                     editor_functions.apply_function(
                         &mut notes[curr_track as usize],
                         &mut sel_notes,
@@ -708,7 +756,7 @@ impl MainWindow {
                         &mut editor_actions
                     );
                 }
-            },
+            },*/
             EditFunction::Stretch(_, _) => {
                 self.show_note_properties_popup = false;
                 self.note_properties_mouse_up_processed = false;
@@ -721,21 +769,42 @@ impl MainWindow {
                 self.show_note_properties_popup = false;
                 self.note_properties_mouse_up_processed = false;
                 self.show_dialog("ChopDialog");
-            }
-            // _ => todo!("Implement other functions")
-        }*/
+            },
+            EditFunction::SliceAtTick(_, playhead_tick) => {
+                //let project_manager = self.project_manager.read().unwrap();
+                let note_editing = self.note_editing.lock().unwrap();
+                let mut notes = note_editing.get_notes().write().unwrap();
+
+                let mut sel_notes = note_editing.get_selected_note_ids().lock().unwrap();
+                let sel_notes_clone = sel_notes.clone();
+
+                let curr_track = self.get_current_track().unwrap();
+                let notes = &mut notes[curr_track as usize];
+
+                let mut editor_functions = self.editor_functions.borrow_mut();
+                let mut editor_actions = self.editor_actions.borrow_mut();
+                editor_functions.apply_function(
+                    notes, 
+                    &mut sel_notes,
+                    EditFunction::SliceAtTick(sel_notes_clone, playhead_tick),
+                    curr_track,
+                    &mut editor_actions
+                );
+            },
+            _ => {}
+        }
     }
 
     pub fn run_plugin(&mut self, plugin: Rc<RefCell<PluginLua>>) {
         let lua = {
-            let p = plugin.borrow();
+            let p = plugin.try_borrow().unwrap();
             p.lua.clone()
         };
 
         let track_idx = self.get_current_track().unwrap() as usize;
         lua.globals().set("curr_track", track_idx).unwrap();
 
-        let andromeda_obj = AndromedaObj::new(&self.project_data, &self.playhead);
+        let andromeda_obj = AndromedaObj::new(&self.project_manager, &self.playhead);
         let andromeda_obj = lua.create_userdata(andromeda_obj).unwrap();
         lua.globals().set("andromeda", andromeda_obj).unwrap();
 
@@ -748,7 +817,7 @@ impl MainWindow {
                 else { plugin_dialog.run_plugin(); }
             },
             Err(lua_error) => {
-                let plugin = plugin.borrow();
+                let plugin = plugin.try_borrow().unwrap();
                 println!("[PluginError] (While running {}): \n{}", plugin.plugin_name, lua_error);
             }
         }
@@ -815,9 +884,13 @@ impl MainWindow {
                     if alt_down {
                         nav.zoom_ticks_by(zoom_factor);
                     } else {
-                        let project_data = self.project_data.borrow();
+                        let ppq = {
+                            let project_manager = self.project_manager.read().unwrap();
+                            project_manager.get_ppq()
+                        };
+
                         let mut new_tick_pos = nav.tick_pos
-                            + 2.0 * move_by * (nav.zoom_ticks / project_data.project_info.ppq as f32);
+                            + 2.0 * move_by * (nav.zoom_ticks / ppq as f32);
                         if new_tick_pos < 0.0 {
                             new_tick_pos = 0.0;
                         }
@@ -849,9 +922,13 @@ impl MainWindow {
                     if alt_down {
                         track_view_nav.zoom_ticks_by(zoom_factor);
                     } else {
-                        let project_data = self.project_data.borrow();
+                        let ppq = {
+                            let project_manager = self.project_manager.read().unwrap();
+                            project_manager.get_ppq()
+                        };
+
                         let mut new_tick_pos = track_view_nav.tick_pos
-                            + 2.0 * move_by * (track_view_nav.zoom_ticks / project_data.project_info.ppq as f32);
+                            + 2.0 * move_by * (track_view_nav.zoom_ticks / ppq as f32);
                         if new_tick_pos < 0.0 {
                             new_tick_pos = 0.0;
                         }
@@ -891,9 +968,11 @@ impl MainWindow {
 
         match curr_view {
             RenderType::PianoRoll => {
-                let mut note_editing = self.note_editing.lock().unwrap();
-                note_editing.on_mouse_down();
-                
+                {
+                    let mut note_editing = self.note_editing.lock().unwrap();
+                    note_editing.on_mouse_down();
+                }
+            
                 // if changing length of notes, don't play
                 // if note_editing.get_flags() & NOTE_EDIT_LENGTH_CHANGE != 0 {
                 //     return;
@@ -903,7 +982,7 @@ impl MainWindow {
                     let nav = self.nav.as_ref().unwrap();
                     let (mouse_midi_pos, _) = get_mouse_midi_pos(ui, nav);
 
-                    let tbs = self.toolbar_settings.borrow();
+                    let tbs = self.toolbar_settings.try_borrow().unwrap();
                     let mut playback = playback_manager.lock().unwrap();
                     playback.start_play_at_mouse(mouse_midi_pos.1, tbs.note_channel.value() as u8 - 1, tbs.note_velocity.value() as u8);
                 }
@@ -964,7 +1043,7 @@ impl MainWindow {
                     let nav = self.nav.as_ref().unwrap();
                     let (mouse_midi_pos, _) = get_mouse_midi_pos(ui, nav);
 
-                    let tbs = self.toolbar_settings.borrow();
+                    let tbs = self.toolbar_settings.try_borrow().unwrap();
                     let mut playback = playback_manager.lock().unwrap();
                     playback.update_play_at_mouse(mouse_midi_pos.1, tbs.note_channel.value() as u8 - 1, tbs.note_velocity.value() as u8);
                 }
@@ -997,7 +1076,7 @@ impl MainWindow {
                     let nav = self.nav.as_ref().unwrap();
                     let (mouse_midi_pos, _) = get_mouse_midi_pos(ui, nav);
 
-                    let tbs = self.toolbar_settings.borrow();
+                    let tbs = self.toolbar_settings.try_borrow().unwrap();
                     let mut playback = playback_manager.lock().unwrap();
                     playback.stop_play_at_mouse(mouse_midi_pos.1, tbs.note_channel.value() as u8 - 1);
                 }
@@ -1039,37 +1118,37 @@ impl MainWindow {
 
         {
             let mut note_editing = self.note_editing.lock().unwrap();
-            note_editing.on_key_down(ui, ctrl_down);
+            let mut track_editing = self.track_editing.lock().unwrap();
+            note_editing.on_key_down(ui);
+            track_editing.on_key_down(ui);
         }
 
         {
-            if ctrl_down {
-                let mut editor_actions = self.editor_actions.borrow_mut();
-                let mut action = {
-                    if ui.input(|i| i.key_pressed(egui::Key::Z)) {
-                        let undo_action = {
-                            editor_actions.undo_action()
-                        };
-                        undo_action
-                    } else if ui.input(|i| i.key_pressed(egui::Key::Y)) {
-                        let redo_action = {
-                            editor_actions.redo_action()
-                        };
-                        redo_action
-                    } else { 
-                        None
-                    }
-                };
-
-                if let Some(action) = action.as_mut() {
-                    let mut note_editing = self.note_editing.lock().unwrap();
-                    let mut meta_editing = self.meta_editing.lock().unwrap();
-                    let mut track_editing = self.track_editing.lock().unwrap();
-
-                    note_editing.apply_action(action);
-                    meta_editing.apply_action(&action);
-                    track_editing.apply_action(action);
+            let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
+            let mut action = {
+                if ui.input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.command) {
+                    let undo_action = {
+                        editor_actions.undo_action()
+                    };
+                    undo_action
+                } else if ui.input(|i| i.key_pressed(egui::Key::Y) && i.modifiers.command) {
+                    let redo_action = {
+                        editor_actions.redo_action()
+                    };
+                    redo_action
+                } else { 
+                    None
                 }
+            };
+
+            if let Some(action) = action.as_mut() {
+                let mut note_editing = self.note_editing.lock().unwrap();
+                let mut meta_editing = self.meta_editing.lock().unwrap();
+                let mut track_editing = self.track_editing.lock().unwrap();
+
+                note_editing.apply_action(action);
+                meta_editing.apply_action(&action);
+                track_editing.apply_action(action);
             }
         }
 
@@ -1085,6 +1164,25 @@ impl MainWindow {
         //     let mut note_editing = self.note_editing.lock().unwrap();
         //     note_editing.set_key_shift_flag(ui.input(|i| i.modifiers.shift));
         // }
+    }
+
+    fn handle_data_viewer_inputs(&mut self, ctx: &egui::Context, ui: &mut Ui, mouse_over_ui: bool, any_window_opened: bool) {
+        let mut data_editing = self.data_editing.lock().unwrap();
+        data_editing.set_flag(DATA_EDIT_MOUSE_OVER_UI, mouse_over_ui);
+        data_editing.set_flag(DATA_EDIT_ANY_DIALOG_OPEN, any_window_opened);
+        data_editing.update(ui);
+
+        if ui.input(|i| i.pointer.primary_pressed()) {
+            data_editing.on_mouse_down();
+        }
+
+        if ui.input(|i| i.pointer.primary_down()) {
+            data_editing.on_mouse_move();
+        }
+
+        if ui.input(|i| i.pointer.primary_released()) {
+            data_editing.on_mouse_up();
+        }
     }
 
     pub fn get_current_track(&self) -> Option<u16> {
@@ -1192,7 +1290,7 @@ impl MainWindow {
 
     fn get_playhead_pos(&self, to_window: bool) -> f32 {
         let mut playhead_line_pos = {
-            let playhead = self.playhead.borrow();
+            let playhead = self.playhead.try_borrow().unwrap();
             playhead.start_tick
         } as f32;
 
@@ -1239,7 +1337,7 @@ impl MainWindow {
         };
 
         {
-            let mut playhead = self.playhead.borrow_mut();
+            let mut playhead = self.playhead.try_borrow_mut().unwrap();
             playhead.set_start(tick);
         }
 
@@ -1283,17 +1381,11 @@ impl MainWindow {
         }
 
         if ui.input(|i| i.pointer.is_moving()) {
-            match render_type {
-                RenderType::PianoRoll => { self.handle_mouse_move(ctx, ui) }
-                RenderType::TrackView => {}
-            }
+            self.handle_mouse_move(ctx, ui);
         }
 
         if ui.input(|i| i.pointer.primary_released()) {
-            match render_type {
-                RenderType::PianoRoll => { self.handle_mouse_up(ctx, ui) }
-                RenderType::TrackView => {}
-            }
+            self.handle_mouse_up(ctx, ui);
         }
 
         self.register_key_downs(ctx, ui);
@@ -1316,6 +1408,7 @@ impl MainWindow {
     fn update_editing_ui(&mut self, ui: &mut Ui) {
         let mut note_editing = self.note_editing.lock().unwrap();
         let mut track_editing = self.track_editing.lock().unwrap();
+        let mut data_editing = self.data_editing.lock().unwrap();
 
         note_editing.update_from_ui(ui);
         // note_editing.set_mouse_over_ui(self.mouse_over_ui);
@@ -1333,7 +1426,7 @@ impl MainWindow {
             if note_editing.get_can_draw_selection_box() {
                 let (tl, br) = note_editing.get_selection_range_ui(ui);
                 let is_eraser = {
-                    let editor_tool = self.editor_tool.borrow();
+                    let editor_tool = self.editor_tool.try_borrow().unwrap();
                     editor_tool.get_tool() == EditorTool::Eraser
                 };
 
@@ -1401,15 +1494,15 @@ impl MainWindow {
     }
 
     fn draw(&mut self, ctx: &egui::Context, ui: &mut Ui, any_window_opened: bool) {
-        let available_size = ui.available_size();
-        let (rect, _response) = ui.allocate_exact_size(available_size, egui::Sense::hover());
-
         // skip all this if gl or renderer isnt ready yet
         if self.gl.is_none() || self.render_manager.is_none() || self.nav.is_none() {
             return;
         }
+
+        let available_size = ui.available_size();
+        let (rect, _response) = ui.allocate_exact_size(available_size, egui::Sense::hover());
         
-        if !any_window_opened {
+        if !any_window_opened && ui.ui_contains_pointer() {
             self.update_editing_ui(ui);
             self.handle_input(ctx, ui);
             self.handle_cursor_icon(ctx, ui);
@@ -1451,12 +1544,63 @@ impl MainWindow {
         self.update_smoothed_values(ctx);
     }
 
-    fn draw_data_viewer(&mut self, _ctx: &egui::Context, ui: &mut Ui, _any_window_opened: bool) {
+    fn draw_sidebar(&mut self, _ctx: &egui::Context, ui: &mut Ui) {
+        let images = self.image_resources.as_ref().unwrap();
+        
+        {
+            let mut note_editing = self.note_editing.lock().unwrap();
+
+            let track = note_editing.get_current_track();
+            let has_selected = note_editing.is_any_note_selected();
+
+            if ui.add_enabled(has_selected, {
+                egui::ImageButton::new(&*images.get_image_handle(String::from("copy")))
+            }).clicked() {
+                (*note_editing).copy_notes(track);
+            }
+
+            if ui.add_enabled(has_selected, {
+                // let images = self.image_resources.as_ref().unwrap();
+                egui::ImageButton::new(&*images.get_image_handle(String::from("cut")))
+            }).clicked() {
+                (*note_editing).cut_selected_notes(track);
+            }
+
+            if ui.add_enabled(note_editing.has_notes_in_clipboard(), {
+                // let images = self.image_resources.as_ref().unwrap();
+                egui::ImageButton::new(&*images.get_image_handle(String::from("paste")))
+            }).clicked() {
+                (*note_editing).paste_notes(track);
+            }
+        }
+
+        ui.separator();
+
+        {
+            if ui.add_enabled(self.can_undo(), {
+                egui::ImageButton::new(&*images.get_image_handle(String::from("undo")))
+            }).clicked() {  
+                self.undo();
+            }
+
+            if ui.add_enabled(self.can_redo(), {
+                egui::ImageButton::new(&*images.get_image_handle(String::from("redo")))
+            }).clicked() {
+                self.redo();
+            }
+        }
+    }
+
+    fn draw_data_viewer(&mut self, ctx: &egui::Context, ui: &mut Ui, mouse_over_ui: bool, any_window_opened: bool) {
         let available_width = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(Vec2 { x: available_width, y: 200.0 }, egui::Sense::hover());
 
         if self.gl.is_none() || self.data_view_renderer.is_none() { return; }
-        
+
+        if ui.ui_contains_pointer() {
+            self.handle_data_viewer_inputs(ctx, ui, mouse_over_ui, any_window_opened);
+        }
+
         let gl = self.gl.as_ref().unwrap();
         let data_view_renderer = self.data_view_renderer.as_ref().unwrap();
 
@@ -1484,6 +1628,19 @@ impl MainWindow {
         };
 
         ui.painter().add(callback);
+
+        self.draw_data_view_edit_line(ctx, ui);
+    }
+
+    fn draw_data_view_edit_line(&mut self, ctx: &egui::Context, ui: &mut Ui) {
+        let data_editing = self.data_editing.lock().unwrap();
+        if !data_editing.get_flag(DATA_EDIT_DRAW_EDIT_LINE) { drop(data_editing); return; }
+
+        let (point_1, point_2) = data_editing.get_data_view_line_points();
+        ui.painter().line_segment([
+            point_1.into(),
+            point_2.into()
+        ], Stroke::new(1.0, Color32::WHITE));
     }
 
     fn draw_meta_event_view(&mut self, ctx: &egui::Context, _ui: &mut Ui) {
@@ -1544,7 +1701,7 @@ impl MainWindow {
     }
 
     fn draw_pianoroll_context_menu(&mut self, ui: &mut Ui) {
-
+        
     }
 
     fn draw_trackview_context_menu(&mut self, ui: &mut Ui) {
@@ -1604,23 +1761,12 @@ impl MainWindow {
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let any_window_opened = self.is_any_dialog_shown();
-        
-        // load image resources
-        if self.image_resources.is_none() {
-            self.load_images(ctx);
-        }
-        
-        // init menu stuff
-        if self.menu_bar.is_none() {
-            self.init_main_menu();
-        }
 
         // initialize gl if not initialized already
         if self.gl.is_none() {
             if let Some(gl) = frame.gl() {
                 self.gl = Some(gl.clone());
-                self.init_gl();
-                self.init_note_editing();
+                self.on_gl_init(ctx);
             }
         }
 
@@ -1637,6 +1783,16 @@ impl eframe::App for MainWindow {
             let playback_manager = playback_manager.lock().unwrap();
             if playback_manager.playing {
                 ctx.request_repaint();
+            }
+        };
+
+        // i have no idea where to put this statement lol
+        {
+            let mut project_manager = self.project_manager.write().unwrap();
+            if project_manager.ppq_changed {
+                let ppq = project_manager.get_ppq();
+                self.update_global_ppq(ppq);
+                project_manager.ppq_changed = false;
             }
         }
 
@@ -1660,7 +1816,7 @@ impl eframe::App for MainWindow {
                     ui.spacing_mut().button_padding = egui::vec2(1.0, 1.0);
 
                     {
-                        let mut editor_tool = self.editor_tool.borrow_mut();
+                        let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
 
                         if ui.add({
                             let images = self.image_resources.as_ref().unwrap();
@@ -1674,7 +1830,7 @@ impl eframe::App for MainWindow {
                             let images = self.image_resources.as_ref().unwrap();
                             egui::ImageButton::new(&*images.get_image_handle(String::from("eraser"))).selected(editor_tool.curr_tool == EditorTool::Eraser)
                         }).clicked() {
-                            // let mut editor_tool = self.editor_tool.borrow_mut();
+                            // let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
                             editor_tool.switch_tool(EditorTool::Eraser);
                             self.is_waiting_for_no_ui_hover = false;
                         }
@@ -1683,7 +1839,7 @@ impl eframe::App for MainWindow {
                             let images = self.image_resources.as_ref().unwrap();
                             egui::ImageButton::new(&*images.get_image_handle(String::from("select"))).selected(editor_tool.curr_tool == EditorTool::Selector)
                         }).clicked() {
-                            // let mut editor_tool = self.editor_tool.borrow_mut();
+                            // let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
                             editor_tool.switch_tool(EditorTool::Selector);
                             self.is_waiting_for_no_ui_hover = false;
                         }
@@ -1692,7 +1848,7 @@ impl eframe::App for MainWindow {
                     ui.separator();
                     ui.menu_button("Note Snap", |ui| {
                         {
-                            let mut editor_tool = self.editor_tool.borrow_mut();
+                            let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
                             for (ratio, name) in SNAP_MAPPINGS {
                                 if ui
                                     .checkbox(&mut (ratio == editor_tool.snap_ratio), name)
@@ -1707,7 +1863,7 @@ impl eframe::App for MainWindow {
                     ui.separator();
                     // note gate and velocity
                     {
-                        let mut tbs = self.toolbar_settings.borrow_mut();
+                        let mut tbs = self.toolbar_settings.try_borrow_mut().unwrap();
                         tbs.note_gate.show("Gate", ui, Some(30.0));
                         tbs.note_velocity.show("Velo", ui, Some(30.0));
                         tbs.note_channel.show("Chan", ui, Some(30.0));
@@ -1750,8 +1906,12 @@ impl eframe::App for MainWindow {
                     }
 
                     if tracks_need_update {
-                        let mut project_data = self.project_data.borrow_mut();
-                        project_data.validate_tracks(track_to_change_to);
+                        {
+                            let mut project_manager = self.project_manager.write().unwrap();
+                            project_manager.get_project_data_mut().validate_tracks(track_to_change_to);
+                        }
+                        // let mut project_data = self.project_data.try_borrow_mut().unwrap();
+                        // project_data.validate_tracks(track_to_change_to);
                         
                         if let Some(nav) = self.nav.as_ref() {
                             let mut nav = nav.lock().unwrap();
@@ -1814,6 +1974,15 @@ impl eframe::App for MainWindow {
                 self.mouse_over_ui |= ui.ui_contains_pointer();
             });
 
+            // draw side bar buttons
+            egui::SidePanel::right("editor_side_controls")
+                .exact_width(40.0)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    self.draw_sidebar(ctx, ui);
+                    self.mouse_over_ui |= ui.ui_contains_pointer();
+                });
+
             // Meta event viewer on the left
             self.draw_meta_event_view(ctx, ui);
             self.mouse_over_ui |= ctx.is_pointer_over_area();
@@ -1831,13 +2000,13 @@ impl eframe::App for MainWindow {
                         .clamping(egui::SliderClamping::Never)
                     ).changed() {
                         let min_snap_length = {
-                            let editor_tool = self.editor_tool.borrow();
+                            let editor_tool = self.editor_tool.try_borrow().unwrap();
                             let snap_ratio = editor_tool.snap_ratio;
                             if snap_ratio.0 == 0 { 1 }
                             else {
                                 let ppq = {
-                                    let project_data = self.project_data.borrow();
-                                    project_data.project_info.ppq as MIDITick
+                                    let project_manager = self.project_manager.read().unwrap();
+                                    project_manager.get_ppq() as MIDITick
                                 };
                                 (ppq * 4 * snap_ratio.0 as MIDITick) / snap_ratio.1 as MIDITick
                             }
@@ -1896,18 +2065,30 @@ impl eframe::App for MainWindow {
 
                 if dataview_state != VS_PianoRoll_DataViewState::Hidden && !is_on_track_view {
                     egui::TopBottomPanel::bottom("data_viewer").show(ctx, |ui| {
-                        egui::ComboBox::from_label("Property")
-                            .selected_text(dataview_state.to_string())
-                            .show_ui(ui, |ui| {
-                                let view_settings = self.view_settings.as_mut().unwrap();
-                                let mut view_settings = view_settings.lock().unwrap();
+                        //let available_width = ui.available_width();
+                        //ui.allocate_exact_size(Vec2 { x: available_width, y: 200.0 }, egui::Sense::hover());
+                        
+                        let mut mouse_over_ui = false;
+                        //egui::TopBottomPanel::top("dataview_menu").show(ctx, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Property");
+                                egui::ComboBox::from_label("")
+                                    .selected_text(dataview_state.to_string())
+                                    .show_ui(ui, |ui| {
+                                        let view_settings = self.view_settings.as_mut().unwrap();
+                                        let mut view_settings = view_settings.lock().unwrap();
 
-                                ui.selectable_value(&mut view_settings.pr_dataview_state, VS_PianoRoll_DataViewState::NoteVelocities, "Velocity");
-                                ui.selectable_value(&mut view_settings.pr_dataview_state, VS_PianoRoll_DataViewState::PitchBend, "Pitch Bend");
+                                        ui.selectable_value(&mut view_settings.pr_dataview_state, VS_PianoRoll_DataViewState::NoteVelocities, "Velocity");
+                                        ui.selectable_value(&mut view_settings.pr_dataview_state, VS_PianoRoll_DataViewState::PitchBend, "Pitch Bend");
+                                    });
                             });
 
-                        // TODO: draw data_viewer
-                        self.draw_data_viewer(ctx, ui, any_window_opened);
+                        //    mouse_over_ui |= ui.ui_contains_pointer();
+                        //});
+
+                        // ui.separator();
+                        mouse_over_ui |= ui.ui_contains_pointer();
+                        self.draw_data_viewer(ctx, ui, mouse_over_ui, any_window_opened);
 
                         self.mouse_over_ui |= ui.ui_contains_pointer();
                     });

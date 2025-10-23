@@ -1,26 +1,27 @@
-use std::sync::{Arc, RwLock};
+use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
-use crate::midi::events::meta_event::{MetaEvent, MetaEventType};
+use crate::{editor::project::project_manager::ProjectManager, midi::events::meta_event::{MetaEvent, MetaEventType}};
 
 pub struct BarCacher {
-    pub ppq: u16,
+    // pub ppq: u16,
+    pub project_manager: Arc<RwLock<ProjectManager>>,
     pub bar_cache: Vec<(u32, u32)>,
-    pub global_metas: Arc<RwLock<Vec<MetaEvent>>>,
+    // pub global_metas: Arc<RwLock<Vec<MetaEvent>>>,
     last_ts_index: usize
 }
 
 impl Default for BarCacher {
     fn default() -> Self {
-        BarCacher::new(960, &Arc::new(RwLock::new(Vec::new())))
+        BarCacher::new(&Arc::new(RwLock::new(ProjectManager::new())))
     }
 }
 
 impl BarCacher {
-    pub fn new(ppq: u16, metas: &Arc<RwLock<Vec<MetaEvent>>>) -> Self {
+    pub fn new(project_manger: &Arc<RwLock<ProjectManager>>) -> Self {
         Self {
-            ppq,
+            // ppq,
             bar_cache: Vec::new(),
-            global_metas: metas.clone(),
+            project_manager: project_manger.clone(),
             last_ts_index: 0
         }
     }
@@ -40,7 +41,8 @@ impl BarCacher {
     }
 
     fn validate_bars_until(&mut self, target_bar: usize) {
-        let metas = self.global_metas.read().unwrap();
+        let project_manager = self.project_manager.read().unwrap();
+        let metas = project_manager.get_metas().read().unwrap();
 
         while self.bar_cache.len() <= target_bar {
             let start_tick = match self.bar_cache.last() {
@@ -48,13 +50,13 @@ impl BarCacher {
                 None => 0u32
             };
 
-            let (length, new_idx) = self.compute_bar_length_at(start_tick, &metas, self.last_ts_index);
+            let (length, new_idx) = self.compute_bar_length_at(start_tick, &metas, self.last_ts_index, project_manager.get_ppq());
             self.last_ts_index = new_idx;
             self.bar_cache.push((start_tick, length));
         }
     }
 
-    fn compute_bar_length_at(&self, start_tick: u32, metas: &Vec<MetaEvent>, search_idx: usize) -> (u32, usize) {
+    fn compute_bar_length_at(&self, start_tick: u32, metas: &Vec<MetaEvent>, search_idx: usize, ppq: u16) -> (u32, usize) {
         // Use cached index to avoid linear search from beginning
         let mut current_ts = None;
         let last_idx = search_idx;
@@ -75,7 +77,7 @@ impl BarCacher {
             (4, 2)
         };
 
-        let ticks_per_beat = (self.ppq as u32) << 2;
+        let ticks_per_beat = (ppq as u32) << 2;
         let nominal = (num * ticks_per_beat) >> den;
 
         let next_ts = metas[last_idx..]

@@ -8,7 +8,8 @@ use crate::audio::event_playback::PlaybackManager;
 use crate::editor::midi_bar_cacher::BarCacher;
 //use crate::editor::note_editing::GhostNote;
 use crate::editor::editing::note_editing::GhostNote;
-use crate::editor::project_data::ProjectData;
+use crate::editor::project::project_data::ProjectData;
+use crate::editor::project::project_manager::ProjectManager;
 use crate::midi::events::note::Note;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -89,12 +90,12 @@ pub struct DataViewRenderer {
 
     note_cull_helper: Arc<Mutex<NoteCullHelper>>,
 
-    pub ghost_notes: Option<Arc<Mutex<Vec<GhostNote>>>>
+    pub ghost_notes: Option<Arc<Mutex<Vec<Note>>>>
 }
 
 impl DataViewRenderer {
     pub unsafe fn new(
-        project_data: &Rc<RefCell<ProjectData>>,
+        project_manager: &Arc<RwLock<ProjectManager>>,
         view_settings: &Arc<Mutex<ViewSettings>>,
         nav: &Arc<Mutex<PianoRollNavigation>>,
         gl: &Arc<glow::Context>,
@@ -169,8 +170,8 @@ impl DataViewRenderer {
         gl.vertex_attrib_divisor(2, 1);
 
         let notes = {
-            let project_data = project_data.borrow();
-            project_data.notes.clone()
+            let project_manager = project_manager.read().unwrap();
+            project_manager.get_notes().clone()
         };
 
         Self {
@@ -235,6 +236,7 @@ impl DataViewRenderer {
         };
 
         let notes = self.notes.read().unwrap();
+        if notes.is_empty() { return; }
 
         let tracks_to_iter = match view_settings.pr_onion_state {
             VS_PianoRoll_OnionState::NoOnion => {
@@ -389,7 +391,7 @@ impl DataViewRenderer {
                 let notes = ghost_notes.lock().unwrap();
 
                 for note in notes.iter() {
-                    let note = note.get_note();
+                    // let note = note.get_note();
 
                     let trk_chan = ((nav_curr_track as usize) << 4) | (note.channel() as usize);
                     let dv_handle_val = (note.velocity() as f32) / 127.0;
@@ -442,7 +444,7 @@ impl DataViewRenderer {
         }
     }
 
-    pub fn set_ghost_notes(&mut self, notes: Arc<Mutex<Vec<GhostNote>>>) {
+    pub fn set_ghost_notes(&mut self, notes: Arc<Mutex<Vec<Note>>>) {
         self.ghost_notes = Some(notes);
     }
 
