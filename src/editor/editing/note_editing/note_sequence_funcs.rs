@@ -209,7 +209,3 @@ pub fn move_all_notes_by(notes: Vec<Note>, dt_pos: (SignedMIDITick, i16)) -> Vec
     tmp.sort_by_key(|&n| n.start());
     tmp
 }
-
-pub fn get_first_from_ids<'a, T>(arr: &'a [T], ids: &[usize]) -> &'a T {
-    &arr[ids[0]]
-}

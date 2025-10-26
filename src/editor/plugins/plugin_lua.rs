@@ -1,6 +1,7 @@
 use mlua::{Error, Function, Lua, Table, Value};
 use crate::{editor::{plugins::PluginType}};
 use std::{path::PathBuf, rc::Rc};
+use regex::Regex;
 
 pub struct PluginInfo {
     pub author: Option<String>,
@@ -47,7 +48,7 @@ impl PluginLua {
         let disallowed_modules = vec!["socket", "os", "package"];
         let globals = lua.globals();
         let require: Function = globals.get("require")?;
-        let require_strip = lua.create_function(move |lua, name: String| {
+        let require_strip = lua.create_function(move |_, name: String| {
             if disallowed_modules.iter().any(|&m| m == name) {
                 return Err(mlua::Error::RuntimeError(format!(
                     "for security reasons, usage of module '{}' is not allowed",
@@ -62,6 +63,8 @@ impl PluginLua {
         globals.set("os", Value::Nil)?;
         globals.set("package", Value::Nil)?;
 
+        let src_code = Self::preprocess_plugin_src(src_code);
+        println!("{src_code}");
         let globals = lua.load(src_code).eval::<Table>()?;
 
         let plugin_name = globals.get::<String>("plugin_name");
@@ -105,5 +108,17 @@ impl PluginLua {
         self.loaded = true;
 
         Ok(())
+    }
+
+    fn preprocess_plugin_src(source: &str) -> String {
+        let re = Regex::new(r"(?m)^\s*local\s+P\s*=\s*\{\s*\}\s*;?\s*$").unwrap();
+        re.replace_all(source, r#"local P = {}
+function get_field_value(f_id)
+    for i,f in ipairs(P.dialog_fields) do
+        if f.id == f_id then
+            return f[1].value
+        end
+    end
+end"#).to_string()
     }
 }

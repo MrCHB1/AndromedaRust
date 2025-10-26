@@ -54,10 +54,16 @@ impl MetaEditing {
 
     pub fn insert_meta_event(&mut self, meta_event: MetaEvent) {
         let tick = meta_event.tick;
-        let insert_idx = self.bin_search_metas(tick);
+        // let insert_idx = self.bin_search_metas(tick);
+
+        let meta_ev_type = meta_event.event_type;
         
         {
-            let mut metas = self.global_metas.write().unwrap();
+            let mut metas = self.global_metas.try_write().unwrap();
+            let insert_idx = match metas.binary_search_by_key(&tick, |meta| meta.tick) {
+                Ok(ins) | Err(ins) => ins
+            };
+
             let replace_meta = if insert_idx < metas.len() {
                 meta_event.tick == metas[insert_idx].tick && meta_event.event_type == metas[insert_idx].event_type
             } else {
@@ -65,11 +71,6 @@ impl MetaEditing {
             };
 
             // println!("{:?}", metas.iter().map(|m| (m.event_type, &m.data)).collect::<Vec<_>>());
-
-            if meta_event.event_type == MetaEventType::Tempo {
-                let mut tempo_map = self.tempo_map.write().unwrap();
-                tempo_map.rebuild_tempo_map();
-            }
         
             if replace_meta {
                 metas[insert_idx].data = meta_event.data;
@@ -82,10 +83,12 @@ impl MetaEditing {
             }
         }
 
-        self.regenerate_bars();
+        if meta_ev_type == MetaEventType::Tempo {
+            let mut tempo_map = self.tempo_map.try_write().unwrap();
+            tempo_map.rebuild_tempo_map();
+        }
 
-        // let mut editor_actions = self.editor_actions.lock().unwrap();
-        // editor_actions.register_action(EditorAction::AddMeta(vec![insert_idx]));
+        self.regenerate_bars();
     }
 
     pub fn apply_action(&mut self, action: &EditorAction) {
@@ -244,73 +247,4 @@ impl MetaEventInsertDialog {
             _ => {}
         }
     }
-    /*pub fn show(&mut self, show_for: MetaEventType, on_meta_created: impl Fn(Vec<u8>) + 'static) {
-        self.dialog_type = show_for;
-
-        match show_for {
-            MetaEventType::TimeSignature => {
-                self.fields = vec![
-                    ("Numerator", Box::new(NumericField::<u8>::new(4, Some(1), Some(12)))),
-                    ("Denominator (Power of 2)", Box::new(NumericField::<u8>::new(2, Some(0), Some(4)))),
-                ];
-                self.meta_created = Some(Box::new(on_meta_created));
-                self.is_showing = true;
-            },
-            MetaEventType::Tempo => {
-                self.fields = vec![
-                    ("Tempo", Box::new(NumericField::<f32>::new(120.0, Some(60000000.0 / (0xFFFFFF as f32)), Some(60000000.0 / 1.0))))
-                ];
-                self.meta_created = Some(Box::new(on_meta_created));
-                self.is_showing = true;
-            }
-            _ => {}
-        }
-    }
-
-    pub fn draw(&mut self, ctx: &egui::Context) -> bool {
-        if !self.is_showing { return false; }
-
-        egui::Window::new(RichText::new(format!("Insert {}", self.dialog_type.to_string())).size(15.0))
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.vertical(|ui| {
-                    for (label, field) in self.fields.iter_mut() {
-                        field.show(label, ui, None);
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("Insert").clicked() {
-                            let mut data = Vec::new();
-
-                            match self.dialog_type {
-                                MetaEventType::TimeSignature => {
-                                    data = vec![self.fields[0].1.as_u8(), self.fields[1].1.as_u8()];
-                                    println!("{:?}", data);
-                                },
-                                MetaEventType::Tempo => {
-                                    data = tempo_as_bytes(self.fields[0].1.as_f32()).to_vec();
-                                }
-                                _ => {}
-                            }
-
-                            if !data.is_empty() {
-                                if let Some(meta_created) = self.meta_created.take() {
-                                    meta_created(data);
-                                }
-                            }
-                            
-                            self.is_showing = false;
-                        }
-
-                        if ui.button("Cancel").clicked() {
-                            self.fields.clear();
-                            self.is_showing = false;
-                        }
-                    });
-                });
-            });
-
-        return self.is_showing;
-    }*/
 }

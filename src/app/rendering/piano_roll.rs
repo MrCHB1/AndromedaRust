@@ -2,6 +2,7 @@ use crate::app::rendering::note_cull_helper::NoteCullHelper;
 use crate::app::rendering::Renderer;
 use crate::app::shared::NoteColors;
 use crate::audio::event_playback::PlaybackManager;
+use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::project::project_data::ProjectData;
 use crate::editor::project::project_manager::ProjectManager;
@@ -89,7 +90,8 @@ pub struct PianoRollRenderer {
     note_cull_helper: Arc<Mutex<NoteCullHelper>>,
 
     pub ghost_notes: Option<Arc<Mutex<Vec<Note>>>>,
-    pub selected: HashSet<usize>,
+    // pub selected: HashSet<usize>,
+    selected: Arc<RwLock<SharedSelectedNotes>>,
     render_active: bool,
 }
 
@@ -206,7 +208,7 @@ impl PianoRollRenderer {
             note_cull_helper: note_cull_helper.clone(),
 
             ghost_notes: None,
-            selected: HashSet::new(),
+            selected: Arc::new(RwLock::new(SharedSelectedNotes::default())),
             render_active: false
         }
     }
@@ -417,7 +419,7 @@ impl Renderer for PianoRollRenderer {
 
                                 let mut curr_note = 0;
                                 
-                                if note_end > notes.len() { 
+                                while note_end > notes.len() { 
                                     note_culler.update_cull_for_track(curr_track, tick_pos_offs, zoom_ticks, true);
                                     (n_off, note_end) = note_culler.get_track_cull_range(curr_track);
                                 }
@@ -539,6 +541,14 @@ impl Renderer for PianoRollRenderer {
                                     }
                                     e
                                 };*/
+                                // let sel_note_ids = match 
+                                let shared_sel_notes = self.selected.read().unwrap();
+                                
+                                let sel_ids = match shared_sel_notes.get_selected_ids_in_track(curr_track) {
+                                    Some(sel_ids) => sel_ids,
+                                    None => &vec![]
+                                };
+                                let mut sel_idx = 0;
                                 for note in &notes[n_off..note_end] {
                                     if note.key() as f32 + 1.0 < key_pos || (note.key() as f32) > key_pos + zoom_keys {
                                         curr_note += 1;
@@ -570,9 +580,13 @@ impl Renderer for PianoRollRenderer {
                                                     note_meta |= 1 << 12;
                                                 }
 
-                                                if self.selected.contains(&note_idx) {
+                                                if sel_idx < sel_ids.len() && note_idx == sel_ids[sel_idx] {
                                                     note_meta |= 1 << 13;
+                                                    sel_idx += 1;
                                                 }
+                                                /*if self.selected.contains(&note_idx) {
+                                                    note_meta |= 1 << 13;
+                                                }*/
 
                                                 note_meta
                                             },
@@ -816,9 +830,10 @@ impl Renderer for PianoRollRenderer {
         }*/
     }*/
 
-    fn set_selected(&mut self, selected_ids: &Arc<Mutex<Vec<usize>>>) {
-        let sel = selected_ids.lock().unwrap();
-        self.selected = HashSet::from_iter((*sel).clone());
+    fn set_selected(&mut self, selected_ids: &Arc<RwLock<SharedSelectedNotes>>) {
+        //let sel = selected_ids.lock().unwrap();
+        //self.selected = HashSet::from_iter((*sel).clone());
+        self.selected = selected_ids.clone();
     }
 
     fn set_active(&mut self, is_active: bool) {

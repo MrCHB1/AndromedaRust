@@ -131,13 +131,19 @@ impl LuaNoteEditing {
 
         let mut bulk_actions = Vec::new();
 
-        let dt_channels: Vec<(usize, i8)> = self.delta_note_channels.into_iter().map(|(k, v)| (k, v)).collect();
-        let dt_velocities: Vec<(usize, i8)> = self.delta_note_velocities.into_iter().map(|(k, v)| (k, v)).collect();
+        let mut dt_channels: Vec<(usize, i8)> = self.delta_note_channels.into_iter().map(|(k, v)| (k, v)).collect();
+        let mut dt_velocities: Vec<(usize, i8)> = self.delta_note_velocities.into_iter().map(|(k, v)| (k, v)).collect();
         let mut dt_position: Vec<(usize, (SignedMIDITick, i16))> = self.delta_note_pos.into_iter().map(|(k, v)| (k, v)).collect();
-        let dt_length: Vec<(usize, SignedMIDITick)> = self.delta_note_lengths.into_iter().map(|(k, v)| (k, v)).collect();
+        let mut dt_length: Vec<(usize, SignedMIDITick)> = self.delta_note_lengths.into_iter().map(|(k, v)| (k, v)).collect();
         let mut notes_to_add = self.notes_to_add;
 
-        // 1. apply note channel changes
+        // 1. sort them all by id if needed
+        dt_channels.sort_by_key(|&(id, _)| id);
+        dt_velocities.sort_by_key(|&(id, _)| id);
+        dt_length.sort_by_key(|&(id, _)| id);
+        dt_position.sort_by_key(|&(id, _)| id);
+
+        // 2. apply note channel changes
         if !dt_channels.is_empty() {
             let (ids, ch_change): (Vec<usize>, Vec<i8>) = dt_channels.into_iter().unzip();
             bulk_actions.push(EditorAction::ChannelChange(ids, ch_change, track));
@@ -154,7 +160,6 @@ impl LuaNoteEditing {
         }
 
         if !dt_position.is_empty() {
-            dt_position.sort_by_key(|&(id, _)| id);
             let (ids, delta_pos): (Vec<usize>, Vec<_>) = dt_position.into_iter().unzip();
 
             let mut note_editing = note_editing.lock().unwrap();
@@ -162,7 +167,7 @@ impl LuaNoteEditing {
             
             // group notes with delta while extracting them to prevent delta pos index invalidation when sorting by note start
             let (mut notes_with_delta, old_notes) = extract_with(old_notes, &ids, delta_pos); // O(n)
-            notes_with_delta.sort_unstable_by_key(|(n, _)| n.start());
+            notes_with_delta.sort_by_key(|(n, _)| n.start());
             let (notes_to_move, delta) = notes_with_delta.into_iter().unzip();
     
             let (merged, note_ids) = merge_notes_and_return_ids(old_notes, notes_to_move); // O(n+k)
@@ -211,13 +216,16 @@ impl UserData for LuaNoteEditing {
             
             let (notes, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes().clone(), note_editing.get_selected_note_ids().clone())
+                (note_editing.get_notes().clone(), note_editing.get_shared_selected_ids().clone())
             };
 
             let mut notes = notes.write().unwrap();
             let track = &mut notes[curr_track];
 
-            let sel_ids = sel_ids.lock().unwrap();
+            let empty = vec![];
+            let sel_ids = sel_ids.read().unwrap();
+            let sel_ids = sel_ids.get_selected_ids_in_track(curr_track as u16)
+                .unwrap_or(&empty);
 
             for &sel_id in sel_ids.iter() {
                 let note = &mut track[sel_id];
@@ -232,13 +240,17 @@ impl UserData for LuaNoteEditing {
 
             let (notes, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes().clone(), note_editing.get_selected_note_ids().clone())
+                (note_editing.get_notes().clone(), note_editing.get_shared_selected_ids().clone())
             };
 
             let notes = notes.read().unwrap();
             let track = &notes[curr_track];
 
-            let sel_ids = sel_ids.lock().unwrap();
+            let empty = vec![];
+            let sel_ids = sel_ids.read().unwrap();
+            let sel_ids = sel_ids.get_selected_ids_in_track(curr_track as u16)
+                .unwrap_or(&empty);
+
             for &sel_id in sel_ids.iter() {
                 let note = &track[sel_id];
                 this.call_lua_note_fn(lua, &func, note)?;
@@ -253,10 +265,13 @@ impl UserData for LuaNoteEditing {
 
             let (notes, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes().clone(), note_editing.get_selected_note_ids().clone())
+                (note_editing.get_notes().clone(), note_editing.get_shared_selected_ids().clone())
             };
 
-            let sel_ids = sel_ids.lock().unwrap();
+            let empty = vec![];
+            let sel_ids = sel_ids.read().unwrap();
+            let sel_ids = sel_ids.get_selected_ids_in_track(curr_track as u16)
+                .unwrap_or(&empty);
             if sel_ids.is_empty() { return Ok(None); }
 
             let notes = notes.read().unwrap();
@@ -280,10 +295,13 @@ impl UserData for LuaNoteEditing {
 
             let (notes, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes().clone(), note_editing.get_selected_note_ids().clone())
+                (note_editing.get_notes().clone(), note_editing.get_shared_selected_ids().clone())
             };
 
-            let sel_ids = sel_ids.lock().unwrap();
+            let empty = vec![];
+            let sel_ids = sel_ids.read().unwrap();
+            let sel_ids = sel_ids.get_selected_ids_in_track(curr_track as u16)
+                .unwrap_or(&empty);
             if sel_ids.is_empty() { return Ok(None); }
 
             let notes = notes.read().unwrap();

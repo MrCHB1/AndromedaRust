@@ -14,6 +14,12 @@ pub mod track_flags {
 
 use track_flags::*;
 
+#[derive(Default)]
+struct TrackEditMouseInfo {
+    mouse_midi_track_pos: (MIDITick, u16),
+    last_mouse_click_pos: (MIDITick, u16),
+}
+
 // because im a lazy mf, i put note track editing as a separate file
 #[derive(Default)]
 pub struct TrackEditing {
@@ -25,6 +31,7 @@ pub struct TrackEditing {
     editor_actions: Rc<RefCell<EditorActions>>,
     pr_nav: Arc<Mutex<PianoRollNavigation>>,
     nav: Arc<Mutex<TrackViewNavigation>>,
+    mouse_info: TrackEditMouseInfo,
 
     curr_mouse_track_pos: (MIDITick, u16),
     right_clicked_track: u16,
@@ -51,6 +58,7 @@ impl TrackEditing {
 
             pr_nav: pr_nav.clone(),
             nav: nav.clone(),
+            mouse_info: Default::default(),
 
             curr_mouse_track_pos: (0, 0),
             view_settings: view_settings.clone(),
@@ -60,31 +68,34 @@ impl TrackEditing {
         }
     }
 
-    #[inline(always)]
-    pub fn set_mouse_over_ui(&mut self, mouse_over_ui: bool) {
-        self.flags &= !TRACK_EDIT_MOUSE_OVER_UI;
-        if mouse_over_ui { self.flags |= TRACK_EDIT_MOUSE_OVER_UI; }
+    pub fn update(&mut self, ui: &mut Ui) {
+        // convert from mouse pos to midi track pos
+        let (mouse_x, mouse_y) = {
+            let pos = ui.input(|i| i.pointer.hover_pos().unwrap_or_default());
+            (pos.x, pos.y)
+        };
+
+        // self.mouse_info.mouse_midi_track_pos = get_mouse_track_view_pos(ui, &self.nav);
+        self.mouse_info.mouse_midi_track_pos = self.screen_pos_to_midi_track_pos((mouse_x, mouse_y), ui);
     }
 
-    pub fn update_from_ui(&mut self, ui: &mut Ui) {
-        let mouse_track_pos = get_mouse_track_view_pos(ui, &self.nav);
-        self.curr_mouse_track_pos = mouse_track_pos;
+    fn screen_pos_to_midi_track_pos(&self, screen_pos: (f32, f32), ui: &mut Ui) -> (MIDITick, u16) {
+        let rect = ui.min_rect();
+        
+        let screen_x_norm = (screen_pos.0 - rect.left()) / rect.width();
+        let screen_y_norm = (screen_pos.1 - rect.top()) / rect.height();
+
+        let nav = self.nav.lock().unwrap();
+        let screen_x_tick = (screen_x_norm * nav.zoom_ticks_smoothed + nav.tick_pos_smoothed) as MIDITick;
+        let screen_y_trck = (screen_y_norm * nav.zoom_tracks_smoothed + nav.track_pos_smoothed) as u16;
+
+        (screen_x_tick, screen_y_trck)
     }
 
-    #[inline(always)]
-    pub fn get_mouse_track_pos(&self) -> u16 {
-        self.curr_mouse_track_pos.1
-    }
-
-    // helper functions
-    fn get_pianoroll_track(&self) -> u16 {
-        let nav = self.pr_nav.lock().unwrap();
-        nav.curr_track
-    }
-
+    // ======== INPUT EVENTS ========
     pub fn on_mouse_down(&mut self) {
-        if self.flags & TRACK_EDIT_MOUSE_OVER_UI != 0 {
-            self.flags |= TRACK_EDIT_MOUSE_DOWN_ON_UI;
+        if self.get_flag(TRACK_EDIT_MOUSE_OVER_UI) {
+            self.enable_flag(TRACK_EDIT_MOUSE_DOWN_ON_UI);
             return;
         }
 
@@ -108,9 +119,7 @@ impl TrackEditing {
     }
 
     pub fn on_right_mouse_down(&mut self) {
-        if self.flags & TRACK_EDIT_MOUSE_OVER_UI != 0 {
-            return;
-        }
+        if self.get_flag(TRACK_EDIT_MOUSE_OVER_UI) { return; }
 
         self.right_clicked_track = self.get_mouse_track_pos();
     }
@@ -135,14 +144,17 @@ impl TrackEditing {
         }
     }
 
-    pub fn insert_track(&mut self, track: u16) {
-        let track_count = self.get_used_track_count();
-        if track >= track_count { return; }
+    // ======== HELPER FUNCTIONS ========
 
-        self.insert_notes_and_ch_evs(track, Vec::new(), Vec::new());
+    #[inline(always)]
+    pub fn get_mouse_track_pos(&self) -> u16 {
+        self.mouse_info.mouse_midi_track_pos.1
+        // self.curr_mouse_track_pos.1
+    }
 
-        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
-        editor_actions.register_action(EditorAction::AddTrack(track, None, false));
+    fn get_pianoroll_track(&self) -> u16 {
+        let nav = self.pr_nav.lock().unwrap();
+        nav.curr_track
     }
 
     fn insert_notes_and_ch_evs(&mut self, track: u16, notes: Vec<Note>, ch_evs: Vec<ChannelEvent>) {
@@ -154,6 +166,16 @@ impl TrackEditing {
 
         notes_.insert(track as usize, notes);
         ch_evs_.insert(track as usize, ch_evs);
+    }    
+
+    pub fn insert_track(&mut self, track: u16) {
+        let track_count = self.get_used_track_count();
+        if track >= track_count { return; }
+
+        self.insert_notes_and_ch_evs(track, Vec::new(), Vec::new());
+
+        let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
+        editor_actions.register_action(EditorAction::AddTrack(track, None, false));
     }
 
     pub fn remove_track(&mut self, track: u16) {
@@ -285,6 +307,8 @@ impl TrackEditing {
         self.swap_tracks_and_register(track_1, track_2, true);
     }
 
+    // ======== ACTIONS ========
+
     pub fn apply_action(&mut self, action: &mut EditorAction) {
         match action {
             EditorAction::AddTrack(track_insert, removed_tracks, is_first) => {
@@ -320,4 +344,101 @@ impl TrackEditing {
             _ => {}
         }
     }
+
+    // ======== FLAG HELPER FUNCTIONS ========
+
+    #[inline(always)]
+    pub fn set_flag(&mut self, flag: u16, value: bool) {
+        self.flags = (self.flags & !flag) | ((-(value as i16) as u16) & flag);
+    }
+
+    #[inline(always)]
+    pub fn get_flag(&self, flag: u16) -> bool {
+        self.flags & flag != 0
+    }
+
+    #[inline(always)]
+    pub fn enable_flag(&mut self, flag: u16) {
+        self.set_flag(flag, true);
+    }
+
+    #[inline(always)]
+    pub fn disable_flag(&mut self, flag: u16) {
+        self.flags &= !flag;
+    }
+
+    /*#[inline(always)]
+    pub fn set_mouse_over_ui(&mut self, mouse_over_ui: bool) {
+        self.flags &= !TRACK_EDIT_MOUSE_OVER_UI;
+        if mouse_over_ui { self.flags |= TRACK_EDIT_MOUSE_OVER_UI; }
+    }
+
+    pub fn update_from_ui(&mut self, ui: &mut Ui) {
+        let mouse_track_pos = get_mouse_track_view_pos(ui, &self.nav);
+        self.curr_mouse_track_pos = mouse_track_pos;
+    }
+
+    #[inline(always)]
+    pub fn get_mouse_track_pos(&self) -> u16 {
+        self.curr_mouse_track_pos.1
+    }
+
+    // helper functions
+    fn get_pianoroll_track(&self) -> u16 {
+        let nav = self.pr_nav.lock().unwrap();
+        nav.curr_track
+    }
+
+    pub fn on_mouse_down(&mut self) {
+        if self.flags & TRACK_EDIT_MOUSE_OVER_UI != 0 {
+            self.flags |= TRACK_EDIT_MOUSE_DOWN_ON_UI;
+            return;
+        }
+
+        let editor_tool = {
+            let editor_tool = self.editor_tool.try_borrow().unwrap();
+            editor_tool.get_tool().clone()
+        };
+
+        match editor_tool {
+            EditorTool::Pencil => {
+                let track_pos = self.get_mouse_track_pos();
+                self.change_track(track_pos);
+            },
+            EditorTool::Selector => {
+
+            },
+            EditorTool::Eraser => {
+
+            }
+        }
+    }
+
+    pub fn on_right_mouse_down(&mut self) {
+        if self.flags & TRACK_EDIT_MOUSE_OVER_UI != 0 {
+            return;
+        }
+
+        self.right_clicked_track = self.get_mouse_track_pos();
+    }
+
+    pub fn on_mouse_move(&mut self) {
+
+    }
+
+    pub fn on_mouse_up(&mut self) {
+
+    }
+
+    pub fn on_key_down(&mut self, ui: &mut Ui) {
+        let curr_track = self.get_pianoroll_track();
+
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowUp) && i.modifiers.command) {
+            if curr_track > 0 { self.change_track(curr_track - 1); }
+        }
+
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowDown) && i.modifiers.command) {
+            if curr_track < u16::MAX { self.change_track(curr_track + 1); }
+        }
+    }*/
 }

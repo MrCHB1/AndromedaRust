@@ -1,5 +1,5 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
-use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::{data_view::DataViewRenderer, RenderManager}}, editor::{self, actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids, move_all_notes_by, move_each_note_by, remove_note}, navigation::PianoRollNavigation, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{find_note_at, get_absolute_max_tick_from_ids, get_min_max_ticks_in_selection, get_mouse_midi_pos, get_notes_in_range, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::{data_view::DataViewRenderer, RenderManager}}, editor::{self, actions::{EditorAction, EditorActions}, editing::{note_editing::note_sequence_funcs::{extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids, move_all_notes_by, move_each_note_by, remove_note}, SharedClipboard, SharedSelectedNotes}, navigation::PianoRollNavigation, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{find_note_at, get_absolute_max_tick_from_ids, get_min_max_ticks_in_selection, get_mouse_midi_pos, get_notes_in_range, MIDITick, SignedMIDITick}}, midi::events::note::Note};
 use eframe::egui::{self, Context, CursorIcon, Key, Ui};
 use note_edit_flags::*;
 
@@ -64,7 +64,8 @@ struct NoteEditMouseInfo {
 pub struct NoteEditing {
     notes: Arc<RwLock<Vec<Vec<Note>>>>,
     ghost_notes: Arc<Mutex<Vec<Note>>>,
-    selected_note_ids: Arc<Mutex<Vec<usize>>>,
+    shared_selected_note_ids: Arc<RwLock<SharedSelectedNotes>>,
+    // selected_note_ids: Arc<Mutex<Vec<usize>>>,
     nav: Arc<Mutex<PianoRollNavigation>>,
     mouse_info: NoteEditMouseInfo,
     editor_tool: Rc<RefCell<EditorToolSettings>>,
@@ -81,7 +82,8 @@ pub struct NoteEditing {
     pub ppq: u16,
 
     // notes clipboard
-    notes_clipboard: Vec<Note>,
+    // notes_clipboard: Vec<Note>,
+    shared_clipboard: Arc<RwLock<SharedClipboard>>,
 
     // other
     pub latest_note_start: MIDITick,
@@ -101,6 +103,8 @@ impl NoteEditing {
 
         render_manager: &Arc<Mutex<RenderManager>>,
         data_view_renderer: &Arc<Mutex<DataViewRenderer>>,
+        shared_clipboard: &Arc<RwLock<SharedClipboard>>,
+        shared_selected_note_ids: &Arc<RwLock<SharedSelectedNotes>>,
     ) -> Self {
 
         {
@@ -111,8 +115,10 @@ impl NoteEditing {
         Self {
             notes: notes.clone(),
             ghost_notes: Arc::new(Mutex::new(Vec::new())),
-            selected_note_ids: Arc::new(Mutex::new(Vec::new())),
-            notes_clipboard: Vec::new(),
+            // selected_note_ids: Arc::new(Mutex::new(Vec::new())),
+            // notes_clipboard: Vec::new(),
+            shared_clipboard: shared_clipboard.clone(),
+            shared_selected_note_ids: shared_selected_note_ids.clone(),
             nav: nav.clone(),
             mouse_info: NoteEditMouseInfo::default(),
             editor_tool: editor_tool.clone(),
@@ -133,7 +139,7 @@ impl NoteEditing {
         }
     }
 
-    pub fn update_from_ui(&mut self, ui: &mut Ui) {
+    pub fn update(&mut self, ui: &mut Ui) {
         let (mouse_midi_pos, mouse_midi_pos_rounded) = get_mouse_midi_pos(ui, &self.nav);
 
         {
@@ -291,8 +297,8 @@ impl NoteEditing {
     }
 
     pub fn on_key_down(&mut self, ui: &mut Ui) {
+        let curr_track = self.get_current_track();
         if !self.get_flag(NOTE_EDIT_ANY_DIALOG_OPEN | NOTE_EDIT_MOUSE_OVER_UI) {
-            let curr_track = self.get_current_track();
             if ui.input(|i| i.events.iter().any(|ev| matches!(ev, egui::Event::Copy))) {
                 println!("Copied");
                 self.copy_notes(curr_track);
@@ -309,14 +315,18 @@ impl NoteEditing {
             }
 
             if ui.input(|i| i.key_pressed(Key::D) && i.modifiers.command) {
+                println!("Duplicating...");
                 self.duplicate_selected_notes();
+                println!("Done");
             }
         }
 
         if ui.input(|i| i.key_pressed(Key::Delete)) {
             let sel_ids = {
-                let mut selected_ids = self.selected_note_ids.lock().unwrap();
-                std::mem::take(&mut *selected_ids)
+                let mut shared_sel_ids = self.shared_selected_note_ids.write().unwrap();
+                shared_sel_ids.take_selected_from_track(curr_track)
+                // let mut selected_ids = self.selected_note_ids.lock().unwrap();
+                // std::mem::take(&mut *selected_ids)
             };
 
             self.delete_notes_no_remap(sel_ids);
@@ -348,8 +358,8 @@ impl NoteEditing {
 
         // we are over a note
         if let Some(clicked_idx) = self.get_clicked_note_idx() {
+            let curr_track = self.get_current_track();
             {
-                let curr_track = self.get_current_track();
                 let notes = self.notes.read().unwrap();
                 let note = &notes[curr_track as usize][clicked_idx];
 
@@ -359,14 +369,22 @@ impl NoteEditing {
             self.disable_flag(NOTE_EDIT_LENGTH_CHANGE | NOTE_EDIT_DRAGGING | NOTE_EDIT_MULTIEDIT);
             
             let is_multi = {
-                let mut sel = self.selected_note_ids.lock().unwrap();
-                if !sel.is_empty() && sel.contains(&clicked_idx) && sel.len() > 1 {
+                let mut shared_sel = self.shared_selected_note_ids.write().unwrap();
+                let is_multi_selected = match shared_sel.get_selected_ids_in_track(curr_track) {
+                    Some(ids) => {
+                        ids.contains(&clicked_idx) && ids.len() > 1
+                    },
+                    None => false
+                };
+
+                if shared_sel.is_any_note_selected() && is_multi_selected {
                     true
                 } else {
-                    sel.clear();
+                    shared_sel.clear_selected();
                     false
                 }
             };
+
             // self.disable_flag(NOTE_EDIT_DRAGGING);
             // self.disable_flag(flag);
 
@@ -376,12 +394,19 @@ impl NoteEditing {
                 self.enable_flag(NOTE_EDIT_LENGTH_CHANGE);
 
                 let sel_lengths = {
-                    let selected_ids = self.selected_note_ids.lock().unwrap();
+                    /*let selected_ids = self.selected_note_ids.lock().unwrap();
                     let ids = if is_multi {
                         &*selected_ids
                     } else {
                         &vec![clicked_idx]
+                    };*/
+                    let shared_sel_ids = self.shared_selected_note_ids.read().unwrap();
+                    let ids = if is_multi {
+                        shared_sel_ids.get_selected_ids_in_track(curr_track).unwrap()
+                    } else {
+                        &vec![clicked_idx]
                     };
+
                     self.get_note_lengths(ids)
                 };
 
@@ -390,12 +415,20 @@ impl NoteEditing {
                 self.enable_flag(NOTE_EDIT_DRAGGING);
 
                 let sel_positions = {
-                    let selected_ids = self.selected_note_ids.lock().unwrap();
+                    /*let selected_ids = self.selected_note_ids.lock().unwrap();
                     let ids = if is_multi {
                         &*selected_ids
                     } else {
                         &vec![clicked_idx]
+                    };*/
+
+                    let shared_sel_ids = self.shared_selected_note_ids.read().unwrap();
+                    let ids = if is_multi {
+                        shared_sel_ids.get_selected_ids_in_track(curr_track).unwrap()
+                    } else {
+                        &vec![clicked_idx]
                     };
+
                     self.get_note_positions(ids)
                 };
 
@@ -415,7 +448,7 @@ impl NoteEditing {
             if is_multi {
                 self.enable_flag(NOTE_EDIT_MULTIEDIT);
             } else {
-                self.update_render_selected_notes();
+                // self.update_render_selected_notes();
             }
         } else {
             self.clear_selected();
@@ -468,8 +501,12 @@ impl NoteEditing {
         self.disable_flag(NOTE_EDIT_DRAGGING | NOTE_EDIT_LENGTH_CHANGE | NOTE_EDIT_MULTIEDIT);
 
         if let Some(clicked_idx) = self.get_clicked_note_idx() {
+            let curr_track = self.get_current_track();
             let should_modify_selected = {
-                let selected_ids = self.selected_note_ids.lock().unwrap();
+                // let selected_ids = self.selected_note_ids.lock().unwrap();
+                let selected_ids = self.shared_selected_note_ids.read().unwrap();
+                let selected_ids = selected_ids.get_selected_ids_in_track(curr_track).unwrap();
+
                 !selected_ids.is_empty() && selected_ids.contains(&clicked_idx)
             };
 
@@ -481,9 +518,16 @@ impl NoteEditing {
                 self.enable_flag(NOTE_EDIT_LENGTH_CHANGE);
 
                 let sel_lengths = {
-                    let selected_ids = self.selected_note_ids.lock().unwrap();
+                    /*let selected_ids = self.selected_note_ids.lock().unwrap();
                     let ids = if should_modify_selected {
                         &*selected_ids
+                    } else {
+                        &vec![clicked_idx]
+                    };*/
+
+                    let shared_sel_ids = self.shared_selected_note_ids.read().unwrap();
+                    let ids = if should_modify_selected {
+                        shared_sel_ids.get_selected_ids_in_track(curr_track).unwrap()
                     } else {
                         &vec![clicked_idx]
                     };
@@ -495,9 +539,16 @@ impl NoteEditing {
                 self.enable_flag(NOTE_EDIT_DRAGGING);
 
                 let sel_positions = {
-                    let selected_ids = self.selected_note_ids.lock().unwrap();
+                    /*let selected_ids = self.selected_note_ids.lock().unwrap();
                     let ids = if should_modify_selected {
                         &*selected_ids
+                    } else {
+                        &vec![clicked_idx]
+                    };*/
+
+                    let shared_sel_ids = self.shared_selected_note_ids.read().unwrap();
+                    let ids = if should_modify_selected {
+                        shared_sel_ids.get_selected_ids_in_track(curr_track).unwrap()
                     } else {
                         &vec![clicked_idx]
                     };
@@ -554,8 +605,11 @@ impl NoteEditing {
             let selected = get_notes_in_range(notes, min_tick, max_tick, min_key, max_key, true);
 
             {
-                let mut sel = self.selected_note_ids.lock().unwrap();
+                // let mut sel = self.selected_note_ids.lock().unwrap();
                 let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
+                
+                let mut sel = self.shared_selected_note_ids.write().unwrap();
+                let mut sel = sel.get_selected_ids_mut(curr_track);
 
                 if !selected.is_empty() {
                     editor_actions.register_action(EditorAction::Select(selected.clone(), curr_track));
@@ -566,7 +620,7 @@ impl NoteEditing {
                 *sel = selected;
             }
 
-            self.update_render_selected_notes();
+            // self.update_render_selected_notes();
         }
     }
 
@@ -666,11 +720,11 @@ impl NoteEditing {
 
     fn clear_selected(&mut self) {
         {
-            let mut selected_ids = self.selected_note_ids.lock().unwrap();
-            selected_ids.clear();
+            let mut selected_ids = self.shared_selected_note_ids.write().unwrap();
+            selected_ids.clear_selected();
         }
 
-        self.update_render_selected_notes();
+        // self.update_render_selected_notes();
     }
 
     // ======== ERASER TOOL STUFF ========
@@ -716,9 +770,9 @@ impl NoteEditing {
         &self.notes
     }
 
-    pub fn get_selected_note_ids(&self) -> &Arc<Mutex<Vec<usize>>> {
+    /*pub fn get_selected_note_ids(&self) -> &Arc<Mutex<Vec<usize>>> {
         &self.selected_note_ids
-    }
+    }*/
 
     /// Only call this when mouse was already hovering over note.
     pub fn get_clicked_note_pos(&self) -> (MIDITick, u8) {
@@ -801,16 +855,19 @@ impl NoteEditing {
         };
         
         let (tmp_ghosts, new_notes) = {
-            let selected = self.selected_note_ids.lock().unwrap();
-            extract(old_notes, &selected)
+            // let selected = self.selected_note_ids.lock().unwrap();
+            let selected = self.shared_selected_note_ids.read().unwrap();
+            extract(old_notes, selected.get_selected_ids_in_track(curr_track).unwrap())
             // extract_notes(old_notes, &selected)
         };
 
         self.set_notes_in_track(curr_track, new_notes);
         
-        let selected = {
-            let mut selected = self.selected_note_ids.lock().unwrap();
-            std::mem::take(&mut *selected)
+        let _ = {
+            // let mut selected = self.selected_note_ids.lock().unwrap();
+            let mut selected = self.shared_selected_note_ids.write().unwrap();
+            selected.take_selected_from_track(curr_track)
+            // std::mem::take(&mut *selected)
         };
 
         let mut ghost_notes = self.ghost_notes.lock().unwrap();
@@ -980,10 +1037,11 @@ impl NoteEditing {
         
         let is_editing_selected = if pos_deltas.len() > 1 {
             {
-                let mut selected_notes = self.selected_note_ids.lock().unwrap();
-                *selected_notes = ids.clone();
+                let mut selected_notes = self.shared_selected_note_ids.write().unwrap();
+                //*selected_notes = ids.clone();
+                selected_notes.set_selected_in_track(ids.clone(), curr_track);
             }
-            self.update_render_selected_notes();
+            // self.update_render_selected_notes();
             true
         } else {
             false
@@ -1030,17 +1088,21 @@ impl NoteEditing {
         let curr_track = self.get_current_track();
         
         let old_selected = {
-            let mut selected_ids = self.selected_note_ids.lock().unwrap();
-            std::mem::take(&mut *selected_ids)
+            // let mut selected_ids = self.selected_note_ids.lock().unwrap();
+            // std::mem::take(&mut *selected_ids)
+            let mut selected = self.shared_selected_note_ids.write().unwrap();
+            selected.take_selected_from_track(curr_track)
         };
 
         let new_selected = self.duplicate_notes(curr_track, &old_selected);
 
         {
-            let mut selected_ids = self.selected_note_ids.lock().unwrap();
-            *selected_ids = new_selected;
+            let mut selected = self.shared_selected_note_ids.write().unwrap();
+            selected.set_selected_in_track(new_selected, curr_track);
+            // let mut selected_ids = self.selected_note_ids.lock().unwrap();
+            // *selected_ids = new_selected;
         }
-        self.update_render_selected_notes();
+        // self.update_render_selected_notes();
     }
 
     pub fn duplicate_notes(&mut self, track: u16, ids: &Vec<usize>) -> Vec<usize> {
@@ -1079,25 +1141,35 @@ impl NoteEditing {
     }
 
     pub fn copy_notes(&mut self, track: u16) {
-        let selected = self.selected_note_ids.lock().unwrap();
+        // let selected = self.selected_note_ids.lock().unwrap();
+        let selected = self.shared_selected_note_ids.read().unwrap();
+        let selected = selected.get_selected_ids_in_track(track).unwrap();
         if selected.is_empty() { println!("Nothing copied."); return; }
-        let notes_clipboard = self.clone_notes(track, &*selected);
-        self.notes_clipboard = notes_clipboard;
+        let copied_notes = self.clone_notes(track, selected);
+        
+        let mut shared_clipboard = self.shared_clipboard.write().unwrap();
+        shared_clipboard.move_notes_to_clipboard(copied_notes, track);
+        // self.notes_clipboard = notes_clipboard;
     }
 
     pub fn cut_selected_notes(&mut self, track: u16) {
         let old_notes = self.take_notes_in_track(track);
         
         let selected = {
-            let mut selected = self.selected_note_ids.lock().unwrap();
-            std::mem::take(&mut *selected)
+            let mut selected = self.shared_selected_note_ids.write().unwrap();
+            selected.take_selected_from_track(track)
         };
         
         let (notes_to_cut, new_notes) = extract(old_notes, &selected);
-        self.update_render_selected_notes();
+        // self.update_render_selected_notes();
         self.set_notes_in_track(track, new_notes);
         
-        self.notes_clipboard = notes_to_cut.clone();
+        let copied_cut_notes = notes_to_cut.clone();
+        {
+            let mut shared_clipboard = self.shared_clipboard.write().unwrap();
+            shared_clipboard.move_notes_to_clipboard(copied_cut_notes, track);
+        }
+        // self.notes_clipboard = notes_to_cut.clone();
 
         // register as "notes deleted"
         let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
@@ -1106,7 +1178,14 @@ impl NoteEditing {
 
     pub fn paste_notes_offset(&mut self, track: u16, tick_pos: MIDITick) {
         // copy notes from clipboard
-        let mut copied_notes = self.notes_clipboard.clone();
+        let mut copied_notes = {
+            let shared_clipboard = self.shared_clipboard.read().unwrap();
+            shared_clipboard.get_notes_from_clipboard()
+        };
+        
+        // for now
+        let mut copied_notes = std::mem::take(&mut copied_notes[0].1);
+
         let first_tick = copied_notes[0].start();
         for note in copied_notes.iter_mut() {
             let note_paste_tick = note.start() - first_tick;
@@ -1124,7 +1203,13 @@ impl NoteEditing {
     }
 
     pub fn paste_notes(&mut self, track: u16) {
-        let copied_notes = self.notes_clipboard.clone();
+        let mut copied_notes = {
+            let shared_clipboard = self.shared_clipboard.read().unwrap();
+            shared_clipboard.get_notes_from_clipboard()
+        };
+        
+        // for now
+        let copied_notes = std::mem::take(&mut copied_notes[0].1);
 
         let old_notes = self.take_notes_in_track(track);
         let (new_notes, new_ids) = merge_notes_and_return_ids(old_notes, copied_notes);
@@ -1133,10 +1218,12 @@ impl NoteEditing {
         // select the pasted notes
         {
             {
-                let mut selected_ids = self.selected_note_ids.lock().unwrap();
-                *selected_ids = new_ids.clone();
+                // let mut selected_ids = self.selected_note_ids.lock().unwrap();
+                // *selected_ids = new_ids.clone();
+                let mut selected = self.shared_selected_note_ids.write().unwrap();
+                selected.set_selected_in_track(new_ids.clone(), track);
             }
-            self.update_render_selected_notes();
+            // self.update_render_selected_notes();
         }
 
         // register as "placed notes"
@@ -1149,12 +1236,13 @@ impl NoteEditing {
         
         let old_notes = self.take_notes_in_track(curr_track);
 
-        let mut selected = self.selected_note_ids.lock().unwrap();
+        let mut selected = self.shared_selected_note_ids.write().unwrap();
         // TODO: also extract any selected notes that were deleted
-        let (deleted_notes, new_notes, selected_) = extract_and_remap_ids(old_notes, &ids, std::mem::take(&mut *selected));
-        *selected = selected_;
+        let (deleted_notes, new_notes, selected_) = extract_and_remap_ids(old_notes, &ids, selected.take_selected_from_track(curr_track));
+        //*selected = selected_;
+        selected.set_selected_in_track(selected_, curr_track);
         drop(selected);
-        self.update_render_selected_notes();
+        // self.update_render_selected_notes();
         
         self.set_notes_in_track(curr_track, new_notes);
         
@@ -1191,10 +1279,10 @@ impl NoteEditing {
             EditorAction::DeleteNotes(note_ids, notes_deleted, track) => {
                 let old_notes = self.take_notes_in_track(*track);
 
-                let mut selected_ids = self.selected_note_ids.lock().unwrap();
-                let old_sel_ids = std::mem::take(&mut *selected_ids);
+                let mut selected_ids = self.shared_selected_note_ids.write().unwrap();
+                let old_sel_ids = selected_ids.take_selected_from_track(*track);
                 let (deleted, new_notes, new_ids) = extract_and_remap_ids(old_notes, &note_ids, old_sel_ids);
-                *selected_ids = new_ids;
+                selected_ids.set_selected_in_track(new_ids, *track);
                 drop(selected_ids);
 
                 self.set_notes_in_track(*track, new_notes);
@@ -1213,8 +1301,10 @@ impl NoteEditing {
 
                 if *selected {
                     {
-                        let mut selected_ids = self.selected_note_ids.lock().unwrap();
-                        *selected_ids = new_ids.clone();
+                        //let mut selected_ids = self.selected_note_ids.lock().unwrap();
+                        //*selected_ids = new_ids.clone();
+                        let mut selected_ids = self.shared_selected_note_ids.write().unwrap();
+                        selected_ids.set_selected_in_track(new_ids.clone(), *track);
                     }
                 }
 
@@ -1356,9 +1446,9 @@ impl NoteEditing {
             / snap_ratio.1 as MIDITick;
     }
 
-    fn update_render_selected_notes(&self) {
+    pub fn set_render_selected_notes(&self) {
         let mut render_manger = self.render_manager.lock().unwrap();
-        render_manger.get_active_renderer().lock().unwrap().set_selected(&self.selected_note_ids);
+        render_manger.get_active_renderer().lock().unwrap().set_selected(&self.shared_selected_note_ids);
     }
 
     pub fn get_can_draw_selection_box(&self) -> bool {
@@ -1445,12 +1535,16 @@ impl NoteEditing {
         }
     }
 
-    pub fn has_notes_in_clipboard(&self) -> bool {
+    /*pub fn has_notes_in_clipboard(&self) -> bool {
         !self.notes_clipboard.is_empty()
-    }
+    }*/
 
-    pub fn is_any_note_selected(&self) -> bool {
+    /*pub fn is_any_note_selected(&self) -> bool {
         let sel_ids = self.selected_note_ids.lock().unwrap();
         !sel_ids.is_empty()
+    }*/
+
+    pub fn get_shared_selected_ids(&self) -> &Arc<RwLock<SharedSelectedNotes>> {
+        &self.shared_selected_note_ids
     }
 }

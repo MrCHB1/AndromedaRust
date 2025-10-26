@@ -4,7 +4,7 @@ use eframe::{
     egui::{self, RichText},
 };
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog, util::image_loader::ImageResources}, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{bin_search_notes, get_min_max_keys_in_selection, manipulate_note_lengths, manipulate_note_ticks, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog, util::image_loader::ImageResources}, deprecated, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks, MIDITick, SignedMIDITick}}, midi::events::note::Note};
 use crate::editor::editing::note_editing::NoteEditing;
 
 // modular edit_function
@@ -16,6 +16,7 @@ pub enum EditFunction {
     //               tick len
     Chop(Vec<usize>, MIDITick),
     SliceAtTick(Vec<usize>, MIDITick),
+    FadeNotes(bool)
 }
 
 #[derive(Default)]
@@ -26,37 +27,11 @@ pub struct EditFunctions {
 impl EditFunctions {
     pub fn apply_function(&mut self, notes: &mut Vec<Note>, sel_note_ids: &mut Vec<usize>, func: EditFunction, curr_track: u16, editor_actions: &mut EditorActions) {
         match func {
-            EditFunction::FlipX(note_ids) => {
-                let (min_tick, max_tick) = {
-                    let first_note = notes[sel_note_ids[0]];
-                    let last_note = notes[sel_note_ids[sel_note_ids.len() - 1]];
-                    (first_note.start, last_note.start)
-                };
-
-                let (old_ids, new_ids, changed_positions) = manipulate_note_ticks(notes, &note_ids, |note_start| {
-                    max_tick - note_start + min_tick
-                });
-
-                // update selected note ids to the new ids to prevent index invalidation
-                // *sel_note_ids = new_ids.clone();
-                println!("{:?}", new_ids);
-                *sel_note_ids = new_ids.clone();
-
-                // editor_actions.register_action(EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track, true));
+            EditFunction::FlipX(_) => {
+                deprecated!("use flip x from plugins instead");
             },
-            EditFunction::FlipY(note_ids) => {
-                let mut changed_positions = Vec::new();
-                let (min_key, max_key) = get_min_max_keys_in_selection(notes, &note_ids).unwrap_or_default();
-
-                for id in note_ids.iter() {
-                    let note = &mut notes[*id];
-                    let old_key = note.key;
-                    let new_key = max_key - old_key + min_key;
-
-                    note.key = new_key;
-                    changed_positions.push((0, new_key as i16 - old_key as i16));
-                }
-                editor_actions.register_action(EditorAction::NotesMoveImmediate(note_ids, changed_positions, curr_track));
+            EditFunction::FlipY(_) => {
+                deprecated!("use flip y from plugins instead");
             },
             EditFunction::Stretch(note_ids, factor) => {
                 if factor == 1.0 { return; }
@@ -144,7 +119,8 @@ impl EditFunctions {
                 let mut changed_lengths = Vec::with_capacity(sel_note_ids.len());
                 let mut new_notes = Vec::with_capacity(sel_note_ids.len());
                 
-                for &id in note_ids.iter() {
+                let mut affected_ids = Vec::with_capacity(note_ids.len());
+                for id in note_ids.into_iter() {
                     let note = &mut notes[id];
                     let start = note.start();
                     let end = note.end();
@@ -167,6 +143,7 @@ impl EditFunctions {
                             key: note.key(),
                             velocity: note.velocity()
                         });
+                        affected_ids.push(id);
                     }
                 }
 
@@ -176,8 +153,27 @@ impl EditFunctions {
 
                 editor_actions.register_action(EditorAction::Bulk(vec![
                     EditorAction::PlaceNotes(new_ids, None, curr_track),
-                    EditorAction::LengthChange(note_ids, changed_lengths, curr_track)
+                    EditorAction::LengthChange(affected_ids, changed_lengths, curr_track)
                 ]));
+            },
+            EditFunction::FadeNotes(fade_out) => {
+                let (min_tick, max_tick) = get_min_max_ticks_in_selection(notes, &sel_note_ids).unwrap();
+                let mut vel_changes = Vec::with_capacity(sel_note_ids.len());
+                for &id in sel_note_ids.iter() {
+                    let note = &mut notes[id];
+
+                    let mut vel_fac = (note.start() - min_tick) as f32 / (max_tick as f32 - min_tick as f32);
+                    if fade_out { vel_fac = 1.0 - vel_fac; }
+                    
+                    let old_velocity = note.velocity();
+                    let new_velocity = ((old_velocity as f32 * vel_fac) as u8).clamp(1, 127);
+                    let vel_change = new_velocity as i8 - old_velocity as i8;
+                    vel_changes.push(vel_change);
+
+                    *(note.velocity_mut()) = new_velocity;
+                }
+
+                editor_actions.register_action(EditorAction::VelocityChange(sel_note_ids.clone(), vel_changes, curr_track));
             }
         }
     }
@@ -257,12 +253,14 @@ impl Dialog for EFStretchDialog {
                             let notes = note_editing.get_notes();
                             let mut notes = notes.write().unwrap();
 
-                            let sel_notes = note_editing.get_selected_note_ids();
-                            let mut sel_notes = sel_notes.lock().unwrap();
-                            let sel_notes_copy = sel_notes.clone();
+                            let sel_notes = note_editing.get_shared_selected_ids();
+                            let mut sel_notes = sel_notes.write().unwrap();
 
                             let curr_track = note_editing.get_current_track();
                             let notes = &mut notes[curr_track as usize];
+
+                            let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+                            let sel_notes_copy = sel_notes.clone();
 
                             let mut editor_actions = self.edit_actions.try_borrow_mut().unwrap();
                             self.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Stretch(sel_notes_copy, self.stretch_factor.value() as f32), curr_track, &mut editor_actions);
@@ -339,12 +337,14 @@ impl Dialog for EFChopDialog {
                             let notes = note_editing.get_notes();
                             let mut notes = notes.write().unwrap();
 
-                            let sel_notes = note_editing.get_selected_note_ids();
-                            let mut sel_notes = sel_notes.lock().unwrap();
-                            let sel_notes_copy = sel_notes.clone();
+                            let sel_notes = note_editing.get_shared_selected_ids();
+                            let mut sel_notes = sel_notes.write().unwrap();
 
                             let curr_track = note_editing.get_current_track();
                             let notes = &mut notes[curr_track as usize];
+
+                            let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+                            let sel_notes_copy = sel_notes.clone();
 
                             let mut editor_actions = self.edit_actions.try_borrow_mut().unwrap();
                             self.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Chop(sel_notes_copy, self.target_tick_len.value()), curr_track, &mut editor_actions);

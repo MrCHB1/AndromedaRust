@@ -1,9 +1,17 @@
-use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
+use std::{cell::RefCell, collections::HashMap, hash::{DefaultHasher, Hash, Hasher}, rc::Rc, sync::{Arc, Mutex}};
 
-use eframe::egui;
+use as_any::AsAny;
+use eframe::egui::{self, Align2};
 use mlua::{FromLua, Table, Value};
 
 use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, editor::{actions::EditorActions, editing::{lua_note_editing::LuaNoteEditing, note_editing::NoteEditing}, plugins::plugin_lua::PluginLua}};
+
+fn hash_table_address(table: &Table) -> u64 {
+    let ptr = table.to_pointer() as usize;
+    let mut hasher = DefaultHasher::new();
+    ptr.hash(&mut hasher);
+    hasher.finish()
+}
 
 pub enum DialogField {
     Label { contents: String },
@@ -46,54 +54,72 @@ impl PluginDialog {
                 return Ok(false);
             }
 
-            for pair in fields.pairs::<Value, Value>() {
-                let (field_id, field_contents) = pair?;
+            for (idx, field) in fields.sequence_values::<Value>().enumerate() {
+                let field = field?;
+                let Some(field_table) = field.as_table() else {
+                    println!("[PluginWarning] skipping field {idx} because it is not a table");
+                    continue;
+                };
 
-                let field_contents = match field_contents.as_table() {
-                    Some(fc) => fc,
-                    None => {
-                        println!("[PluginWarning] Skipping field as it is not a table");
+                if field_table.is_empty() {
+                    self.add_separator();
+                    continue;
+                }
+
+                let field_id = field_table.get::<String>("id");
+                let field_id = match field_id {
+                    Ok(field_id) => field_id,
+                    Err(_) => { // no field id present, maybe it's a label?
+                        // so let's expect a label
+                        let field_type = field_table.get::<String>("type")?;
+                        if field_type != "label" {
+                            return Err(mlua::Error::runtime(
+                                format!("[PluginError] expected unnested field type to be label, not {field_type}")
+                            ));
+                        }
+                        // ... it is a label, so push it to the fields
+                        let field_label = field_table.get::<String>("label").unwrap_or("".into());
+                        self.add_label(field_label);
                         continue;
                     }
                 };
 
-                if field_contents.is_empty() {
-                    self.fields.push(DialogField::Separator);
+                let Ok(field_contents) = field_table.get::<Table>(1) else {
+                    println!("[PluginWarning] skipping field {field_id} because the contents are empty");
                     continue;
-                }
-
-                let field_type = match field_contents.get::<String>("type") {
-                    Ok(ft) => ft,
-                    Err(lua_error) => return Err(lua_error)
                 };
 
+                let field_type = field_contents.get::<String>("type")?;
+
                 match field_type.as_str() {
-                    "label" => {
-                        let label = field_contents.get::<String>("label").unwrap_or("".into());
-                        self.add_label(label);
+                    "separator" => {
+                        self.add_separator();
                     },
+                    "label" => { 
+                        let label = field_contents.get::<String>("label").unwrap_or("".into()); 
+                        self.add_label(label);
+                    }, 
                     "number" => {
-                        self.add_number(field_id.to_string().unwrap(), &field_contents);
+                        self.add_number(field_id, &field_contents);
                     },
                     "slider" => {
-                        self.add_slider(field_id.to_string().unwrap(), &field_contents);
+                        self.add_slider(field_id, &field_contents);
                     },
                     "textedit" => {
-                        self.add_textedit(field_id.to_string().unwrap(), &field_contents);
-                    },
+                        self.add_textedit(field_id, &field_contents);
+                    }, 
                     "toggle" => {
-                        self.add_toggle(field_id.to_string().unwrap(), &field_contents);
+                        self.add_toggle(field_id, &field_contents);
                     },
                     "dropdown" => {
-                        self.add_dropdown(field_id.to_string().unwrap(), &field_contents)?;
-                    },
+                        self.add_dropdown(field_id, &field_contents)?;
+                    }, 
                     _ => {
                         println!("[PluginWarning] Unknown field type \"{}\", skipping...", field_type);
                         continue;
                     }
                 }
             }
-
             Ok(true)
         } else {
             Ok(false)
@@ -128,6 +154,10 @@ impl PluginDialog {
                 println!("[PluginError] (While running {}): \n{}", plugin.plugin_name, lua_error);
             }
         }
+    }
+
+    fn add_separator(&mut self) {
+        self.fields.push(DialogField::Separator);
     }
 
     fn add_label(&mut self, label: String) {
@@ -201,6 +231,18 @@ impl PluginDialog {
         let value = field_contents.get::<T>("value").unwrap_or_default();
         (label, value)
     }
+
+    fn get_field_by_id(plugin: &Rc<RefCell<PluginLua>>, id: String) -> Option<Table> {
+        let plugin = plugin.borrow();
+        let dialog_fields = plugin.dialog_field_table.as_ref().unwrap();
+        for field in dialog_fields.sequence_values::<Table>() {
+            let field = field.unwrap();
+            if let Ok(id_) = field.get::<String>("id") {
+                if id == id_ { return Some(field.clone()); }
+            }
+        }
+        None
+    }
 }
 
 impl Dialog for PluginDialog {
@@ -228,6 +270,7 @@ impl Dialog for PluginDialog {
         egui::Window::new(plugin_window_title)
             .resizable(false)
             .collapsible(false)
+            .pivot(Align2::CENTER_CENTER)
             .show(ctx, |ui| {
                 {
                     let plugin = self.plugin.as_ref().unwrap();
@@ -251,13 +294,12 @@ impl Dialog for PluginDialog {
                         DialogField::Number { field_id, label, field } => {
                             field.show(&label, ui, None);
                             if field.changed() {
-                                let plugin = self.plugin.as_ref().unwrap();
-                                let mut plugin = plugin.try_borrow_mut().unwrap();
-                                let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
-                                
                                 let val = field.value();
-                                dialog_fields
-                                    .get::<Table>(field_id.as_str()).unwrap()
+                                Self::get_field_by_id(
+                                    self.plugin.as_ref().unwrap(),
+                                    field_id.to_string()
+                                ).unwrap()
+                                    .get::<Table>(1).unwrap()
                                     .set("value", val).unwrap();
                             }
                         },
@@ -268,13 +310,15 @@ impl Dialog for PluginDialog {
                                 if let Some(step) = step { slider = slider.step_by(*step); }
                                 
                                 if ui.add(slider).changed() {
-                                    let plugin = self.plugin.as_ref().unwrap();
+                                    /*let plugin = self.plugin.as_ref().unwrap();
                                     let mut plugin = plugin.try_borrow_mut().unwrap();
-                                    let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
-                                    
-                                    dialog_fields
-                                        .get::<Table>(field_id.as_str()).unwrap()
-                                        .set("value", *value).unwrap();
+                                    let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();*/
+
+                                    Self::get_field_by_id(
+                                        self.plugin.as_ref().unwrap(),
+                                        field_id.to_string()).unwrap()
+                                        .set("value", *value)
+                                        .unwrap();
                                 }
                             });
                         },

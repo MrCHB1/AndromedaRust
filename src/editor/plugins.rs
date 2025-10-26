@@ -4,7 +4,7 @@ pub mod plugin_andromeda_obj;
 
 use std::path::Path;
 use crate::editor::plugins::plugin_lua::PluginLua;
-use std::fs::{self, DirEntry};
+use std::fs::{self, DirEntry, FileType};
 use std::io::Result;
 
 use std::rc::Rc;
@@ -14,6 +14,7 @@ use include_dir::include_dir;
 static BUILTIN_PLUGIN_NAMES: &[&'static str] = &[
     "flip_x",
     "flip_y",
+    "humanize"
 ];
 
 pub enum PluginType {
@@ -51,7 +52,14 @@ impl PluginLoader {
             if path.is_dir() {
                 self.load_plugins(&path)?;
             } else {
-                self.push_plugin(&entry)?;
+                // only push plugin if its a lua file
+                if path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("lua"))
+                    .unwrap_or(false)
+                {
+                    self.push_plugin(&entry)?;
+                }
             }
         }
         Ok(())

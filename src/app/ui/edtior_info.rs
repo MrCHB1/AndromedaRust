@@ -1,7 +1,7 @@
 use crate::app::{ui::dialog::Dialog, util::image_loader::ImageResources};
 use eframe::egui;
 
-const EDITOR_VERSION: &'static str = "2.11";
+const EDITOR_VERSION: &'static str = "2.2";
 const EDITOR_STAGE: &'static str = "Beta";
 
 #[derive(Default)]

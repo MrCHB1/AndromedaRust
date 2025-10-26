@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
 use eframe::egui::Vec2;
 use eframe::glow;
-use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project::project_manager::{self, ProjectManager}}, midi::events::note::Note};
+use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{editing::SharedSelectedNotes, midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project::project_manager::{self, ProjectManager}}, midi::events::note::Note};
 use crate::editor::project::project_data::ProjectData;
 
 pub mod buffers;
@@ -15,7 +15,7 @@ pub trait Renderer {
     fn draw(&mut self);
     fn set_ghost_notes(&mut self, _notes: Arc<Mutex<Vec<Note>>>) {}
     fn clear_ghost_notes(&mut self) {}
-    fn set_selected(&mut self, _selected_ids: &Arc<Mutex<Vec<usize>>>) {}
+    fn set_selected(&mut self, _selected_ids: &Arc<RwLock<SharedSelectedNotes>>) {}
     fn window_size(&mut self, _size: Vec2) {}
     fn update_ppq(&mut self, _ppq: u16) {}
     fn time_changed(&mut self, _time: u64) {}
@@ -29,14 +29,14 @@ pub enum RenderType {
 }
 
 pub struct RenderManager {
-    pub render_type: Arc<RwLock<RenderType>>,
+    pub render_type: RenderType,
     renderers: Vec<Arc<Mutex<dyn Renderer + Send + Sync>>>
 }
 
 impl Default for RenderManager {
     fn default() -> Self {
         Self {
-            render_type: Arc::new(RwLock::new(RenderType::PianoRoll)),
+            render_type: RenderType::PianoRoll,
             renderers: Vec::new()
         }
     }
@@ -114,7 +114,7 @@ impl RenderManager {
     }
 
     pub fn get_active_renderer(&mut self) -> &mut Arc<std::sync::Mutex<(dyn Renderer + Send + Sync + 'static)>> {
-        match *(self.render_type.read().unwrap()) {
+        match self.render_type {
             RenderType::PianoRoll => {
                 &mut self.renderers[0]
             },
@@ -124,8 +124,8 @@ impl RenderManager {
         }
     }
 
-    pub fn get_render_type(&self) -> Arc<RwLock<RenderType>> {
-        self.render_type.clone()
+    pub fn get_render_type(&self) -> &RenderType {
+        &self.render_type
     }
 
     fn get_renderer(&mut self, render_type: RenderType) -> &mut Arc<std::sync::Mutex<(dyn Renderer + Send + Sync + 'static)>> {
@@ -144,12 +144,12 @@ impl RenderManager {
             RenderType::PianoRoll => {
                 let tmp = self.get_renderer(RenderType::TrackView);
                 tmp.lock().unwrap().set_active(false);
-                *self.render_type.write().unwrap() = RenderType::PianoRoll;
+                self.render_type = RenderType::PianoRoll;
             },
             RenderType::TrackView => {
                 let tmp = self.get_renderer(RenderType::PianoRoll);
                 tmp.lock().unwrap().set_active(false);
-                *self.render_type.write().unwrap() = RenderType::TrackView;
+                self.render_type = RenderType::TrackView;
             }
         }
         
