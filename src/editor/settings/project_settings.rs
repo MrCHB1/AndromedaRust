@@ -93,6 +93,7 @@ impl Dialog for ProjectSettings {
                                 
                                 if new_value != old_value {
                                     project_manager.change_ppq(new_value);
+                                    self.custom_ppq_field.set_value(new_value);
                                 }
                             });
 
