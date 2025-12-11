@@ -8,6 +8,7 @@ use crate::midi::events::channel_event::ChannelEvent;
 use crate::midi::events::mergers::{channel_to_midi_ev, merge_events};
 use crate::midi::events::meta_event::{MetaEvent, MetaEventType};
 use crate::midi::events::note::Note;
+use crate::midi::midi_track::MIDITrack;
 use crate::midi::midi_track_parser::MIDITrackParser;
 
 use itertools::Itertools;
@@ -20,15 +21,21 @@ pub struct MIDIFile {
     pub trk_count: u16,
     pub ppq: u16,
 
-    pub channel_events: Vec<Vec<ChannelEvent>>,
-    pub meta_events: Vec<Vec<MetaEvent>>,
+    // pub channel_events: Vec<Vec<ChannelEvent>>,
+    // pub meta_events: Vec<Vec<MetaEvent>>,
     // meta events that basically affect every track (like tempo, time signature, key signature...)
     // they go on the first track
     pub global_meta_events: Vec<MetaEvent>,
-    pub notes: Vec<Vec<Note>>,
+    // pub notes: Vec<Vec<Note>>,
+
+    pub tracks: Vec<MIDITrack>,
 
     // some useful settings
-    track_discarding: bool
+    track_discarding: bool,
+
+    // counters
+    per_track_metas: usize,
+    global_metas: usize
 }
 
 pub struct MIDITrackPointer {
@@ -43,11 +50,16 @@ impl MIDIFile {
             trk_count: 0,
             ppq: 0,
             // file_stream: Default::default(),
-            channel_events: Vec::new(),
-            meta_events: Vec::new(),
+            // channel_events: Vec::new(),
+            // meta_events: Vec::new(),
             global_meta_events: Vec::new(),
-            notes: Vec::new(),
-            track_discarding: false
+            // notes: Vec::new(),
+            tracks: Vec::new(),
+            track_discarding: false,
+
+            // info
+            per_track_metas: 0,
+            global_metas: 0
         }
     }
 
@@ -74,6 +86,7 @@ impl MIDIFile {
 
         // === parse tracks in parallel
         let mut track_locations: Vec<MIDITrackPointer> = Vec::with_capacity(trk_count as usize);
+        self.tracks = Vec::with_capacity(trk_count as usize);
 
         // first get all track locations
         {
@@ -94,20 +107,27 @@ impl MIDIFile {
         for i in 0..trk_count as usize {
             let track_location = &track_locations[i];
             track_parsers.push(MIDITrackParser::new(&file_stream, track_location.start as usize, track_location.length as usize));
-
-            self.channel_events.push(Vec::new());
-            self.meta_events.push(Vec::new());
-            self.notes.push(Vec::new());
+            
+            self.tracks.push(MIDITrack::new_empty());
+            // self.channel_events.push(Vec::new());
+            // self.meta_events.push(Vec::new());
+            // self.notes.push(Vec::new());
         }
         
-        let channel_events = &mut self.channel_events;
-        let meta_events = &mut self.meta_events;
-        let notes = &mut self.notes;
+        // let channel_events = &mut self.channel_events;
+        // let meta_events = &mut self.meta_events;
+        // let notes = &mut self.notes;
 
         // instead of putting it all into one parallel iterator, i've split it in two
         // one for if track discarding is on, and one for no track discarding. 
         // this is to avoid any uneccessary extra allocations
-        if self.track_discarding {
+        track_parsers.par_iter_mut()
+            .zip(self.tracks.par_iter_mut())
+            .for_each(|(parser, track)| {
+                let MIDITrack { muted: _, channel_events, meta_events, notes } = track;
+                Self::parse_track(parser, notes, channel_events, meta_events);
+            });
+        /*if self.track_discarding {
             let mut tracks_to_discard: Vec<bool> = vec![false; trk_count as usize];
             let mut idx = 0;
 
@@ -136,7 +156,7 @@ impl MIDIFile {
                 .for_each(|(parser, (notes, (channel_evs, meta_evs)))| {
                     Self::parse_track(parser, notes, channel_evs, meta_evs);
                 });
-        }
+        }*/
 
         self.format = format;
         self.trk_count = trk_count;
@@ -157,16 +177,17 @@ impl MIDIFile {
     }
 
     pub fn preprocess_meta_events(&mut self) {
-        let unprocessed_metas = std::mem::take(&mut self.meta_events);
-        // separate events to merge from non-mergable events (such as Track name, etc.)
-        let mut non_mergeable: Vec<Vec<MetaEvent>> = Vec::with_capacity(unprocessed_metas.len());
-        let mut mergeable: Vec<Vec<MetaEvent>> = Vec::with_capacity(unprocessed_metas.len());
 
-        for track in unprocessed_metas.into_iter() {
-            let mut nm_track: Vec<MetaEvent> = Vec::new();
+        // separate events to merge from non-mergable events (such as Track name, etc.)
+        let mut mergeable: Vec<Vec<MetaEvent>> = Vec::with_capacity(self.tracks.len());
+
+        for track in self.tracks.iter_mut() {
             let mut m_track: Vec<MetaEvent> = Vec::new();
             
-            for meta_ev in track.into_iter() {
+            let meta_evs_ = track.get_meta_events_mut();
+            let meta_evs = std::mem::take(meta_evs_);
+            
+            for meta_ev in meta_evs.into_iter() {
                 match meta_ev.event_type {
                     MetaEventType::Tempo | 
                     MetaEventType::TimeSignature | 
@@ -176,16 +197,15 @@ impl MIDIFile {
                         m_track.push(meta_ev);
                     },
                     _ => {
-                        nm_track.push(meta_ev);
+                        meta_evs_.push(meta_ev);
                     }
                 }
             }
-            non_mergeable.push(nm_track);
+
             mergeable.push(m_track);
         }
 
         self.global_meta_events = self.merge_meta_events(mergeable);
-        self.meta_events = non_mergeable;
     }
 
     fn merge_meta_seqs(&self, seq1: Vec<MetaEvent>, seq2: Vec<MetaEvent>) -> Vec<MetaEvent> {

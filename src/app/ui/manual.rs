@@ -1,5 +1,5 @@
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, RichText, Stroke, TextFormat, Ui};
-use crate::app::{ui::dialog::Dialog, util::image_loader::ImageResources};
+use crate::app::{ui::dialog::{Dialog, names::DIALOG_NAME_EDITOR_MANUAL}, util::image_loader::ImageResources};
 
 #[derive(PartialEq, Eq)]
 enum EditorManualSection {
@@ -50,7 +50,45 @@ impl EditorManualDialog {
 }
 
 impl Dialog for EditorManualDialog {
-    fn show(&mut self) -> () {
+    fn draw(&mut self, ui: &mut Ui, _: &ImageResources) -> Option<super::dialog::DialogAction> {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                if ui.selectable_label(self.manual_section == EditorManualSection::Welcome, "Welcome").clicked() {
+                    self.manual_section = EditorManualSection::Welcome
+                }
+
+                if ui.selectable_label(self.manual_section == EditorManualSection::Navigating, "Navigating").clicked() {
+                    self.manual_section = EditorManualSection::Navigating
+                }
+            });
+            ui.separator();
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical()
+                    .min_scrolled_height(1000.0)
+                    .show(ui,  |ui| {
+                        match self.manual_section {
+                            EditorManualSection::Welcome => {
+                                self.draw_welcome_tab(ui);
+                            },
+                            EditorManualSection::Navigating => {
+                                self.draw_navigating_tab(ui);
+                            }
+                        }
+                    })
+            });
+        });
+
+        None
+    }
+
+    fn get_dialog_name(&self) -> &'static str {
+        DIALOG_NAME_EDITOR_MANUAL
+    }
+
+    fn get_dialog_title(&self) -> String {
+        "Andromeda Manual".into()
+    }
+    /*fn show(&mut self) -> () {
         self.showing = true;
     }
 
@@ -103,4 +141,5 @@ impl Dialog for EditorManualDialog {
                 });
             });
     }
+    */
 }

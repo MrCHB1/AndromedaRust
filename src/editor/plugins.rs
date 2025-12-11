@@ -1,6 +1,7 @@
 pub mod plugin_lua;
 pub mod plugin_dialog;
 pub mod plugin_andromeda_obj;
+pub mod plugin_error_dialog;
 
 use std::path::Path;
 use crate::editor::plugins::plugin_lua::PluginLua;
@@ -25,11 +26,15 @@ pub enum PluginType {
 pub struct PluginLoader {
     pub manip_plugins: Vec<Rc<RefCell<PluginLua>>>,
     pub gen_plugins: Vec<Rc<RefCell<PluginLua>>>,
+    plugins_path: &'static Path
 }
 
 impl PluginLoader {
-    pub fn new() -> Self {
-        let mut plugin_loader = Self { manip_plugins: Vec::new(), gen_plugins: Vec::new() };
+    pub fn new(plugins_path: &'static Path) -> Self {
+        let mut plugin_loader = Self {
+            manip_plugins: Vec::new(), gen_plugins: Vec::new(),
+            plugins_path
+        };
         // very first thing to do: load built-in plugins
 
         let builtin_plugins_dir = include_dir!("assets/plugins/builtin");
@@ -42,6 +47,27 @@ impl PluginLoader {
         }
 
         plugin_loader
+    }
+
+    pub fn reload_plugins(&mut self) -> core::result::Result<(), mlua::Error> {
+        // reload all manip plugins
+        for plugin in self.manip_plugins.iter_mut() {
+            let mut plugin = plugin.borrow_mut();
+            (*plugin).reload_plugin()?;
+        }
+
+        // reload all generative plugins
+        for plugin in self.gen_plugins.iter_mut() {
+            let mut plugin = plugin.borrow_mut();
+            (*plugin).reload_plugin()?;
+        }
+        
+        Ok(())
+    }
+
+    pub fn load_all_plugins(&mut self) -> Result<()> {
+        self.load_plugins(self.plugins_path)?;
+        Ok(())
     }
 
     pub fn load_plugins(&mut self, dir: &Path) -> Result<()> {

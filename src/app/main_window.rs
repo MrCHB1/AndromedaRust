@@ -1,10 +1,10 @@
 // abstraction is NEEDED!!
 use crate::{
     app::{
-        custom_widgets::{NumberField, NumericField}, rendering::{data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, RenderManager, RenderType, Renderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::Dialog, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, 
-        audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices}, 
+        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, 
+        audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, 
         editor::{
-            edit_functions::EFChopDialog, editing::{data_editing::{data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}, DataEditing}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_MOUSE_OVER_UI}, SharedClipboard, SharedSelectedNotes}, midi_bar_cacher::BarCacher, navigation::{TrackViewNavigation, GLOBAL_ZOOM_FACTOR}, playhead::Playhead, plugins::{plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_lua::PluginLua, PluginLoader}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{get_mouse_midi_pos, path_rel_to_abs, MIDITick}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}};
+            edit_functions::EFChopDialog, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}};
 use crate::editor::editing::{
     meta_editing::{MetaEditing, MetaEventInsertDialog},
     note_editing::{NoteEditing, note_edit_flags::*},
@@ -12,6 +12,7 @@ use crate::editor::editing::{
 };
 
 
+use as_any::AsAny;
 use eframe::{
     egui::{self, Color32, PaintCallback, Pos2, Rect, RichText, Shape, Stroke, Ui, Vec2}, egui_glow::CallbackFn, glow::HasContext
 };
@@ -35,9 +36,10 @@ use crate::{
 };
 use eframe::glow;
 use std::{
-    cell::RefCell, collections::{HashMap}, rc::Rc, sync::{Arc, Mutex, RwLock}, time::Instant
+    cell::RefCell, collections::HashMap, fs, path::{Path, PathBuf}, rc::Rc, sync::{Arc, LazyLock, Mutex, RwLock}, time::Instant
 };
 
+pub static PLUGIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| path_rel_to_abs("./assets/plugins".into()));
 const SNAP_MAPPINGS: [((u8, u16), &str); 14] = [
     ((0, 0), "No snap"),
     ((1, 1), "Semibreve (1)"),
@@ -128,6 +130,7 @@ pub struct MainWindow {
     pub meta_editing: Arc<Mutex<MetaEditing>>,
     pub track_editing: Arc<Mutex<TrackEditing>>,
     pub data_editing: Arc<Mutex<DataEditing>>,
+    track_mixer: Rc<RefCell<TrackMixer>>,
 
     // clipboard
     shared_clipboard: Arc<RwLock<SharedClipboard>>,
@@ -177,7 +180,9 @@ pub struct MainWindow {
 
     // the ui stuff
     menu_bar: Option<Arc<RwLock<MainMenuBar>>>,
-    dialogs: HashMap<&'static str, Box<dyn Dialog>>,
+    // dialogs: HashMap<&'static str, Box<dyn Dialog>>,
+    dialog_manager: Rc<RefCell<DialogManager>>,
+    dialog_drawer: DialogDrawer,
 
     // images
     image_resources: Option<ImageResources>,
@@ -224,8 +229,10 @@ impl MainWindow {
 
         self.init_note_editing();
 
-        let mut plugin_loader = PluginLoader::new();
-        plugin_loader.load_plugins(&path_rel_to_abs("./assets/plugins".into())).unwrap();
+        let mut plugin_loader = PluginLoader::new(&PLUGIN_PATH);
+        plugin_loader.load_all_plugins().unwrap();
+        // plugin_loader.load_plugins(dir)
+        // plugin_loader.load_plugins(&path_rel_to_abs("./assets/plugins".into())).unwrap();
         self.plugin_loader = Some(plugin_loader);
         self.load_images(ctx);
         self.init_main_menu();
@@ -237,7 +244,7 @@ impl MainWindow {
         let mut project_manager = ProjectManager::new();
         project_manager.new_empty_project();
 
-        self.note_culler = Arc::new(Mutex::new(NoteCullHelper::new(project_manager.get_notes())));
+        self.note_culler = Arc::new(Mutex::new(NoteCullHelper::new(project_manager.get_tracks())));
         let project_manager_arc = Arc::new(RwLock::new(project_manager));
 
         self.bar_cacher = Arc::new(Mutex::new(BarCacher::new(&project_manager_arc)));
@@ -250,18 +257,20 @@ impl MainWindow {
 
         let playback_manager = PlaybackManager::new(
             self.kdmapi.as_ref().unwrap().clone(),
-            project_manager.get_notes(),
+            project_manager.get_tracks(),
             project_manager.get_metas(),
-            project_manager.get_channel_evs(),
+            //project_manager.get_channel_evs(),
             project_manager.get_tempo_map()
         );
         let playback_manager_arc = Arc::new(Mutex::new(playback_manager));
-        
         let playhead = Playhead::new(0, &playback_manager_arc);
         let playhead_rc = Rc::new(RefCell::new(playhead));
 
+        let track_mixer = TrackMixer::new(project_manager.get_tracks());
+
         self.playback_manager = Some(playback_manager_arc);
         self.playhead = playhead_rc;
+        self.track_mixer = Rc::new(RefCell::new(track_mixer));
     }
 
     fn load_images(&mut self, ctx: &egui::Context) {
@@ -291,13 +300,69 @@ impl MainWindow {
     }
 
     fn init_dialogs(&mut self) {
-        let mut dialogs_hashmap: HashMap<_, Box<dyn Dialog + 'static>> = HashMap::new();
+        self.dialog_drawer.init(&self.dialog_manager);
+        let mut dialog_manager = self.dialog_manager.borrow_mut();
+        
+        dialog_manager.register_dialog(DIALOG_NAME_EDITOR_MANUAL, Box::new(|| { Box::new(EditorManualDialog::default()) }));
+        
+        {
+            let note_editing = self.note_editing.clone();
+            let editor_functions = self.editor_functions.clone();
+            let editor_actions = self.editor_actions.clone();
+            dialog_manager.register_dialog(DIALOG_NAME_EF_STRETCH, Box::new(move || {
+                Box::new(EFStretchDialog::new(&note_editing, &editor_functions, &editor_actions))
+            }));
+        }
+
+        {
+            let note_editing = self.note_editing.clone();
+            let editor_functions = self.editor_functions.clone();
+            let editor_actions = self.editor_actions.clone();
+            dialog_manager.register_dialog(DIALOG_NAME_EF_CHOP, Box::new(move || { Box::new(EFChopDialog::new(&note_editing, &editor_functions, &editor_actions)) }));
+        }
+
+        dialog_manager.register_dialog(DIALOG_NAME_EDITOR_INFO, Box::new(|| { Box::new(EditorInfo::default()) }));
+
+        {
+            let project_manager = self.project_manager.clone();
+            dialog_manager.register_dialog(DIALOG_NAME_PROJECT_SETTINGS, Box::new(move || { Box::new(ProjectSettings::new(&project_manager)) }));
+        }
+
+        dialog_manager.register_dialog(DIALOG_NAME_INSERT_META, Box::new(|| { Box::new(MetaEventInsertDialog::default()) }));
+        dialog_manager.register_dialog(DIALOG_NAME_PLUGIN_ERROR_DIALOG, Box::new(|| { Box::new(PluginErrorDialog::new()) }));
+        
+        // settings dialog
+        {
+            let midi_devices = self.midi_devices.as_ref().unwrap().clone();
+            let playback_manager = self.playback_manager.as_ref().unwrap().clone();
+
+            dialog_manager.register_dialog(DIALOG_NAME_EDITOR_SETTINGS, Box::new(move || { 
+                let mut edit_settings_dialog = ESSettingsWindow::default();
+                edit_settings_dialog.use_midi_devices(&midi_devices);
+                edit_settings_dialog.use_playback_manager(&playback_manager);
+                Box::new(edit_settings_dialog)
+            }));
+        }
+
+        {
+            let note_editing = self.note_editing.clone();
+            let editor_actions = self.editor_actions.clone();
+
+            dialog_manager.register_dialog(DIALOG_NAME_PLUGIN_DIALOG, Box::new(move || {
+                let mut plugin_dialog = PluginDialog::default();
+                plugin_dialog.init(&editor_actions, &note_editing);
+                Box::new(plugin_dialog)
+            }));
+        }
+
+        /*let mut dialogs_hashmap: HashMap<_, Box<dyn Dialog + 'static>> = HashMap::new();
         dialogs_hashmap.insert("EditorManualDialog", Box::new(EditorManualDialog::default()));
         dialogs_hashmap.insert("StretchDialog", Box::new(EFStretchDialog::new(&self.note_editing, &self.editor_functions, &self.editor_actions)));
         dialogs_hashmap.insert("ChopDialog", Box::new(EFChopDialog::new(&self.note_editing, &self.editor_functions, &self.editor_actions)));
         dialogs_hashmap.insert("EditorInfo", Box::new(EditorInfo::default()));
         dialogs_hashmap.insert("ProjectSettings", Box::new(ProjectSettings::new(&self.project_manager)));
         dialogs_hashmap.insert("InsertMetaDialog", Box::new(MetaEventInsertDialog::default()));
+        dialogs_hashmap.insert("PluginErrorDialog", Box::new(PluginErrorDialog::new()));
         // dialogs_hashmap.insert("PluginDialog", Box::new())
 
         // settings dialog
@@ -316,7 +381,7 @@ impl MainWindow {
         plugin_dialog.init(&self.editor_actions, &self.note_editing);
         dialogs_hashmap.insert("PluginDialog", Box::new(plugin_dialog));
 
-        self.dialogs = dialogs_hashmap;
+        self.dialogs = dialogs_hashmap;*/
     }
 
     fn import_midi_file(&mut self) {
@@ -348,12 +413,23 @@ impl MainWindow {
             let project_manager = self.project_manager.read().unwrap();
             let ppq = project_manager.get_ppq();
 
-            let notes = project_manager.get_notes().read().unwrap();
+            // let notes = project_manager.get_notes().read().unwrap();
             let global_metas = project_manager.get_metas().read().unwrap();
-            let channel_evs = project_manager.get_channel_evs().read().unwrap();
+            // let channel_evs = project_manager.get_channel_evs().read().unwrap();
+            let tracks = project_manager.get_tracks().read().unwrap();
 
             // build tracks in parallel
-            let per_track_chunks: Vec<Vec<MIDIEvent>> = notes.par_iter()
+            let per_track_chunks: Vec<Vec<MIDIEvent>> = tracks.par_iter()
+                .map(|track| {
+                    let (notes, ch_evs) = (track.get_notes(), track.get_channel_evs());
+                    let mut writer = MIDIFileWriter::new(ppq);
+                    writer.new_track();
+                    writer.add_notes_with_other_events(notes, ch_evs);
+                    writer.end_track();
+                    writer.into_single_track()
+                })
+                .collect();
+            /*let per_track_chunks: Vec<Vec<MIDIEvent>> = notes.par_iter()
                 .zip(channel_evs.par_iter())
                 .map(|(notes, ch_evs)| {
                     let mut writer = MIDIFileWriter::new(ppq);
@@ -362,7 +438,7 @@ impl MainWindow {
                     writer.end_track();
                     writer.into_single_track()
                 })
-                .collect();
+                .collect();*/
 
             let mut midi_writer = MIDIFileWriter::new(ppq);
             midi_writer.flush_global_metas(&global_metas);
@@ -484,22 +560,23 @@ impl MainWindow {
             // let project_data = self.project_data.try_borrow().unwrap();
             let project_manager = self.project_manager.read().unwrap();
 
-            let notes = project_manager.get_notes();
+            // let notes = project_manager.get_notes();
+            let tracks = project_manager.get_tracks();
             let metas = project_manager.get_metas();
-            let ch_evs = project_manager.get_channel_evs();
+            // let ch_evs = project_manager.get_channel_evs();
             let tempo_map = project_manager.get_tempo_map();
 
             let nav = self.nav.as_ref().unwrap();
             let editor_tool = &self.editor_tool;
             let render_manager = self.render_manager.as_ref().unwrap();
             // self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.editor_actions, &self.toolbar_settings)));
-            let note_editing = NoteEditing::new(notes, nav, editor_tool, &self.editor_actions, &self.toolbar_settings, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.shared_clipboard, &self.shared_selected_notes);
+            let note_editing = NoteEditing::new(tracks, nav, editor_tool, &self.editor_actions, &self.toolbar_settings, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.shared_clipboard, &self.shared_selected_notes);
             note_editing.set_render_selected_notes();
 
             self.note_editing = Arc::new(Mutex::new(note_editing));
             self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher, &self.editor_actions, tempo_map)));
             self.track_editing = Arc::new(Mutex::new(TrackEditing::new(&self.project_manager, &self.editor_tool, &self.editor_actions, &self.nav.as_ref().unwrap(), self.track_view_nav.as_ref().unwrap(), self.view_settings.as_ref().unwrap())));
-            self.data_editing = Arc::new(Mutex::new(DataEditing::new(notes, ch_evs, self.view_settings.as_ref().unwrap(), &self.editor_tool, self.nav.as_ref().unwrap())));
+            self.data_editing = Arc::new(Mutex::new(DataEditing::new(tracks, self.view_settings.as_ref().unwrap(), &self.editor_tool, &self.editor_actions, self.nav.as_ref().unwrap())));
         }
     }
 
@@ -616,6 +693,33 @@ impl MainWindow {
                         }
                         gen_plugins_buttons
                     })),
+                    ("".into(), MenuItem::Separator),
+                    ("Reload all plugins".into(),
+                        MenuItem::MenuButtonWithTooltop("Only reloads the plugins andromeda has loaded at startup (plugins that were added after startup are not added, therefore a restart is required for newly added plugins).".into(),
+                            Some(Box::new(move |mw| {
+                                let plugin_loader = mw.plugin_loader.as_mut().unwrap();
+                                plugin_loader.reload_plugins();
+                            }))
+                        )
+                    ),
+                    ("Open plugin folder".into(),
+                        MenuItem::MenuButton(
+                            Some(Box::new(move |_| {
+                                let path = "./assets/plugins/custom/";
+
+                                let p = Path::new(&path);
+                                if !p.exists() {
+                                    if let Err(err) = fs::create_dir_all(p) {
+                                        panic!("Failed to create directory {}: {}", path, err);
+                                    }
+                                }
+
+                                if let Err(err) = opener::open(p) {
+                                    panic!("Directory exists bt failed to open: {}", err);
+                                }
+                            }))
+                        )
+                    )
                 ]))
             ]))
         ]);
@@ -742,12 +846,15 @@ impl MainWindow {
                     playhead.start_tick
                 };
 
-                let meta_dialog = self.get_dialog_mut::<MetaEventInsertDialog>("InsertMetaDialog");
+                // let meta_dialog = self.get_dialog_mut::<MetaEventInsertDialog>("InsertMetaDialog");
+                let mut meta_dialog = MetaEventInsertDialog::default();
                 meta_dialog.init_meta_dialog(meta_type, move |data| {
                     let mut meta_editing = meta_editing.try_lock().unwrap();
                     meta_editing.insert_meta_event(MetaEvent { tick: playhead_pos, event_type: meta_type, data });
                 });
-                meta_dialog.show();
+                // meta_dialog.show();
+                let mut dialog_manager = self.dialog_manager.borrow_mut();
+                dialog_manager.open_dialog(Box::new(meta_dialog), Vec::new());
             },
             _ => {
 
@@ -773,10 +880,12 @@ impl MainWindow {
             EditFunction::SliceAtTick(_, playhead_tick) => {
                 //let project_manager = self.project_manager.read().unwrap();
                 let note_editing = self.note_editing.lock().unwrap();
-                let mut notes = note_editing.get_notes().write().unwrap();
+                let tracks = note_editing.get_tracks();
+                let mut tracks = tracks.write().unwrap();
+                // let mut notes = note_editing.get().write().unwrap();
 
                 let curr_track = self.get_current_track().unwrap();
-                let notes = &mut notes[curr_track as usize];
+                let notes = tracks[curr_track as usize].get_notes_mut();
 
                 // let mut sel_notes = note_editing.get_selected_note_ids().lock().unwrap();
                 // let sel_notes_clone = sel_notes.clone();
@@ -796,10 +905,11 @@ impl MainWindow {
             },
             EditFunction::FadeNotes(fade_out) => {
                 let note_editing = self.note_editing.lock().unwrap();
-                let mut notes = note_editing.get_notes().write().unwrap();
+                let tracks = note_editing.get_tracks();
+                let mut tracks = tracks.write().unwrap();
 
                 let curr_track = self.get_current_track().unwrap();
-                let notes = &mut notes[curr_track as usize];
+                let notes = tracks[curr_track as usize].get_notes_mut();
 
                 let mut sel_notes = note_editing.get_shared_selected_ids().write().unwrap();
                 let sel_notes = sel_notes.get_selected_ids_mut(curr_track);
@@ -831,45 +941,70 @@ impl MainWindow {
         let andromeda_obj = lua.create_userdata(andromeda_obj).unwrap();
         lua.globals().set("andromeda", andromeda_obj).unwrap();
 
-        let plugin_dialog = self.get_dialog_mut::<PluginDialog>("PluginDialog");
-        plugin_dialog.curr_track = track_idx;
-        
-        match plugin_dialog.load_plugin_dialog(&plugin) {
-            Ok(should_show_dialog) => {
-                if should_show_dialog { plugin_dialog.show(); }
-                else { plugin_dialog.run_plugin(); }
-            },
-            Err(lua_error) => {
-                let plugin = plugin.try_borrow().unwrap();
-                println!("[PluginError] (While running {}): \n{}", plugin.plugin_name, lua_error);
+    
+        let run_result = {
+            // let plugin_dialog = self.get_dialog_mut::<PluginDialog>("PluginDialog");
+            let mut plugin_dialog = PluginDialog::default();
+            plugin_dialog.init(&self.editor_actions, &self.note_editing);
+            plugin_dialog.curr_track = track_idx;
+
+            match plugin_dialog.load_plugin_dialog(&plugin) {
+                Ok(should_show_dialog) => {
+                    if should_show_dialog {
+                        let mut dialog_manager = self.dialog_manager.borrow_mut();
+                        dialog_manager.open_dialog(Box::new(plugin_dialog), Vec::new());
+                    }
+                    else { plugin_dialog.run_plugin(); }
+                    Ok(())
+                },
+                Err(lua_error) => {
+                    Err(lua_error)
+                }
             }
+        };
+
+        if let Err(lua_error) = run_result {
+            println!("error");
+            // err_dialog.init_dialog(&plugin, lua_error.to_string());
+            let mut dialog_manager = self.dialog_manager.borrow_mut();
+            let plugin_name = plugin.borrow().plugin_name.clone();
+            dialog_manager.open_dialog(Box::new(PluginErrorDialog::new()), vec![
+                Box::new(plugin_name),
+                Box::new(lua_error.to_string())
+            ]);
         }
+
+        /*if let Err(lua_error) = run_result {
+            println!("error");
+            let err_dialog: &mut PluginErrorDialog = self.get_dialog_mut("PluginErrorDialog");
+            err_dialog.init_dialog(&plugin, lua_error.to_string());
+            self.show_dialog("PluginErrorDialog");
+        }*/
     }
 
+    fn reload_plugins(&mut self) {
+        let plugins = self.plugin_loader.as_ref().unwrap();
+        for plugin in plugins.gen_plugins.iter() {
+
+        }
+    }
 
     pub fn show_dialog(&mut self, name: &'static str) {
-        // close any opened dialog
-        for dialog in self.dialogs.values_mut() {
-            dialog.close();
-        }
-
-        if let Some(dialog) = self.dialogs.get_mut(&name) {
-            (*dialog).show();
-        }
+        let mut dialog_manager = self.dialog_manager.borrow_mut();
+        dialog_manager.close_all_dialogs();
+        dialog_manager.open_dialog_by_name(name, Vec::new());
     }
 
-    pub fn get_dialog_mut<D: Dialog>(&mut self, name: &'static str) -> &mut D {
+    /*pub fn get_dialog_mut<D: Dialog>(&mut self, name: &'static str) -> &mut D {
         self.dialogs.get_mut(&name)
             .unwrap()
             .as_any_mut()
             .downcast_mut::<D>().unwrap()
-    }
+    }*/
 
     pub fn is_any_dialog_shown(&self) -> bool {
-        for dialog in self.dialogs.values() {
-            if dialog.is_showing() { return true; }
-        }
-        return false;
+        let dialog_manager = self.dialog_manager.borrow();
+        dialog_manager.is_any_dialog_shown()
     }
 
     fn handle_main_inputs(&mut self, ctx: &egui::Context, ui: &mut Ui, mouse_over_ui: bool, any_window_opened: bool) {
@@ -2096,9 +2231,7 @@ impl eframe::App for MainWindow {
 
         {
             let img_resources = self.image_resources.as_ref().unwrap();
-            for dialog in self.dialogs.values_mut() {
-                dialog.draw(ctx, img_resources);
-            }
+            self.dialog_drawer.update_dialogs(ctx, img_resources);
         }
     }
 }

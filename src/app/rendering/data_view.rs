@@ -11,6 +11,7 @@ use crate::editor::editing::note_editing::GhostNote;
 use crate::editor::project::project_data::ProjectData;
 use crate::editor::project::project_manager::ProjectManager;
 use crate::midi::events::note::Note;
+use crate::midi::midi_track::MIDITrack;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
@@ -86,7 +87,8 @@ pub struct DataViewRenderer {
 
     bars_render: Vec<RenderDataViewBar>,
     dv_handles_render: Vec<RenderDataViewHandle>,
-    notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    // notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    all_tracks: Arc<RwLock<Vec<MIDITrack>>>,
 
     note_cull_helper: Arc<Mutex<NoteCullHelper>>,
 
@@ -169,9 +171,9 @@ impl DataViewRenderer {
         gl.vertex_attrib_divisor(1, 1);
         gl.vertex_attrib_divisor(2, 1);
 
-        let notes = {
+        let tracks = {
             let project_manager = project_manager.read().unwrap();
-            project_manager.get_notes().clone()
+            project_manager.get_tracks().clone()
         };
 
         Self {
@@ -197,7 +199,7 @@ impl DataViewRenderer {
 
             bars_render: dv_bars_render.to_vec(),
 
-            notes,
+            all_tracks: tracks,
             view_settings: view_settings.clone(),
             note_colors: note_colors.clone(),
 
@@ -235,25 +237,25 @@ impl DataViewRenderer {
             nav.curr_track
         };
 
-        let notes = self.notes.read().unwrap();
-        if notes.is_empty() { return; }
+        let tracks = self.all_tracks.read().unwrap();
+        if tracks.is_empty() { return; }
 
         let tracks_to_iter = match view_settings.pr_onion_state {
             VS_PianoRoll_OnionState::NoOnion => {
-                &notes[nav_curr_track as usize..nav_curr_track as usize]
+                &tracks[nav_curr_track as usize..nav_curr_track as usize]
             },
             VS_PianoRoll_OnionState::ViewAll => {
                 //view_all_tracks = true;
-                &notes[..]
+                &tracks[..]
             },
             VS_PianoRoll_OnionState::ViewPrevious => {
                 //view_all_tracks = false;
-                if nav_curr_track == 0 { &notes[nav_curr_track as usize..nav_curr_track as usize] }
-                else { &notes[(nav_curr_track - 1) as usize..=(nav_curr_track as usize)] }
+                if nav_curr_track == 0 { &tracks[nav_curr_track as usize..nav_curr_track as usize] }
+                else { &tracks[(nav_curr_track - 1) as usize..=(nav_curr_track as usize)] }
             },
             VS_PianoRoll_OnionState::ViewNext => {
-                if nav_curr_track == (notes.len() - 1) as u16 { &notes[nav_curr_track as usize..nav_curr_track as usize] }
-                else { &notes[(nav_curr_track) as usize..=(nav_curr_track + 1) as usize] }
+                if nav_curr_track == (tracks.len() - 1) as u16 { &tracks[nav_curr_track as usize..nav_curr_track as usize] }
+                else { &tracks[(nav_curr_track) as usize..=(nav_curr_track + 1) as usize] }
             }
         };
 
@@ -281,7 +283,8 @@ impl DataViewRenderer {
             note_culler.sync_cull_array_lengths();
 
             // 1. draw all note velocities that is not the current track
-            for notes in tracks_to_iter {
+            for track in tracks_to_iter {
+                let notes = track.get_notes();
                 if notes.is_empty() || curr_track == nav_curr_track {
                     curr_track += 1;
                     continue;
@@ -340,7 +343,7 @@ impl DataViewRenderer {
             }
 
             // 2. draw current track on top
-            let notes = &notes[nav_curr_track as usize];
+            let notes = tracks[nav_curr_track as usize].get_notes();
 
             if !notes.is_empty() {
                 let mut curr_handle = 0;

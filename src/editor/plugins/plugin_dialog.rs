@@ -4,7 +4,7 @@ use as_any::AsAny;
 use eframe::egui::{self, Align2};
 use mlua::{FromLua, Table, Value};
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, editor::{actions::EditorActions, editing::{lua_note_editing::LuaNoteEditing, note_editing::NoteEditing}, plugins::plugin_lua::PluginLua}};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, names::{DIALOG_NAME_PLUGIN_DIALOG, DIALOG_NAME_PLUGIN_ERROR_DIALOG}}}, editor::{actions::EditorActions, editing::{lua_note_editing::LuaNoteEditing, note_editing::NoteEditing}, plugins::{plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}}};
 
 fn hash_table_address(table: &Table) -> u64 {
     let ptr = table.to_pointer() as usize;
@@ -32,13 +32,16 @@ pub struct PluginDialog {
 
     note_editing: Arc<Mutex<NoteEditing>>,
     editor_actions: Rc<RefCell<EditorActions>>,
+    plugin_run_result: Option<Result<(), mlua::Error>>,
     showing: bool
 }
 
 impl PluginDialog {
     pub fn init(&mut self, editor_actions: &Rc<RefCell<EditorActions>>, note_editing: &Arc<Mutex<NoteEditing>>) {
+        // println!("[PluginDialog::init()] Track count: {}", note_editing.lock().unwrap().get_tracks().read().unwrap().len());
         self.editor_actions = editor_actions.clone();
         self.note_editing = note_editing.clone();
+        self.plugin_run_result = Some(Ok(()));
     }
 
     /// Returns [`true`] if the dialog has fields and would need to be shown
@@ -126,8 +129,8 @@ impl PluginDialog {
         }
     }
 
-    pub fn run_plugin(&mut self) {
-        if self.plugin.is_none() { return; }
+    pub fn run_plugin(&mut self) -> Result<(), mlua::Error> {
+        if self.plugin.is_none() { return Ok(()); }
         let plugin = self.plugin.as_ref().unwrap();
 
         let (lua, apply_fn) = {
@@ -135,10 +138,10 @@ impl PluginDialog {
             (p.lua.clone(), p.on_apply_fn.clone())
         };
 
-        if apply_fn.is_none() { return; }
+        if apply_fn.is_none() { return Ok(()); }
         let apply_fn = apply_fn.unwrap();
 
-        let mut lua_note_editing = LuaNoteEditing::new(self.note_editing.clone());
+        let mut lua_note_editing = LuaNoteEditing::new(&self.note_editing);
 
         match lua.scope(|scope| {
             let note_track_ref = scope.create_userdata_ref_mut(&mut lua_note_editing)?;
@@ -148,10 +151,12 @@ impl PluginDialog {
             Ok(_) => {
                 let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
                 lua_note_editing.apply_changes(self.curr_track as u16, &mut editor_actions);
+                return Ok(());
             },
             Err(lua_error) => {
                 let plugin = plugin.try_borrow().unwrap();
                 println!("[PluginError] (While running {}): \n{}", plugin.plugin_name, lua_error);
+                return Err(lua_error);
             }
         }
     }
@@ -243,10 +248,152 @@ impl PluginDialog {
         }
         None
     }
+
+    pub fn get_plugin_run_result(&self) -> Result<(), mlua::Error> {
+        if let Some(result) = self.plugin_run_result.as_ref() {
+            result.clone()
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Dialog for PluginDialog {
-    fn show(&mut self) -> () {
+    fn draw(&mut self, ui: &mut egui::Ui, image_resources: &crate::app::util::image_loader::ImageResources) -> Option<crate::app::ui::dialog::DialogAction> {
+        {
+            let plugin = self.plugin.as_ref().unwrap();
+            let plugin = plugin.try_borrow().unwrap();
+            if let Some(plugin_info) = plugin.plugin_info.as_ref() {
+                if let Some(desc) = plugin_info.description.as_ref() {
+                    ui.label(desc);
+                    ui.separator();
+                }
+            }
+        }
+        
+        for field in self.fields.iter_mut() {
+            match field {
+                DialogField::Separator => {
+                    ui.separator();
+                },
+                DialogField::Label { contents } => {
+                    ui.label(contents.as_str());
+                },
+                DialogField::Number { field_id, label, field } => {
+                    field.show(&label, ui, None);
+                    if field.changed() {
+                        let val = field.value();
+                        Self::get_field_by_id(
+                            self.plugin.as_ref().unwrap(),
+                            field_id.to_string()
+                        ).unwrap()
+                            .get::<Table>(1).unwrap()
+                            .set("value", val).unwrap();
+                    }
+                },
+                DialogField::Slider { field_id, label, value, min, max, step } => {
+                    ui.horizontal(|ui| {
+                        ui.label(&*label);
+                        let mut slider = egui::Slider::new(value, *min..=*max);
+                        if let Some(step) = step { slider = slider.step_by(*step); }
+                        
+                        if ui.add(slider).changed() {
+                            /*let plugin = self.plugin.as_ref().unwrap();
+                            let mut plugin = plugin.try_borrow_mut().unwrap();
+                            let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();*/
+
+                            Self::get_field_by_id(
+                                self.plugin.as_ref().unwrap(),
+                                field_id.to_string()).unwrap()
+                                .set("value", *value)
+                                .unwrap();
+                        }
+                    });
+                },
+                DialogField::TextField { field_id, label, value } => {
+                    ui.horizontal(|ui| {
+                        ui.label(&*label);
+                        if ui.text_edit_singleline(value).changed() {
+                            let plugin = self.plugin.as_ref().unwrap();
+                            let field_id = field_id.to_string();
+                            
+                            Self::get_field_by_id(plugin, field_id).unwrap()
+                                .set("value", value.clone())
+                                .unwrap();
+                        }
+                    });
+                },
+                DialogField::Toggle { field_id, label, value } => {
+                    ui.horizontal(|ui| {
+                        ui.label(&*label);
+                        if ui.checkbox(value, "").changed() {
+                            let plugin = self.plugin.as_ref().unwrap();
+                            let field_id = field_id.to_string();
+                            
+                            Self::get_field_by_id(plugin, field_id).unwrap()
+                                .set("value", *value)
+                                .unwrap();
+                        }
+                    });
+                },
+                DialogField::Dropdown { field_id, label, value, value_labels } => {
+                    ui.horizontal(|ui| {
+                        ui.label(&*label);
+                        if egui::ComboBox::from_id_salt(&*field_id)
+                            .selected_text(&value_labels[*value])
+                            .show_index(ui, &mut *value, value_labels.len(), |i| &value_labels[i]).changed() {
+                                let plugin = self.plugin.as_ref().unwrap();
+                                let field_id = field_id.to_string();
+                                
+                                Self::get_field_by_id(plugin, field_id).unwrap()
+                                    .set("value", *value)
+                                    .unwrap();
+                            }
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    fn get_dialog_name(&self) -> &'static str {
+        DIALOG_NAME_PLUGIN_DIALOG
+    }
+
+    fn get_dialog_title(&self) -> String {
+        let plugin = self.plugin.as_ref().unwrap();
+        let plugin = plugin.try_borrow().unwrap();
+        plugin.plugin_name.clone()
+    }
+
+    fn get_action_buttons(&self) -> Option<DialogActionButtons> {
+        Some(
+            DialogActionButtons::ApplyClose(
+                // apply n run
+                Box::new(|dlg| {
+                    let dlg_name = dlg.get_dialog_name();
+                    let dlg_plugin_lua = dlg.as_mut().as_any_mut().downcast_mut::<PluginDialog>().unwrap();
+                    match dlg_plugin_lua.run_plugin() {
+                        Ok(_) => Some(DialogAction::Close(dlg_name)),
+                        Err(lua_err) => {
+                            let plugin = dlg_plugin_lua.plugin.as_ref().unwrap();
+                            let plugin_name = plugin.borrow().plugin_name.clone();
+                            Some(DialogAction::Open(DIALOG_NAME_PLUGIN_ERROR_DIALOG, vec![
+                                Box::new(plugin_name),
+                                Box::new(lua_err.to_string())
+                            ]))
+                        }
+                    }
+                }),
+                Box::new(|dlg| {
+                    let dlg_name = dlg.get_dialog_name();
+                    Some(DialogAction::Close(dlg_name))
+                })
+            )
+        )
+    }
+    /*fn show(&mut self) -> () {
         self.showing = true;
     }
 
@@ -327,12 +474,11 @@ impl Dialog for PluginDialog {
                                 ui.label(&*label);
                                 if ui.text_edit_singleline(value).changed() {
                                     let plugin = self.plugin.as_ref().unwrap();
-                                    let mut plugin = plugin.try_borrow_mut().unwrap();
-                                    let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
+                                    let field_id = field_id.to_string();
                                     
-                                    dialog_fields
-                                        .get::<Table>(field_id.as_str()).unwrap()
-                                        .set("value", &**value).unwrap();
+                                    Self::get_field_by_id(plugin, field_id).unwrap()
+                                        .set("value", value.clone())
+                                        .unwrap();
                                 }
                             });
                         },
@@ -341,12 +487,11 @@ impl Dialog for PluginDialog {
                                 ui.label(&*label);
                                 if ui.checkbox(value, "").changed() {
                                     let plugin = self.plugin.as_ref().unwrap();
-                                    let mut plugin = plugin.try_borrow_mut().unwrap();
-                                    let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
+                                    let field_id = field_id.to_string();
                                     
-                                    dialog_fields
-                                        .get::<Table>(field_id.as_str()).unwrap()
-                                        .set("value", *value).unwrap();
+                                    Self::get_field_by_id(plugin, field_id).unwrap()
+                                        .set("value", *value)
+                                        .unwrap();
                                 }
                             });
                         },
@@ -357,12 +502,11 @@ impl Dialog for PluginDialog {
                                     .selected_text(&value_labels[*value])
                                     .show_index(ui, &mut *value, value_labels.len(), |i| &value_labels[i]).changed() {
                                         let plugin = self.plugin.as_ref().unwrap();
-                                        let mut plugin = plugin.try_borrow_mut().unwrap();
-                                        let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();
-
-                                        dialog_fields
-                                            .get::<Table>(field_id.as_str()).unwrap()
-                                            .set("value", *value).unwrap();
+                                        let field_id = field_id.to_string();
+                                        
+                                        Self::get_field_by_id(plugin, field_id).unwrap()
+                                            .set("value", *value)
+                                            .unwrap();
                                     }
                             });
                         }
@@ -382,5 +526,5 @@ impl Dialog for PluginDialog {
                 });
                 
             });
-    }
+    }*/
 }

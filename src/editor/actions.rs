@@ -3,7 +3,7 @@
 
 use std::collections::{VecDeque};
 
-use crate::{editor::util::{MIDITick, SignedMIDITick}, midi::events::{channel_event::ChannelEvent, note::Note}};
+use crate::{editor::util::{MIDITick, SignedMIDITick}, midi::{events::{channel_event::ChannelEvent, note::Note}, midi_track::MIDITrack}};
 
 #[derive(Clone)]
 pub enum EditorAction {
@@ -31,12 +31,12 @@ pub enum EditorAction {
     DeleteMeta(Vec<usize>),
     AddTrack(
         u16, // index of the track that got added
-        Option<VecDeque<(Vec<Note>, Vec<ChannelEvent>)>>, // only used for undoing/redoing
+        Option<VecDeque<MIDITrack>>, // only used for undoing/redoing
         bool, // if this track is the last track
     ),
     RemoveTrack(
         u16, // index of the track that got removed
-        Option<VecDeque<(Vec<Note>, Vec<ChannelEvent>)>>, // only used for undoing/redoing,
+        Option<VecDeque<MIDITrack>>, // only used for undoing/redoing,
         bool // if this track is the last track
     ),
     SwapTracks(u16, u16),

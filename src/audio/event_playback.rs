@@ -1,7 +1,7 @@
 #![warn(unused)]
 use std::{sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, RwLock}, time::{Duration, Instant}};
 
-use crate::{audio::midi_audio_engine::MIDIAudioEngine, editor::{tempo_map::TempoMap, util::{bin_search_notes_exact, MIDITick, MIDITickAtomic}}, midi::events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::MetaEvent, note::Note}};
+use crate::{audio::midi_audio_engine::MIDIAudioEngine, editor::{tempo_map::TempoMap, util::{MIDITick, MIDITickAtomic, bin_search_notes_exact}}, midi::{events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::MetaEvent, note::Note}, midi_track::MIDITrack}};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::thread;
 use std::sync::MutexGuard;
@@ -115,9 +115,10 @@ impl Default for MidiEventBatchSize {
 }
 
 pub struct PlaybackManager {
-    pub notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    // pub notes: Arc<RwLock<Vec<Vec<Note>>>>,
     pub meta_events: Arc<RwLock<Vec<MetaEvent>>>,
-    pub channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+    // pub channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+    pub tracks: Arc<RwLock<Vec<MIDITrack>>>,
     pub device: Arc<Mutex<dyn MIDIAudioEngine + Send>>,
     pub ppq: u16,
 
@@ -142,16 +143,19 @@ pub struct PlaybackManager {
 impl PlaybackManager {
     pub fn new(
         device: Arc<Mutex<dyn MIDIAudioEngine + Send>>,
-        notes: &Arc<RwLock<Vec<Vec<Note>>>>,
+        tracks: &Arc<RwLock<Vec<MIDITrack>>>,
+        // notes: &Arc<RwLock<Vec<Vec<Note>>>>,
         meta_events: &Arc<RwLock<Vec<MetaEvent>>>,
-        channel_events: &Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+        // channel_events: &Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
         tempo_map: &Arc<RwLock<TempoMap>>,
     ) -> Self {
         let (tx, rx) = bounded(100000);
         let (notify_tx, notify_rx) = bounded::<()>(1);
         
         Self {
-            device: device.clone(), notes: notes.clone(), meta_events: meta_events.clone(), channel_events: channel_events.clone(),
+            device: device.clone(),
+            tracks: tracks.clone(),
+            meta_events: meta_events.clone(),
             tx, rx,
             notify_tx: Arc::new(notify_tx),
             notify_rx: Arc::new(notify_rx),
@@ -264,8 +268,9 @@ impl PlaybackManager {
         self.reset_stop();
         let ppq = self.ppq;
 
-        let notes = self.notes.clone();
-        let channel_events = self.channel_events.clone();
+        let tracks = self.tracks.clone();
+        // let notes = self.notes.clone();
+        // let channel_events = self.channel_events.clone();
 
         let stop_flag = self.stop_playback.clone();
         let playback_pos = self.playback_pos_ticks.clone();
@@ -275,11 +280,6 @@ impl PlaybackManager {
 
         let tempo_map = self.tempo_map.clone();
         let start_time = self.start_time.clone();
-
-        {
-            // let mut tempo_map = tempo_map.write().unwrap();
-            // *tempo_map = build_tempo_map(&self.meta_events);
-        }
 
         let start_pos_secs_from_ticks = {
             let tempo_map = tempo_map.read().unwrap();
@@ -293,22 +293,18 @@ impl PlaybackManager {
                 *st = Instant::now();
             }
 
-            let mut event_cursors = {
-                let notes = notes.read().unwrap();
-                let mut cursors = vec![0; notes.len()];
+            let (mut event_cursors, mut ch_event_cursors) = {
+                let tracks = tracks.read().unwrap();
+                let mut cursors = vec![0; tracks.len()];
 
-                for (trk, track) in notes.iter().enumerate() {
-                    //for (chn, channel) in track.iter().enumerate() {
-                    cursors[trk] = bin_search_notes_exact(&track, playback_pos.load(Ordering::SeqCst));
-                    //}
+                for (trk, track) in tracks.iter().enumerate() {
+                    let notes = track.get_notes();
+                    cursors[trk] = bin_search_notes_exact(notes, playback_pos.load(Ordering::SeqCst));
                 }
-                cursors
-            };
 
-            let mut ch_event_cursors = {
-                let ch_evs = channel_events.read().unwrap();
-                vec![0; ch_evs.len()]
+                (cursors, vec![0; tracks.len()])
             };
+            
 
             //let mut scheduled_offs: BinaryHeap<Reverse<Scheduled>> = BinaryHeap::new();
             let mut scheduled_offs: ScheduledSequence = ScheduledSequence::new(128);
@@ -329,22 +325,39 @@ impl PlaybackManager {
                     playback_pos.store(tempo_map.secs_to_ticks_from_map(ppq, elapsed) as MIDITick, Ordering::SeqCst);
                 }
 
+                while let Some(first) = scheduled_offs.peek() {
+                    if first.time <= playback_pos.load(Ordering::SeqCst) {
+                        let first = scheduled_offs.pop().unwrap();
+                        let _ = tx.try_send(first.event); // wake up thread
+                    } else {
+                        break;
+                    }
+                }
+
                 // first the control events / other stuff
                 {
-                    let channel_events = channel_events.read().unwrap();
-                    for (trk, track) in channel_events.iter().enumerate() {
+                    let tracks = tracks.read().unwrap();
+                    for (trk, track) in tracks.iter().enumerate() {
                         // early break if stop flag is set
                         if stop_flag.load(Ordering::SeqCst) {
                             break;
                         }
-                        let cursor = &mut ch_event_cursors[trk];
 
-                        while *cursor < track.len() {
+                        // if this track is muted, skip it
+                        if track.muted { continue; }
+
+                        let channel_events = track.get_channel_evs();
+                        let notes = track.get_notes();
+
+                        let cursor = &mut ch_event_cursors[trk];
+                        let notes_cursor = &mut event_cursors[trk];
+
+                        while *cursor < channel_events.len() {
                             if stop_flag.load(Ordering::SeqCst) {
                                 break;
                             }
 
-                            let event = &track[*cursor];
+                            let event = &channel_events[*cursor];
 
                             if playback_pos.load(Ordering::SeqCst) >= event.tick {
                                 match event.event_type {
@@ -363,52 +376,27 @@ impl PlaybackManager {
                                 break;
                             }
                         }
-                    }
-                }
 
-                while let Some(first) = scheduled_offs.peek() {
-                    if first.time <= playback_pos.load(Ordering::SeqCst) {
-                        let first = scheduled_offs.pop().unwrap();
-                        let _ = tx.try_send(first.event); // wake up thread
-                    } else {
-                        break;
-                    }
-                }
-
-                // then do notes
-                {
-                    let notes = notes.read().unwrap();
-                    for (trk, track) in notes.iter().enumerate() {
-                        if stop_flag.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        //for (chn, channel) in track.iter().enumerate() {
-                        //    if stop_flag.load(Ordering::SeqCst) {
-                        //        break;
-                        //    }
-                            
-                        //let cursor = &mut event_cursors[(trk << 4) | chn];
-                        let cursor = &mut event_cursors[trk];
-
-                        while *cursor < track.len() {
+                        // then the notes
+                        while *notes_cursor < notes.len() {
                             if stop_flag.load(Ordering::SeqCst) {
                                 break;
                             }
 
-                            let note = &track[*cursor];
+                            let note = &notes[*notes_cursor];
 
                             if playback_pos.load(Ordering::SeqCst) >= note.start() {
+                                // oh no, CHEATER!!!
                                 if note.velocity() >= 20 {
                                     let _ = tx.try_send(MidiEvent::NoteOn { channel: note.channel(), key: note.key(), velocity: note.velocity() });
                                     let _ = notify_tx.try_send(()); // notify the playback thread of this note on event
                                     scheduled_offs.insert(Scheduled { time: note.end(), event: MidiEvent::NoteOff { channel: note.channel(), key: note.key(), velocity: note.velocity() } });
                                 }
-                                *cursor += 1;
+                                *notes_cursor += 1;
                             } else {
                                 break;
                             }
                         }
-                        //}
                     }
                 }
 

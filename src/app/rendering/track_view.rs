@@ -4,6 +4,7 @@ use crate::editor::navigation::TrackViewNavigation;
 use crate::editor::project::project_data::ProjectData;
 use crate::editor::project::project_manager::ProjectManager;
 use crate::midi::events::note::Note;
+use crate::midi::midi_track::MIDITrack;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -78,7 +79,7 @@ pub struct TrackViewRenderer {
 
     bars_render: Vec<RenderTrackViewBar>,
     notes_render: Vec<RenderTrackViewNote>,
-    render_notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    all_tracks: Arc<RwLock<Vec<MIDITrack>>>,
     note_colors: Arc<Mutex<NoteColors>>,
 
     // per channel per track
@@ -162,19 +163,24 @@ impl TrackViewRenderer {
         gl.vertex_attrib_divisor(1, 1);
         gl.vertex_attrib_divisor(2, 1);
 
-        let notes = {
+        /*let notes = {
             let project_manager = project_manager.read().unwrap();
             project_manager.get_notes().clone()
+        };*/
+
+        let tracks = {
+            let project_manager = project_manager.read().unwrap();
+            project_manager.get_tracks().clone()
         };
 
         let last_note_start = {
-            let notes = notes.read().unwrap();
-            vec![0; notes.len()]
+            let tracks = tracks.read().unwrap();
+            vec![0; tracks.len()]
         };
 
         let first_render_note = {
-            let notes = notes.read().unwrap();
-            vec![0; notes.len()]
+            let tracks = tracks.read().unwrap();
+            vec![0; tracks.len()]
         };
 
         Self {
@@ -196,7 +202,7 @@ impl TrackViewRenderer {
             gl: gl.clone(),
             bars_render: tv_bars_render.to_vec(),
             notes_render: tv_notes_render.to_vec(),
-            render_notes: notes,
+            all_tracks: tracks,
 
             ppq: 960,
             note_colors: colors.clone(),
@@ -326,16 +332,17 @@ impl Renderer for TrackViewRenderer {
                 self.tv_notes_program.set_float("width", self.window_size.x);
                 self.tv_notes_program.set_float("height", self.window_size.y);
 
-                let all_render_notes = self.render_notes.read().unwrap();
+                // let all_render_notes = self.render_notes.read().unwrap();
+                let all_tracks = self.all_tracks.read().unwrap();
 
                 self.tv_notes_vao.bind();
                 self.tv_notes_ibo.bind();
                 self.tv_notes_vbo.bind();
                 self.tv_notes_ebo.bind();
 
-                if self.last_note_start.len() != all_render_notes.len() {
-                    self.last_note_start = vec![0; all_render_notes.len()];
-                    self.first_render_note = vec![0; all_render_notes.len()];
+                if self.last_note_start.len() != all_tracks.len() {
+                    self.last_note_start = vec![0; all_tracks.len()];
+                    self.first_render_note = vec![0; all_tracks.len()];
                 }
                 
                 /*let track_start = {
@@ -357,14 +364,15 @@ impl Renderer for TrackViewRenderer {
                 };*/
 
                 // O(n) -> O(1)
-                let total_tracks = all_render_notes.len() as isize;
+                let total_tracks = all_tracks.len() as isize;
                 let track_start = (track_pos.ceil() as isize - 1).clamp(0, total_tracks) as usize;
                 let track_end = ((track_pos + zoom_tracks).ceil() as isize).clamp(0, total_tracks) as usize;
 
                 let mut note_id = 0;
                 let mut curr_track = track_start;
 
-                for notes in &all_render_notes[track_start..track_end] {
+                for tracks in &all_tracks[track_start..track_end] {
+                    let notes = tracks.get_notes();
                     if notes.is_empty() {
                         curr_track += 1;
                         continue;

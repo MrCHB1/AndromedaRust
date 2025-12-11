@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 
-use crate::{editor::{editing::meta_editing::MetaEditing, midi_bar_cacher::BarCacher, project::{self, project_data::{ProjectData, ProjectInfo}, ProjectWriter}, settings::editor_settings::ESGeneralSettings, tempo_map::TempoMap}, midi::{events::{channel_event::ChannelEvent, meta_event::MetaEvent, note::Note}, midi_file::MIDIFile}};
+use crate::{editor::{editing::meta_editing::MetaEditing, midi_bar_cacher::BarCacher, project::{self, ProjectWriter, project_data::{ProjectData, ProjectInfo}}, settings::editor_settings::ESGeneralSettings, tempo_map::TempoMap}, midi::{events::{channel_event::ChannelEvent, meta_event::MetaEvent, note::Note}, midi_file::MIDIFile, midi_track::MIDITrack}};
 
 #[derive(Default)]
 pub struct ProjectManager {
@@ -92,21 +92,14 @@ impl ProjectManager {
         &self.project_data.global_metas
     }
 
-    pub fn get_notes(&self) -> &Arc<RwLock<Vec<Vec<Note>>>> {
-        &self.project_data.notes
-    }
-
-    pub fn get_channel_evs(&self) -> &Arc<RwLock<Vec<Vec<ChannelEvent>>>> {
-        &self.project_data.channel_events
+    pub fn get_tracks(&self) -> &Arc<RwLock<Vec<MIDITrack>>> {
+        &self.project_data.tracks
     }
 
     pub fn is_project_empty(&self, notes_only: bool) -> bool {
-        let notes = self.get_notes().read().unwrap();
-        let mut empty = notes.is_empty();
-        if notes_only { return empty; }
-        
-        let ch_evs = self.get_channel_evs().read().unwrap();
-        empty = empty && ch_evs.is_empty();
-        empty
+        for track in self.get_tracks().read().unwrap().iter() {
+            if !track.is_empty() { return false; }
+        }
+        true
     }
 }

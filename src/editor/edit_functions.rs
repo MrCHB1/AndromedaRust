@@ -1,10 +1,6 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
-
-use eframe::{
-    egui::{self, RichText},
-};
-
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog, util::image_loader::ImageResources}, deprecated, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use eframe::egui;
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, names::DIALOG_NAME_EF_STRETCH}, util::image_loader::ImageResources}, deprecated, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{MIDITick, SignedMIDITick, bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks}}, midi::events::note::Note};
 use crate::editor::editing::note_editing::NoteEditing;
 
 // modular edit_function
@@ -212,7 +208,47 @@ impl EFStretchDialog {
 }
 
 impl Dialog for EFStretchDialog {
-    fn show(&mut self) -> () {
+    fn draw(&mut self, ui: &mut egui::Ui, _: &ImageResources) -> Option<crate::app::ui::dialog::DialogAction> {
+        self.stretch_factor.show("Stretch factor (x):", ui, None);
+        None
+    }
+
+    fn get_action_buttons(&self) -> Option<crate::app::ui::dialog::DialogActionButtons> {
+        Some(
+            DialogActionButtons::Ok(Box::new(|dlg| {
+                let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
+                let dlg_name = dlg.get_dialog_name();
+
+                let note_editing = dlg.note_editing.lock().unwrap();
+
+                let tracks = note_editing.get_tracks();
+                let mut tracks = tracks.write().unwrap();
+
+                let sel_notes = note_editing.get_shared_selected_ids();
+                let mut sel_notes = sel_notes.write().unwrap();
+
+                let curr_track = note_editing.get_current_track();
+                let notes = (*tracks)[curr_track as usize].get_notes_mut();
+
+                let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+                let sel_notes_copy = sel_notes.clone();
+
+                let mut editor_actions = dlg.edit_actions.try_borrow_mut().unwrap();
+                dlg.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Stretch(sel_notes_copy, dlg.stretch_factor.value() as f32), curr_track, &mut editor_actions);
+            
+                Some(DialogAction::Close(dlg_name))
+            }))
+        )
+    }
+
+    fn get_dialog_name(&self) -> &'static str {
+        DIALOG_NAME_EF_STRETCH
+    }
+
+    fn get_dialog_title(&self) -> String {
+        "Stretch Selection".into()
+    }
+    /*fn show(&mut self) -> () {
         self.is_shown = true;
     }
 
@@ -273,7 +309,7 @@ impl Dialog for EFStretchDialog {
                     }
                 })
             });
-    }
+    }*/
 }
 
 pub struct EFChopDialog {
@@ -309,7 +345,48 @@ impl EFChopDialog {
 }
 
 impl Dialog for EFChopDialog {
-    fn show(&mut self) -> () {
+    fn draw(&mut self, ui: &mut egui::Ui, _: &ImageResources) -> Option<crate::app::ui::dialog::DialogAction> {
+        self.target_tick_len.show("Chop tick length", ui, None);
+        None
+    }
+
+    fn get_action_buttons(&self) -> Option<crate::app::ui::dialog::DialogActionButtons> {
+        Some(
+            DialogActionButtons::Ok(Box::new(|dlg| {
+                let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
+                let dlg_name = dlg.get_dialog_name();
+
+                let note_editing = dlg.note_editing.lock().unwrap();
+
+                let tracks = note_editing.get_tracks();
+                let mut tracks = tracks.write().unwrap();
+
+                let sel_notes = note_editing.get_shared_selected_ids();
+                let mut sel_notes = sel_notes.write().unwrap();
+
+                let curr_track = note_editing.get_current_track();
+                let notes = (*tracks)[curr_track as usize].get_notes_mut();
+
+                let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+                let sel_notes_copy = sel_notes.clone();
+
+                let mut editor_actions = dlg.edit_actions.try_borrow_mut().unwrap();
+                dlg.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Chop(sel_notes_copy, dlg.target_tick_len.value()), curr_track, &mut editor_actions);
+            
+                Some(DialogAction::Close(dlg_name))
+            }))
+        )
+    }
+
+    fn get_dialog_name(&self) -> &'static str {
+        DIALOG_NAME_EF_STRETCH
+    }
+
+    fn get_dialog_title(&self) -> String {
+        "Stretch Selection".into()
+    }
+
+    /*fn show(&mut self) -> () {
         self.is_shown = true;
     }
 
@@ -357,7 +434,7 @@ impl Dialog for EFChopDialog {
                     }
                 })
             });
-    }
+    }*/
 }
 
 /*impl EFStretchDialog {

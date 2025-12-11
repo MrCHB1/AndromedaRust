@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLoc
 
 use eframe::egui::{self, Ui};
 
-use crate::{app::{main_window::{EditorTool, EditorToolSettings}, rendering::note_cull_helper::NoteCullHelper, view_settings::ViewSettings}, editor::{actions::{EditorAction, EditorActions}, navigation::{PianoRollNavigation, TrackViewNavigation}, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{get_mouse_track_view_pos, MIDITick}}, midi::events::{channel_event::ChannelEvent, note::Note}};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings}, rendering::note_cull_helper::NoteCullHelper, view_settings::ViewSettings}, editor::{actions::{EditorAction, EditorActions}, navigation::{PianoRollNavigation, TrackViewNavigation}, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{MIDITick, get_mouse_track_view_pos}}, midi::{events::{channel_event::ChannelEvent, note::Note}, midi_track::MIDITrack}};
 
 pub mod track_flags {
     pub const TRACK_EDIT_FLAGS_NONE: u16 = 0x0;
@@ -110,7 +110,7 @@ impl TrackEditing {
                 self.change_track(track_pos);
             },
             EditorTool::Selector => {
-
+                self.select_mouse_down();
             },
             EditorTool::Eraser => {
 
@@ -125,11 +125,51 @@ impl TrackEditing {
     }
 
     pub fn on_mouse_move(&mut self) {
+        if self.get_flag(TRACK_EDIT_MOUSE_DOWN_ON_UI) { return; }
+        if self.get_flag(TRACK_EDIT_ANY_DIALOG_OPEN | TRACK_EDIT_MOUSE_OVER_UI) { return; }
 
+        let editor_tool = {
+            let editor_tool = self.editor_tool.try_borrow().unwrap();
+            editor_tool.get_tool().clone()
+        };
+
+        match editor_tool {
+            EditorTool::Pencil => {
+
+            },
+            EditorTool::Selector => {
+                self.select_mouse_move();
+            },
+            EditorTool::Eraser => {
+
+            }
+        }
     }
 
     pub fn on_mouse_up(&mut self) {
+        if self.get_flag(TRACK_EDIT_MOUSE_DOWN_ON_UI) {
+            self.disable_flag(TRACK_EDIT_MOUSE_DOWN_ON_UI);
+            return;
+        }
 
+        if self.get_flag(TRACK_EDIT_MOUSE_OVER_UI | TRACK_EDIT_ANY_DIALOG_OPEN) { return; }
+
+        let editor_tool = {
+            let editor_tool = self.editor_tool.try_borrow().unwrap();
+            editor_tool.get_tool().clone()
+        };
+
+        match editor_tool {
+            EditorTool::Pencil => {
+
+            },
+            EditorTool::Selector => {
+                self.select_mouse_up();
+            },
+            EditorTool::Eraser => {
+
+            }
+        }
     }
 
     pub fn on_key_down(&mut self, ui: &mut Ui) {
@@ -142,6 +182,20 @@ impl TrackEditing {
         if ui.input(|i| i.key_pressed(egui::Key::ArrowDown) && i.modifiers.command) {
             if curr_track < u16::MAX { self.change_track(curr_track + 1); }
         }
+    }
+
+    // ======== TOOL MOUSE EVENTS ========
+
+    fn select_mouse_down(&mut self) {
+
+    }
+
+    fn select_mouse_move(&mut self) {
+
+    }
+
+    fn select_mouse_up(&mut self) {
+
     }
 
     // ======== HELPER FUNCTIONS ========
@@ -159,14 +213,26 @@ impl TrackEditing {
 
     fn insert_notes_and_ch_evs(&mut self, track: u16, notes: Vec<Note>, ch_evs: Vec<ChannelEvent>) {
         let project_manager = self.project_manager.read().unwrap();
-        let (mut notes_, mut ch_evs_) = (
-            project_manager.get_notes().write().unwrap(),
-            project_manager.get_channel_evs().write().unwrap()
-        );
+        
+        let mut track_ = project_manager.get_tracks().write().unwrap();
+        /*let (mut notes_, mut ch_evs_) = (
+            let mut track = 
+            
+            // project_manager.get_notes().write().unwrap(),
+            // project_manager.get_channel_evs().write().unwrap()
+        );*/
 
-        notes_.insert(track as usize, notes);
-        ch_evs_.insert(track as usize, ch_evs);
-    }    
+        track_.insert(track as usize, MIDITrack::new(notes, ch_evs, Vec::new()));
+        // notes_.insert(track as usize, notes);
+        // ch_evs_.insert(track as usize, ch_evs);
+    }
+
+    fn insert_track_at(&mut self, track_idx: u16, track: MIDITrack) {
+        let project_manager = self.project_manager.read().unwrap();
+        
+        let mut tracks = project_manager.get_tracks().write().unwrap();
+        tracks.insert(track_idx as usize, track);
+    }
 
     pub fn insert_track(&mut self, track: u16) {
         let track_count = self.get_used_track_count();
@@ -183,7 +249,8 @@ impl TrackEditing {
         if track >= track_count { return; }
 
         {
-            let (removed_track_notes, removed_track_ch_evs) = self.remove_note_and_ch_evs(track);
+            // let (removed_track_notes, removed_track_ch_evs) = self.remove_note_and_ch_evs(track);
+            let removed_track = self.remove_track_at(track);
             track_count -= 1;
 
             let mut removed_first = false;
@@ -195,7 +262,8 @@ impl TrackEditing {
             }
             
             let mut removed_track_queue = VecDeque::new();
-            removed_track_queue.push_back((removed_track_notes, removed_track_ch_evs)); 
+            removed_track_queue.push_back(removed_track);
+            // removed_track_queue.push_back((removed_track_notes, removed_track_ch_evs)); 
 
             let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
             editor_actions.register_action(EditorAction::RemoveTrack(track, Some(removed_track_queue), removed_first));
@@ -209,36 +277,34 @@ impl TrackEditing {
         }
     }
 
-    pub fn remove_note_and_ch_evs(&mut self, track: u16) -> (Vec<Note>, Vec<ChannelEvent>) {
+    pub fn remove_track_at(&mut self, track: u16) -> MIDITrack {
         let project_manager = self.project_manager.read().unwrap();
-        let (mut notes, mut ch_evs) = (
+        let mut tracks = project_manager.get_tracks().write().unwrap();
+        tracks.remove(track as usize)
+    }
+
+    /*pub fn remove_note_and_ch_evs(&mut self, track: u16) -> (Vec<Note>, Vec<ChannelEvent>) {
+        let project_manager = self.project_manager.read().unwrap();
+        
+        let mut track_ = project_manager.get_tracks().write().unwrap();
+        /*let (mut notes, mut ch_evs) = (
             project_manager.get_notes().write().unwrap(),
             project_manager.get_channel_evs().write().unwrap()
-        );
+        );*/
 
         (notes.remove(track as usize), ch_evs.remove(track as usize))
-    }
+    }*/
 
     pub fn append_empty_track(&mut self) {
         let project_manager = self.project_manager.read().unwrap();
-        let (mut notes, mut ch_evs) = (
-            project_manager.get_notes().write().unwrap(),
-            project_manager.get_channel_evs().write().unwrap()
-        );
-
-        notes.push(Vec::new());
-        ch_evs.push(Vec::new());
+        let mut tracks = project_manager.get_tracks().write().unwrap();
+        tracks.push(MIDITrack::new_empty());
     }
 
     pub fn pop_track(&mut self) {
         let project_manager = self.project_manager.read().unwrap();
-        let (mut notes, mut ch_evs) = (
-            project_manager.get_notes().write().unwrap(),
-            project_manager.get_channel_evs().write().unwrap()
-        );
-
-        notes.pop();
-        ch_evs.pop();
+        let mut tracks = project_manager.get_tracks().write().unwrap();
+        tracks.pop();
     }
 
     pub fn get_right_clicked_track(&self) -> u16 {
@@ -251,8 +317,10 @@ impl TrackEditing {
 
     pub fn get_used_track_count(&self) -> u16 {
         let project_manager = self.project_manager.read().unwrap();
-        let notes = project_manager.get_notes().read().unwrap();
-        notes.len() as u16
+        let tracks = project_manager.get_tracks().read().unwrap();
+        tracks.len() as u16
+        // let notes = project_manager.get_notes().read().unwrap();
+        // notes.len() as u16
     }
 
     pub fn change_track(&mut self, new_track: u16) {
@@ -284,13 +352,8 @@ impl TrackEditing {
                 project_data.validate_tracks(track_1.max(track_2));
             }
 
-            let (mut notes, mut ch_evs) = (
-                project_data.notes.write().unwrap(),
-                project_data.channel_events.write().unwrap()
-            );
-
-            notes.swap(track_1 as usize, track_2 as usize);
-            ch_evs.swap(track_1 as usize, track_2 as usize);
+            let mut tracks = project_data.tracks.write().unwrap();
+            tracks.swap(track_1 as usize, track_2 as usize);
         }
 
         if allow_register {
@@ -316,7 +379,7 @@ impl TrackEditing {
 
                 let mut recovered_track = removed_tracks.take().unwrap();
                 let recovered_track = recovered_track.pop_front().unwrap();
-                self.insert_notes_and_ch_evs(*track_insert, recovered_track.0, recovered_track.1);
+                self.insert_track_at(*track_insert, recovered_track);
 
                 // change current track if inserted before current track
                 let curr_track = self.get_pianoroll_track();
@@ -327,7 +390,7 @@ impl TrackEditing {
             EditorAction::RemoveTrack(track_rem_idx, removed_tracks, is_first) => {
                 let mut rem_track_queue = VecDeque::with_capacity(1);
 
-                let removed_track = self.remove_note_and_ch_evs(*track_rem_idx);
+                let removed_track = self.remove_track_at(*track_rem_idx);
                 rem_track_queue.push_front(removed_track);
 
                 *removed_tracks = Some(rem_track_queue);

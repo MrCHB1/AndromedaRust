@@ -1,11 +1,11 @@
 use std::sync::{Arc, RwLock};
 
-use crate::midi::events::note::Note;
+use crate::midi::midi_track::MIDITrack;
 
 // Helper file for computing note culling.
 #[derive(Default)]
 pub struct NoteCullHelper {
-    notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    tracks: Arc<RwLock<Vec<MIDITrack>>>,
 
     first_render: Vec<usize>,
     end_render: Vec<usize>,
@@ -18,16 +18,16 @@ pub struct NoteCullHelper {
 }
 
 impl NoteCullHelper {
-    pub fn new(notes: &Arc<RwLock<Vec<Vec<Note>>>>) -> Self {
-        let notes_ = notes.read().unwrap();
-        let n_tracks = notes_.len();
+    pub fn new(tracks: &Arc<RwLock<Vec<MIDITrack>>>) -> Self {
+        let tracks_ = tracks.read().unwrap();
+        let n_tracks = tracks_.len();
         let (first_render, end_render, last_start) = (vec![0; n_tracks], vec![0; n_tracks], vec![0; n_tracks]);
 
         Self {
             first_render,
             end_render,
             last_start,
-            notes: notes.clone(),
+            tracks: tracks.clone(),
             last_time: vec![f32::NAN; n_tracks],
             last_zoom: vec![f32::NAN; n_tracks],
 
@@ -39,8 +39,9 @@ impl NoteCullHelper {
         self.sync_cull_array_lengths();
 
         let track = track as usize;
-        let notes = self.notes.read().unwrap();
-        let notes = &notes[track as usize];
+        // let notes = self.notes.read().unwrap();
+        let tracks = self.tracks.read().unwrap();
+        let notes = (*tracks)[track as usize].get_notes();
         
         if notes.is_empty() { return; }
 
@@ -100,8 +101,8 @@ impl NoteCullHelper {
     }
 
     pub fn sync_cull_array_lengths(&mut self) {
-        let notes = self.notes.read().unwrap();
-        let n_tracks = notes.len();
+        let tracks = self.tracks.read().unwrap();
+        let n_tracks = tracks.len();
 
         if self.last_start.len() != n_tracks {
             self.last_start = vec![0; n_tracks];

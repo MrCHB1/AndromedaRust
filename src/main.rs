@@ -5,6 +5,7 @@ mod midi;
 mod app;
 mod editor;
 mod audio;
+mod util;
 
 use crate::app::main_window::MainWindow;
 

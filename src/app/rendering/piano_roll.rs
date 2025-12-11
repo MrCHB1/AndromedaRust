@@ -6,6 +6,7 @@ use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::project::project_data::ProjectData;
 use crate::editor::project::project_manager::ProjectManager;
+use crate::midi::midi_track::MIDITrack;
 use eframe::egui::Vec2;
 use eframe::glow;
 use eframe::glow::HasContext;
@@ -84,7 +85,8 @@ pub struct PianoRollRenderer {
 
     bars_render: Vec<RenderPianoRollBar>,
     notes_render: [RenderPianoRollNote; NOTE_BUFFER_SIZE],
-    render_notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    //render_notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    all_tracks: Arc<RwLock<Vec<MIDITrack>>>,
     note_colors: Arc<Mutex<NoteColors>>,
 
     note_cull_helper: Arc<Mutex<NoteCullHelper>>,
@@ -174,9 +176,14 @@ impl PianoRollRenderer {
         pr_notes_color_tex.set_filtering(glow::NEAREST);
         pr_notes_color_tex.load_texture("./shaders/textures/notes.png", 16, 1);*/
 
-        let notes = {
+        /*let notes = {
             let project_manager = project_manager.read().unwrap();
             project_manager.get_notes().clone()
+        };*/
+
+        let tracks = {
+            let project_manager = project_manager.read().unwrap();
+            project_manager.get_tracks().clone()
         };
 
         Self {
@@ -200,7 +207,8 @@ impl PianoRollRenderer {
             gl: gl.clone(),
             bars_render: pr_bars_render.to_vec(),
             notes_render: pr_notes_render,
-            render_notes: notes,
+            // render_notes: notes,
+            all_tracks: tracks,
 
             ppq: 960,
             note_colors: colors.clone(),
@@ -344,8 +352,11 @@ impl Renderer for PianoRollRenderer {
                 {
                     let mut note_colors = self.note_colors.lock().unwrap();
 
-                    let all_render_notes = self.render_notes.read().unwrap();
-                    if all_render_notes.is_empty() { return; }
+                    let all_tracks = self.all_tracks.read().unwrap();
+                    if all_tracks.is_empty() { return; }
+
+                    // let all_render_notes = self.render_notes.read().unwrap();
+                    // if all_render_notes.is_empty() { return; }
                     // resize last_note_start and first_render_note if notes changed size
                     /*if self.last_note_start.len() != all_render_notes.len() {
                         self.last_note_start = vec![0; all_render_notes.len()];
@@ -368,20 +379,20 @@ impl Renderer for PianoRollRenderer {
                         
                         let tracks_to_iter = match view_settings.pr_onion_state {
                             VS_PianoRoll_OnionState::NoOnion => {
-                                &all_render_notes[nav_curr_track as usize..nav_curr_track as usize]
+                                &all_tracks[nav_curr_track as usize..nav_curr_track as usize]
                             },
                             VS_PianoRoll_OnionState::ViewAll => {
                                 //view_all_tracks = true;
-                                &all_render_notes[..]
+                                &all_tracks[..]
                             },
                             VS_PianoRoll_OnionState::ViewPrevious => {
                                 //view_all_tracks = false;
-                                if nav_curr_track == 0 { &all_render_notes[nav_curr_track as usize..nav_curr_track as usize] }
-                                else { &all_render_notes[(nav_curr_track - 1) as usize..=(nav_curr_track as usize)] }
+                                if nav_curr_track == 0 { &all_tracks[nav_curr_track as usize..nav_curr_track as usize] }
+                                else { &all_tracks[(nav_curr_track - 1) as usize..=(nav_curr_track as usize)] }
                             },
                             VS_PianoRoll_OnionState::ViewNext => {
-                                if nav_curr_track == (all_render_notes.len() - 1) as u16 { &all_render_notes[nav_curr_track as usize..nav_curr_track as usize] }
-                                else { &all_render_notes[(nav_curr_track) as usize..=(nav_curr_track + 1) as usize] }
+                                if nav_curr_track == (all_tracks.len() - 1) as u16 { &all_tracks[nav_curr_track as usize..nav_curr_track as usize] }
+                                else { &all_tracks[(nav_curr_track) as usize..=(nav_curr_track + 1) as usize] }
                             }
                         };
 
@@ -406,7 +417,8 @@ impl Renderer for PianoRollRenderer {
                             // note_culler.update_cull(tick_pos, zoom_ticks);
 
                             // 1. draw all notes that is not the current track
-                            for notes in tracks_to_iter {
+                            for track in tracks_to_iter {
+                                let notes = track.get_notes();
                                 // skip track if it has nothing or its the navigation's current track
                                 if notes.is_empty() || curr_track == nav_curr_track {
                                     curr_track += 1;
@@ -500,8 +512,8 @@ impl Renderer for PianoRollRenderer {
                             }
 
                             // 2. draw current track on top
-                            let notes = &all_render_notes[nav_curr_track as usize];
-
+                            let top_track = &all_tracks[nav_curr_track as usize];
+                            let notes = top_track.get_notes();
                             if !notes.is_empty() {
                                 let mut curr_note = 0;
 
@@ -543,14 +555,19 @@ impl Renderer for PianoRollRenderer {
                                 };*/
                                 // let sel_note_ids = match 
                                 let shared_sel_notes = self.selected.read().unwrap();
-                                
+            
                                 let sel_ids = match shared_sel_notes.get_selected_ids_in_track(curr_track) {
                                     Some(sel_ids) => sel_ids,
                                     None => &vec![]
                                 };
+
                                 let mut sel_idx = 0;
                                 for note in &notes[n_off..note_end] {
                                     if note.key() as f32 + 1.0 < key_pos || (note.key() as f32) > key_pos + zoom_keys {
+                                        if sel_idx < sel_ids.len() && note_idx == sel_ids[sel_idx] {
+                                            sel_idx += 1;
+                                        }
+                                        
                                         curr_note += 1;
                                         note_idx += 1;
                                         continue;

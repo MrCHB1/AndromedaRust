@@ -23,6 +23,7 @@ pub enum MetaEventType {
     SequencerSpecific = 0x7F
 }
 
+#[derive(Clone)]
 pub struct MetaEvent {
     pub tick: MIDITick,
     pub event_type: MetaEventType,

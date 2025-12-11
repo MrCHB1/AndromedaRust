@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
-use crate::{app::{main_window::{EditorTool, EditorToolSettings}, view_settings::{VS_PianoRoll_DataViewState, ViewSettings}}, editor::{navigation::PianoRollNavigation, util::{bin_search_notes, MIDITick}}, midi::events::{channel_event::ChannelEvent, note::Note}};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings}, view_settings::{VS_PianoRoll_DataViewState, ViewSettings}}, editor::{actions::{EditorAction, EditorActions}, navigation::PianoRollNavigation, util::MIDITick}, midi::{events::channel_event::ChannelEvent, midi_track::MIDITrack}};
 
 pub mod data_edit_flags {
     pub const DATA_EDIT_FLAGS_NONE: u16 = 0x0;
@@ -8,6 +8,7 @@ pub mod data_edit_flags {
     pub const DATA_EDIT_MOUSE_DOWN_ON_UI: u16 = 0x2;
     pub const DATA_EDIT_ANY_DIALOG_OPEN: u16 = 0x4;
     pub const DATA_EDIT_DRAW_EDIT_LINE: u16 = 0x8;
+    pub const DATA_EDIT_CLICKED_IN_RECT: u16 = 0x10;
 }
 
 use data_edit_flags::*;
@@ -26,33 +27,33 @@ pub struct DataEditMouseInfo {
 /// Handles editing stuff like Note Velocities, pitch bends, tempo, etc.
 #[derive(Default)]
 pub struct DataEditing {
-    notes: Arc<RwLock<Vec<Vec<Note>>>>,
-    channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+    tracks: Arc<RwLock<Vec<MIDITrack>>>,
     view_settings: Arc<Mutex<ViewSettings>>,
 
     nav: Arc<Mutex<PianoRollNavigation>>,
 
     editor_tool: Rc<RefCell<EditorToolSettings>>,
+    editor_actions: Rc<RefCell<EditorActions>>,
     mouse_info: DataEditMouseInfo,
     flags: u16,
 }
 
 impl DataEditing {
     pub fn new(
-        notes: &Arc<RwLock<Vec<Vec<Note>>>>,
-        channel_events: &Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+        tracks: &Arc<RwLock<Vec<MIDITrack>>>,
         view_settings: &Arc<Mutex<ViewSettings>>,
         editor_tool: &Rc<RefCell<EditorToolSettings>>,
+        editor_actions: &Rc<RefCell<EditorActions>>,
         nav: &Arc<Mutex<PianoRollNavigation>>
     ) -> Self {
         Self {
-            notes: notes.clone(),
-            channel_events: channel_events.clone(),
+            tracks: tracks.clone(),
             view_settings: view_settings.clone(),
 
             nav: nav.clone(),
 
             editor_tool: editor_tool.clone(),
+            editor_actions: editor_actions.clone(),
             mouse_info: Default::default(),
             flags: DATA_EDIT_FLAGS_NONE
         }
@@ -79,10 +80,12 @@ impl DataEditing {
             EditorTool::Eraser => self.eraser_mouse_down(),
             EditorTool::Selector => self.select_mouse_down()
         }
+        
+        self.enable_flag(DATA_EDIT_CLICKED_IN_RECT);
     }
 
     pub fn on_mouse_move(&mut self) {
-        if self.get_flag(DATA_EDIT_MOUSE_DOWN_ON_UI) { return; }
+        if self.get_flag(DATA_EDIT_MOUSE_DOWN_ON_UI | DATA_EDIT_CLICKED_IN_RECT) { return; }
 
         if self.get_flag(DATA_EDIT_ANY_DIALOG_OPEN | DATA_EDIT_MOUSE_OVER_UI) { return; }
 
@@ -101,6 +104,10 @@ impl DataEditing {
     pub fn on_mouse_up(&mut self) {
         if self.get_flag(DATA_EDIT_MOUSE_DOWN_ON_UI) { 
             self.disable_flag(DATA_EDIT_MOUSE_DOWN_ON_UI);
+            return;
+        }
+
+        if !self.get_flag(DATA_EDIT_CLICKED_IN_RECT) {
             return;
         }
 
@@ -254,8 +261,8 @@ impl DataEditing {
     fn set_note_velocities_ranged(&mut self, min_tick: MIDITick, min_velocity: u8, max_tick: MIDITick, max_velocity: u8) {
         let curr_track = self.get_curr_track();
         
-        let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[curr_track as usize];
+        let mut tracks = self.tracks.write().unwrap();
+        let notes = (*tracks)[curr_track as usize].get_notes_mut();
 
         let note_id_min = match notes.binary_search_by_key(&min_tick, |&n| n.start()) {
             Ok(id) | Err(id) => id
@@ -265,12 +272,24 @@ impl DataEditing {
             Ok(id) | Err(id) => id
         };
 
-        for note in notes[note_id_min..note_id_max].iter_mut() {
+        let ids: Vec<_> = (note_id_min..note_id_max).collect();
+        let mut vel_changes = Vec::with_capacity(ids.len());
+        // for note in notes[note_id_min..note_id_max].iter_mut() {
+        for &id in ids.iter() {
+            let note = &mut notes[id];
             let note_tick = note.start();
             let vel_factor = (note_tick - min_tick) as f32 / (max_tick - min_tick) as f32;
             let vel_mix = ((1.0 - vel_factor) * min_velocity as f32 + vel_factor * max_velocity as f32) as u8;
-            *(note.velocity_mut()) = vel_mix;
+            
+            let old_vel = note.velocity();
+            let new_vel = vel_mix;
+            *(note.velocity_mut()) = new_vel;
+
+            vel_changes.push(new_vel as i8 - old_vel as i8);
         }
+    
+        let mut editor_actions = self.editor_actions.borrow_mut();
+        editor_actions.register_action(EditorAction::VelocityChange(ids, vel_changes, curr_track));
     }
 
     // ======== FLAG HELPER FUNCTIONS ========

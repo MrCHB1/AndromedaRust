@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, RichText, Ui};
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::DIALOG_NO_COLLAPSABLE, names::DIALOG_NAME_EDITOR_SETTINGS}}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use std::any::Any;
 
@@ -200,7 +200,59 @@ impl ESSettingsWindow {
 }
 
 impl Dialog for ESSettingsWindow {
-    fn show(&mut self) -> () {
+    fn draw(&mut self, ui: &mut Ui, _: &crate::app::util::image_loader::ImageResources) -> Option<crate::app::ui::dialog::DialogAction> {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                if ui.selectable_label(self.curr_settings == ESCurrentSettings::General, "General").clicked() {
+                    self.curr_settings = ESCurrentSettings::General
+                }
+                if ui.selectable_label(self.curr_settings == ESCurrentSettings::Audio, "Audio").clicked() {
+                    self.curr_settings = ESCurrentSettings::Audio
+                }
+            });
+            ui.separator();
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical()
+                    .min_scrolled_height(800.0)
+                    .show(ui, |ui| {
+                        match self.curr_settings {
+                            ESCurrentSettings::General => {
+                                self.draw_general_tab(ui);
+                            },
+                            ESCurrentSettings::Audio => {
+                                self.draw_audio_tab(ui);
+                            },
+                        }
+                    })
+            })
+        });
+
+        None
+    }
+
+    fn get_dialog_name(&self) -> &'static str {
+        DIALOG_NAME_EDITOR_SETTINGS
+    }
+
+    fn get_dialog_title(&self) -> String {
+        "Editor Settings".into()
+    }
+
+    fn get_flags(&self) -> u16 {
+        DIALOG_NO_COLLAPSABLE
+    }
+
+    fn get_action_buttons(&self) -> Option<crate::app::ui::dialog::DialogActionButtons> {
+        Some(
+            DialogActionButtons::Ok(
+                Box::new(|dlg| {
+                    let dlg_name = dlg.get_dialog_name();
+                    Some(DialogAction::Close(dlg_name))
+                })
+            )
+        )
+    }
+    /*fn show(&mut self) -> () {
         self.is_shown = true
     }
 
@@ -250,5 +302,5 @@ impl Dialog for ESSettingsWindow {
                     });
                 })
             });
-    }
+    }*/
 }

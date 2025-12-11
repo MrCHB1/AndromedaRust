@@ -1,7 +1,7 @@
 // houses all information such as notes, tempos, control/meta events, etc.
 // kinda like midi_file.rs but editable lol
 
-use crate::{editor::{tempo_map::TempoMap, util::tempo_as_bytes}, midi::{events::{channel_event::ChannelEvent, meta_event::{MetaEvent, MetaEventType}, note::Note}, midi_file::{self, MIDIFile}}};
+use crate::{editor::{tempo_map::TempoMap, util::tempo_as_bytes}, midi::{events::{meta_event::{MetaEvent, MetaEventType}}, midi_file::MIDIFile, midi_track::MIDITrack}};
 use std::sync::{Arc, RwLock};
 
 pub struct ProjectInfo {
@@ -25,11 +25,8 @@ impl Default for ProjectInfo {
 #[derive(Default)]
 pub struct ProjectData {
     pub ppq: u16,
-    // pub project_info: ProjectInfo,
-    // 16 channels per track. each channel contains vector of notes
-    pub notes: Arc<RwLock<Vec<Vec<Note>>>>,
     pub global_metas: Arc<RwLock<Vec<MetaEvent>>>,
-    pub channel_events: Arc<RwLock<Vec<Vec<ChannelEvent>>>>,
+    pub tracks: Arc<RwLock<Vec<MIDITrack>>>,
     pub tempo_map: Arc<RwLock<TempoMap>>
 }
 
@@ -69,9 +66,10 @@ impl ProjectData {
         {
             midi_file.preprocess_meta_events();
 
-            *(self.notes.write().unwrap()) = std::mem::take(&mut midi_file.notes);
+            // *(self.notes.write().unwrap()) = std::mem::take(&mut midi_file.notes);
             *(self.global_metas.write().unwrap()) = std::mem::take(&mut midi_file.global_meta_events);
-            *(self.channel_events.write().unwrap()) = std::mem::take(&mut midi_file.channel_events);
+            // *(self.channel_events.write().unwrap()) = std::mem::take(&mut midi_file.channel_events);
+            *(self.tracks.write().unwrap()) = std::mem::take(&mut midi_file.tracks);
         }
 
         {
@@ -81,25 +79,12 @@ impl ProjectData {
     }
 
     pub fn reset_or_init_data(&mut self) {
-        /* let project_info = &mut self.project_info;
-        project_info.name = "";
-        project_info.author = "";
-        project_info.description = "";
-        project_info.ppq = 960; */
-        
         {
-            let mut notes = self.notes.write().unwrap();
-            let mut ch_evs = self.channel_events.write().unwrap();
-
-            notes.clear();
-            ch_evs.clear();
-
-            // initialize an empty track
-            notes.push(Vec::new());
-            ch_evs.push(Vec::new());
+            let mut tracks = self.tracks.write().unwrap();
+            tracks.clear();
+            tracks.push(MIDITrack::new_empty());
         }
 
-        // initialize default meta events
         {
             let mut global_metas = self.global_metas.write().unwrap();
             *global_metas = vec![
@@ -127,38 +112,34 @@ impl ProjectData {
             tempo_map.meta_events = self.global_metas.clone();
             tempo_map.rebuild_tempo_map();
         }
+
+        self.validate_tracks(0);
     }
 
     pub fn validate_tracks(&mut self, track: u16) {
-        let mut notes = self.notes.write().unwrap();
-        let mut ch_evs = self.channel_events.write().unwrap();
+        let mut tracks = self.tracks.write().unwrap();
 
-        let last_len = notes.len();
+        let last_len = tracks.len();
         let new_len = track + 1;
         let len_change = new_len as i32 - last_len as i32;
         if len_change == 0 { return; }
 
         if len_change < 0 {
             for _ in 0..(-len_change) {
-                let can_remove = notes.last().map_or(false, |n| n.is_empty())
-                    && ch_evs.last().map_or(false, |c| c.is_empty());
+                let can_remove = tracks.last().map_or(false, |t| t.is_empty());
 
                 if can_remove {
-                    notes.pop();
-                    ch_evs.pop();
+                    tracks.pop();
                 } else {
                     break;
                 }
             }
         } else {
             for _ in 0..len_change {
-                notes.push(Vec::new());
-                ch_evs.push(Vec::new());
+                tracks.push(MIDITrack::new_empty());
             }
-
-            assert!(notes.len() == ch_evs.len());
         }
 
-        println!("Using {} tracks", notes.len());
+        println!("Using {} tracks", tracks.len());
     }
 }

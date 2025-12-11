@@ -1,6 +1,6 @@
 use eframe::egui::{self, RichText};
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::Dialog}, editor::{actions::{EditorAction, EditorActions}, midi_bar_cacher::BarCacher, tempo_map::TempoMap, util::{tempo_as_bytes, MIDITick}}, midi::events::meta_event::{MetaEvent, MetaEventType}};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::*, names::DIALOG_NAME_INSERT_META}}, editor::{actions::{EditorAction, EditorActions}, midi_bar_cacher::BarCacher, tempo_map::TempoMap, util::{MIDITick, tempo_as_bytes}}, midi::events::meta_event::{MetaEvent, MetaEventType}};
 
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
@@ -166,7 +166,62 @@ impl Default for MetaEventInsertDialog {
 }
 
 impl Dialog for MetaEventInsertDialog {
-    fn show(&mut self) -> () {
+    fn draw(&mut self, ui: &mut egui::Ui, _: &crate::app::util::image_loader::ImageResources) -> Option<crate::app::ui::dialog::DialogAction> {
+        for (label, field) in self.fields.iter_mut() {
+            field.show(label, ui, None);
+        }
+        None
+    }
+
+    fn cleanup_dialog(&mut self) -> Result<(), &'static str> {
+        self.fields.clear();
+        Ok(())
+    }
+
+    fn get_dialog_name(&self) -> &'static str {
+        DIALOG_NAME_INSERT_META
+    }
+
+    fn get_dialog_title(&self) -> String {
+        format!("Insert {}", self.dialog_type.to_string())
+    }
+
+    fn get_action_buttons(&self) -> Option<crate::app::ui::dialog::DialogActionButtons> {
+        Some(
+            DialogActionButtons::Ok(Box::new(
+                |dlg| {
+                    let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
+
+                    let mut data = Vec::new();
+
+                    match dlg.dialog_type {
+                        MetaEventType::TimeSignature => {
+                            data = vec![dlg.fields[0].1.as_u8(), dlg.fields[1].1.as_u8()];
+                            println!("{:?}", data);
+                        },
+                        MetaEventType::Tempo => {
+                            data = tempo_as_bytes(dlg.fields[0].1.as_f32()).to_vec();
+                        }
+                        _ => {}
+                    }
+
+                    if !data.is_empty() {
+                        if let Some(meta_created) = dlg.meta_created.take() {
+                            meta_created(data);
+                        }
+                    }
+
+                    let dlg_name = dlg.get_dialog_name();
+                    Some(DialogAction::Close(dlg_name))
+                }
+            ))
+        )
+    }
+
+    fn get_flags(&self) -> u16 {
+        DIALOG_NO_COLLAPSABLE | DIALOG_NO_RESIZABLE
+    }
+    /*fn show(&mut self) -> () {
         self.is_showing = true;
     }
 
@@ -221,7 +276,7 @@ impl Dialog for MetaEventInsertDialog {
                     });
                 });
             });
-    }
+    }*/
 }
 
 impl MetaEventInsertDialog {

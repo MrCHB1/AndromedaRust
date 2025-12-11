@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 
 use mlua::{Function, IntoLua, Lua, UserData};
 
-use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::{note_sequence_funcs::{extract_with, merge_notes_and_return_ids}, NoteEditing}, util::{get_min_max_keys_in_selection, get_min_max_ticks_in_selection, move_notes_to, MIDITick, SignedMIDITick}}, midi::events::note::{Note}};
+use crate::{editor::{actions::{EditorAction, EditorActions}, editing::note_editing::{note_sequence_funcs::{extract_with, merge_notes_and_return_ids}, NoteEditing}, util::{get_min_max_keys_in_selection, get_min_max_ticks_in_selection, MIDITick, SignedMIDITick}}, midi::events::note::{Note}};
 
 impl UserData for Note {
     fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
@@ -49,7 +49,9 @@ pub struct LuaNoteEditing {
 }
 
 impl LuaNoteEditing {
-    pub fn new(note_editing: Arc<Mutex<NoteEditing>>) -> Self {
+    pub fn new(note_editing: &Arc<Mutex<NoteEditing>>) -> Self {
+        let note_editing = note_editing.clone();
+        // println!("[LuaNoteEditing::new()] Track count: {}", note_editing.lock().unwrap().get_tracks().read().unwrap().len());
         Self { 
             note_editing,
             delta_note_pos: HashMap::new(),
@@ -180,6 +182,7 @@ impl LuaNoteEditing {
             notes_to_add.sort_unstable_by_key(|&n| n.start());
 
             let mut note_editing = note_editing.lock().unwrap();
+            println!("Track count: {}", note_editing.get_tracks().read().unwrap().len());
 
             let old_notes = note_editing.take_notes_in_track(track);
             let (merged, ids) = merge_notes_and_return_ids(old_notes, notes_to_add);
@@ -197,13 +200,13 @@ impl UserData for LuaNoteEditing {
         methods.add_method_mut("for_each_note", |lua, this, func: Function| {
             let curr_track: usize = lua.globals().get("curr_track")?;
             
-            let notes = {
+            let tracks = {
                 let note_editing = this.note_editing.lock().unwrap();
-                note_editing.get_notes().clone()
+                note_editing.get_tracks().clone()
             };
 
-            let mut notes = notes.write().unwrap();
-            let track = &mut notes[curr_track];
+            let mut tracks = tracks.write().unwrap();
+            let track = (*tracks)[curr_track].get_notes_mut();
             
             for (i, note) in track.iter_mut().enumerate() {
                 this.change_note_and_update_deltas(lua, &func, note, i)?;
@@ -214,13 +217,13 @@ impl UserData for LuaNoteEditing {
         methods.add_method_mut("for_each_selected", |lua, this, func: Function| {
             let curr_track: usize = lua.globals().get("curr_track")?;
             
-            let (notes, sel_ids) = {
+            let (tracks, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes().clone(), note_editing.get_shared_selected_ids().clone())
+                (note_editing.get_tracks().clone(), note_editing.get_shared_selected_ids().clone())
             };
 
-            let mut notes = notes.write().unwrap();
-            let track = &mut notes[curr_track];
+            let mut tracks = tracks.write().unwrap();
+            let track = (*tracks)[curr_track].get_notes_mut();
 
             let empty = vec![];
             let sel_ids = sel_ids.read().unwrap();
@@ -238,13 +241,13 @@ impl UserData for LuaNoteEditing {
         methods.add_method("iter_selected", |lua, this, func: Function| {
             let curr_track: usize = lua.globals().get("curr_track")?;
 
-            let (notes, sel_ids) = {
+            let (tracks, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes().clone(), note_editing.get_shared_selected_ids().clone())
+                (note_editing.get_tracks().clone(), note_editing.get_shared_selected_ids().clone())
             };
 
-            let notes = notes.read().unwrap();
-            let track = &notes[curr_track];
+            let mut tracks = tracks.write().unwrap();
+            let track = (*tracks)[curr_track].get_notes_mut();
 
             let empty = vec![];
             let sel_ids = sel_ids.read().unwrap();
@@ -263,9 +266,9 @@ impl UserData for LuaNoteEditing {
         methods.add_method::<_, _, Option<mlua::Table>>("get_selection_tick_range", |lua, this, inclusive: bool| {
             let curr_track: usize = lua.globals().get("curr_track")?;
 
-            let (notes, sel_ids) = {
+            let (tracks, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes().clone(), note_editing.get_shared_selected_ids().clone())
+                (note_editing.get_tracks().clone(), note_editing.get_shared_selected_ids().clone())
             };
 
             let empty = vec![];
@@ -274,8 +277,8 @@ impl UserData for LuaNoteEditing {
                 .unwrap_or(&empty);
             if sel_ids.is_empty() { return Ok(None); }
 
-            let notes = notes.read().unwrap();
-            let track = &notes[curr_track];
+            let tracks = tracks.read().unwrap();
+            let track = (*tracks)[curr_track].get_notes();
 
             let (min_tick, max_tick) = if inclusive {
                 get_min_max_ticks_in_selection(track, &sel_ids).unwrap()
@@ -293,9 +296,9 @@ impl UserData for LuaNoteEditing {
         methods.add_method::<_, _, Option<mlua::Table>>("get_selection_key_range", |lua, this, _: ()| {
             let curr_track: usize = lua.globals().get("curr_track")?;
 
-            let (notes, sel_ids) = {
+            let (tracks, sel_ids) = {
                 let note_editing = this.note_editing.lock().unwrap();
-                (note_editing.get_notes().clone(), note_editing.get_shared_selected_ids().clone())
+                (note_editing.get_tracks().clone(), note_editing.get_shared_selected_ids().clone())
             };
 
             let empty = vec![];
@@ -304,8 +307,8 @@ impl UserData for LuaNoteEditing {
                 .unwrap_or(&empty);
             if sel_ids.is_empty() { return Ok(None); }
 
-            let notes = notes.read().unwrap();
-            let track = &notes[curr_track];
+            let tracks = tracks.read().unwrap();
+            let track = (*tracks)[curr_track].get_notes();
 
             let (min_key, max_key) = get_min_max_keys_in_selection(track, &sel_ids).unwrap();
 

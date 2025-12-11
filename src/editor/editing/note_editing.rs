@@ -1,5 +1,5 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
-use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::{data_view::DataViewRenderer, RenderManager}}, editor::{self, actions::{EditorAction, EditorActions}, editing::{note_editing::note_sequence_funcs::{extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids, move_all_notes_by, move_each_note_by, remove_note}, SharedClipboard, SharedSelectedNotes}, navigation::PianoRollNavigation, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{find_note_at, get_absolute_max_tick_from_ids, get_min_max_ticks_in_selection, get_mouse_midi_pos, get_notes_in_range, MIDITick, SignedMIDITick}}, midi::events::note::Note};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::{RenderManager, data_view::DataViewRenderer}}, editor::{actions::{EditorAction, EditorActions}, editing::{SharedClipboard, SharedSelectedNotes, note_editing::note_sequence_funcs::{extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids, move_all_notes_by, move_each_note_by, remove_note}}, navigation::PianoRollNavigation, util::{MIDITick, SignedMIDITick, find_note_at, get_absolute_max_tick_from_ids, get_mouse_midi_pos, get_notes_in_range}}, midi::{events::note::Note, midi_track::MIDITrack}};
 use eframe::egui::{self, Context, CursorIcon, Key, Ui};
 use note_edit_flags::*;
 
@@ -62,7 +62,7 @@ struct NoteEditMouseInfo {
 
 #[derive(Default)]
 pub struct NoteEditing {
-    notes: Arc<RwLock<Vec<Vec<Note>>>>,
+    tracks: Arc<RwLock<Vec<MIDITrack>>>,
     ghost_notes: Arc<Mutex<Vec<Note>>>,
     shared_selected_note_ids: Arc<RwLock<SharedSelectedNotes>>,
     // selected_note_ids: Arc<Mutex<Vec<usize>>>,
@@ -95,7 +95,8 @@ pub struct NoteEditing {
 
 impl NoteEditing {
     pub fn new(
-        notes: &Arc<RwLock<Vec<Vec<Note>>>>,
+        // notes: &Arc<RwLock<Vec<Vec<Note>>>>,
+        tracks: &Arc<RwLock<Vec<MIDITrack>>>,
         nav: &Arc<Mutex<PianoRollNavigation>>,
         editor_tool: &Rc<RefCell<EditorToolSettings>>,
         editor_actions: &Rc<RefCell<EditorActions>>,
@@ -107,13 +108,8 @@ impl NoteEditing {
         shared_selected_note_ids: &Arc<RwLock<SharedSelectedNotes>>,
     ) -> Self {
 
-        {
-            let notes = notes.read().unwrap();
-            assert!(!notes.is_empty(), "notes have to be populated");
-        }
-
         Self {
-            notes: notes.clone(),
+            tracks: tracks.clone(),
             ghost_notes: Arc::new(Mutex::new(Vec::new())),
             // selected_note_ids: Arc::new(Mutex::new(Vec::new())),
             // notes_clipboard: Vec::new(),
@@ -158,12 +154,10 @@ impl NoteEditing {
         let curr_track = self.get_current_track();
 
         let mouse_note_hover_idx = {
-            let notes = self.notes.read().unwrap();
+            let tracks = self.tracks.read().unwrap();
+            let notes = (*tracks)[curr_track as usize].get_notes();
             if notes.is_empty() { None }
-            else {
-                let notes = &notes[curr_track as usize];
-                find_note_at(notes, mouse_midi_pos.0, mouse_midi_pos.1)
-            }
+            else { find_note_at(notes, mouse_midi_pos.0, mouse_midi_pos.1) }
         };
 
         self.mouse_info.is_at_note_end = if let Some(idx) = mouse_note_hover_idx {
@@ -172,8 +166,8 @@ impl NoteEditing {
             let rect = ui.min_rect();
 
             let nav = self.nav.lock().unwrap();
-            let notes = self.notes.read().unwrap();
-            let notes = &notes[curr_track as usize];
+            let tracks = self.tracks.read().unwrap();
+            let notes = (*tracks)[curr_track as usize].get_notes();
             let note = &notes[idx];
 
             let note_screen_width =
@@ -341,8 +335,9 @@ impl NoteEditing {
         mouse_info.last_mouse_click_pos = mouse_info.mouse_midi_pos;
         
         if let Some(clicked_idx) = mouse_info.last_clicked_note_idx {
-            let notes = self.notes.read().unwrap();
-            let note = &notes[curr_track as usize][clicked_idx];
+            let tracks = self.tracks.read().unwrap();
+            let notes = (*tracks)[curr_track as usize].get_notes();
+            let note = &notes[clicked_idx];
             mouse_info.last_clicked_note_pos = (note.start(), note.key());
         }
     }
@@ -360,8 +355,9 @@ impl NoteEditing {
         if let Some(clicked_idx) = self.get_clicked_note_idx() {
             let curr_track = self.get_current_track();
             {
-                let notes = self.notes.read().unwrap();
-                let note = &notes[curr_track as usize][clicked_idx];
+                let tracks = self.tracks.read().unwrap();
+                let notes = (*tracks)[curr_track as usize].get_notes();
+                let note = &notes[clicked_idx];
 
                 self.update_toolbar_settings_from_note(note);
             }
@@ -599,8 +595,8 @@ impl NoteEditing {
             let (min_tick, max_tick, min_key, max_key) = self.get_selection_range();
             let curr_track = self.get_current_track();
 
-            let notes = self.notes.read().unwrap();
-            let notes = &notes[curr_track as usize];
+            let tracks = self.tracks.read().unwrap();
+            let notes = (*tracks)[curr_track as usize].get_notes();
 
             let selected = get_notes_in_range(notes, min_tick, max_tick, min_key, max_key, true);
 
@@ -753,8 +749,8 @@ impl NoteEditing {
         let curr_track = self.get_current_track();
 
         let mut selected = {
-            let notes = self.notes.read().unwrap();
-            let notes = &notes[curr_track as usize];
+            let tracks = self.tracks.read().unwrap();
+            let notes = (*tracks)[curr_track as usize].get_notes();
 
             get_notes_in_range(notes, min_tick, max_tick, min_key, max_key, true)
         };
@@ -766,8 +762,8 @@ impl NoteEditing {
 
     // ======== NOTE STUFF ========
 
-    pub fn get_notes(&self) -> &Arc<RwLock<Vec<Vec<Note>>>> {
-        &self.notes
+    pub fn get_tracks(&self) -> Arc<RwLock<Vec<MIDITrack>>> {
+        self.tracks.clone()
     }
 
     /*pub fn get_selected_note_ids(&self) -> &Arc<Mutex<Vec<usize>>> {
@@ -786,8 +782,8 @@ impl NoteEditing {
         // let mut saved_positions: Vec<(MIDITick, u8)> = Vec::with_capacity(ids.len());
 
         let curr_track = self.get_current_track();
-        let notes = self.notes.read().unwrap();
-        let notes = &notes[curr_track as usize];
+        let tracks = self.tracks.read().unwrap();
+        let notes = (*tracks)[curr_track as usize].get_notes();
 
         ids.iter().map(|&id| {
             let note = &notes[id];
@@ -799,8 +795,8 @@ impl NoteEditing {
         // let mut saved_lengths: Vec<MIDITick> = Vec::with_capacity(ids.len());
 
         let curr_track = self.get_current_track();
-        let notes = self.notes.read().unwrap();
-        let notes = &notes[curr_track as usize];
+        let tracks = self.tracks.read().unwrap();
+        let notes = (*tracks)[curr_track as usize].get_notes();
 
         ids.iter().map(|&id| {
             let note = &notes[id];
@@ -811,8 +807,8 @@ impl NoteEditing {
     fn offset_note_lengths(&mut self, length_delta: SignedMIDITick) {
         let curr_track = self.get_current_track();
 
-        let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[curr_track as usize];
+        let mut tracks = self.tracks.write().unwrap();
+        let notes = (*tracks)[curr_track as usize].get_notes_mut();
 
         assert!(!self.note_old_lengths.is_empty(), "old note lengths must be populated");
 
@@ -829,8 +825,8 @@ impl NoteEditing {
     fn apply_note_length_change(&mut self) {
         let curr_track = self.get_current_track();
 
-        let notes = self.notes.read().unwrap();
-        let notes = &notes[curr_track as usize];
+        let tracks = self.tracks.read().unwrap();
+        let notes = (*tracks)[curr_track as usize].get_notes();
 
         let old_length = std::mem::take(&mut self.note_old_lengths);
         let (note_ids, length_deltas): (Vec<usize>, Vec<SignedMIDITick>) = old_length.into_iter()
@@ -849,8 +845,8 @@ impl NoteEditing {
 
         // let mut new_ghost_notes = Vec::with_capacity(selected_notes.len());
         let old_notes = {
-            let mut notes = self.notes.write().unwrap();
-            let notes = &mut notes[curr_track as usize];
+            let mut tracks = self.tracks.write().unwrap();
+            let notes = (*tracks)[curr_track as usize].get_notes_mut();
             std::mem::take(notes)
         };
         
@@ -879,10 +875,10 @@ impl NoteEditing {
     fn note_id_as_first_ghost_note(&mut self, id: usize) {
         let curr_track = self.get_current_track();
 
-        let mut notes = self.notes.write().unwrap();
-        let track = &mut notes[curr_track as usize];
+        let mut tracks = self.tracks.write().unwrap();
+        let notes = (*tracks)[curr_track as usize].get_notes_mut();
         
-        let note = remove_note(track, id);
+        let note = remove_note(notes, id);
 
         // put removed note to ghost notes
         let mut ghost_notes = self.ghost_notes.lock().unwrap();
@@ -1067,20 +1063,20 @@ impl NoteEditing {
 
     fn take_notes_curr_track(&mut self) -> Vec<Note> {
         let curr_track = self.get_current_track();
-        let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[curr_track as usize];
+        let mut tracks = self.tracks.write().unwrap();
+        let notes = (*tracks)[curr_track as usize].get_notes_mut();
         std::mem::take(notes)
     }
 
     pub fn take_notes_in_track(&mut self, track: u16) -> Vec<Note> {
-        let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[track as usize];
+        let mut tracks = self.tracks.write().unwrap();
+        let notes = (*tracks)[track as usize].get_notes_mut();
         std::mem::take(notes)
     }
 
     pub fn set_notes_in_track(&mut self, track: u16, notes_: Vec<Note>) {
-        let mut notes = self.notes.write().unwrap();
-        let notes = &mut notes[track as usize];
+        let mut tracks = self.tracks.write().unwrap();
+        let notes = (*tracks)[track as usize].get_notes_mut();
         *notes = notes_;
     }
 
@@ -1117,8 +1113,8 @@ impl NoteEditing {
         let (merged, dupe_ids) = merge_notes_and_return_ids(old_notes, moved);
         
         {
-            let mut notes = self.notes.write().unwrap();
-            let notes = &mut notes[track as usize];
+            let mut tracks = self.tracks.write().unwrap();
+            let notes = (*tracks)[track as usize].get_notes_mut();
             *notes = merged
         }
 
@@ -1129,8 +1125,8 @@ impl NoteEditing {
     }
 
     pub fn clone_notes(&self, track: u16, ids: &[usize]) -> Vec<Note> {
-        let notes = self.notes.read().unwrap();
-        let notes = &notes[track as usize];
+        let mut tracks = self.tracks.write().unwrap();
+        let notes = (*tracks)[track as usize].get_notes_mut();
 
         let copied = ids.iter().map(|&id| { 
             let note = &notes[id];
@@ -1312,8 +1308,8 @@ impl NoteEditing {
                 *delta_pos = notes_dt;
             },
             EditorAction::ChannelChange(note_ids, delta_channel, track) => {
-                let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[*track as usize];
+                let mut tracks = self.tracks.write().unwrap();
+                let notes = (*tracks)[*track as usize].get_notes_mut();
 
                 for (i, &id) in note_ids.iter().enumerate() {
                     let note = &mut notes[id];
@@ -1331,8 +1327,8 @@ impl NoteEditing {
                 }
             },
             EditorAction::LengthChange(note_ids, delta_length, track) => {
-                let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[*track as usize];
+                let mut tracks = self.tracks.write().unwrap();
+                let notes = (*tracks)[*track as usize].get_notes_mut();
 
                 for (i, &id) in note_ids.iter().enumerate() {
                     let note = &mut notes[id];
@@ -1345,8 +1341,8 @@ impl NoteEditing {
                 }
             },
             EditorAction::VelocityChange(note_ids, delta_velocity, track) => {
-                let mut notes = self.notes.write().unwrap();
-                let notes = &mut notes[*track as usize];
+                let mut tracks = self.tracks.write().unwrap();
+                let notes = (*tracks)[*track as usize].get_notes_mut();
 
                 for (i, &id) in note_ids.iter().enumerate() {
                     let note = &mut notes[id];
@@ -1396,6 +1392,7 @@ impl NoteEditing {
     }
 
     // ======== NAV HELPER FUNCTIONS ========
+
     pub fn get_current_track(&self) -> u16 {
         let nav = self.nav.lock().unwrap();
         nav.curr_track
@@ -1409,11 +1406,13 @@ impl NoteEditing {
     }
 
     fn update_latest_note_start(&mut self) {
-        let notes = self.notes.read().unwrap();
+        let tracks = self.tracks.read().unwrap();
         let mut latest_start: MIDITick = 0;
-        for note_track in notes.iter() {
-            if note_track.is_empty() { continue; }
-            let last_note = note_track.last().unwrap();
+        for track in tracks.iter() {
+            let notes = track.get_notes();
+            if notes.is_empty() { continue; }
+
+            let last_note = notes.last().unwrap();
             if last_note.start() >= latest_start { latest_start = last_note.start(); }
         }
         self.latest_note_start = latest_start + 38400;

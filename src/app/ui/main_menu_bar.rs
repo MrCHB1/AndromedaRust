@@ -7,7 +7,9 @@ pub enum MenuItem {
     MenuButton(Option<Box<dyn FnMut(&mut MainWindow)>>), // just a regular button
     MenuButtonEnabled(Option<Box<dyn FnMut(&mut MainWindow)>>, Box<dyn Fn(&mut MainWindow) -> bool>),
     Separator,
-    SubMenu(Vec<(String, MenuItem)>)
+    SubMenu(Vec<(String, MenuItem)>),
+    //                    tooltip, main window func
+    MenuButtonWithTooltop(String,  Option<Box<dyn FnMut(&mut MainWindow)>>)
 }
 
 pub enum MenuLabelType {
@@ -89,6 +91,14 @@ impl MainMenuBar {
                 },
                 MenuItem::MenuButtonEnabled(action, enabled) => {
                     if ui.add_enabled(enabled(parent), egui::Button::new(label.as_str())).clicked() {
+                        if let Some(action) = action.as_mut() {
+                            action(parent);
+                            ui.close_menu();
+                        }
+                    }
+                },
+                MenuItem::MenuButtonWithTooltop(tooltip_message, action) => {
+                    if ui.button(label.as_str()).on_hover_text(tooltip_message.as_str()).clicked() {
                         if let Some(action) = action.as_mut() {
                             action(parent);
                             ui.close_menu();

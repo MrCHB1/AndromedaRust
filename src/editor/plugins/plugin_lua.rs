@@ -12,10 +12,14 @@ pub struct PluginLua {
     pub plugin_name: String,
     pub plugin_type: PluginType,
     pub plugin_info: Option<PluginInfo>,
+    plugin_path: Option<PathBuf>,
+
     pub on_apply_fn: Option<Function>,
     pub lua: Rc<Lua>,
     pub dialog_field_table: Option<Table>,
+
     loaded: bool,
+    is_builtin: bool,
 }
 
 impl PluginLua {
@@ -24,10 +28,13 @@ impl PluginLua {
             plugin_name: "unnamed plugin".into(),
             plugin_type: PluginType::Manipluate,
             plugin_info: None,
+            plugin_path: None,
             lua: Rc::new(Lua::new()),
             on_apply_fn: None,
             dialog_field_table: None,
-            loaded: false
+
+            loaded: false,
+            is_builtin: true
         }
     }
 
@@ -35,9 +42,25 @@ impl PluginLua {
         if self.loaded { return Ok(()); }
 
         // read file contents
-        let src_code = std::fs::read_to_string(path).unwrap();
-        
+        let src_code = std::fs::read_to_string(&path).unwrap();
+        self.plugin_path = Some(path);
         self.load_plugin_from_str(&src_code)?;
+        self.is_builtin = false;
+        Ok(())
+    }
+
+    pub fn reload_plugin(&mut self) -> Result<(), Error> {
+        if self.is_builtin {
+            println!("Skipping {} reload because it is a builtin plugin", self.plugin_name);
+            return Ok(());
+        }
+
+        assert!(self.loaded == true && self.plugin_path.is_some(), "Plugin {} was never loaded!", self.plugin_name);
+
+        self.loaded = false;
+        let path = self.plugin_path.take().unwrap();
+        self.load_plugin_from_path(path)?;
+        
         Ok(())
     }
 
@@ -64,7 +87,6 @@ impl PluginLua {
         globals.set("package", Value::Nil)?;
 
         let src_code = Self::preprocess_plugin_src(src_code);
-        println!("{src_code}");
         let globals = lua.load(src_code).eval::<Table>()?;
 
         let plugin_name = globals.get::<String>("plugin_name");
