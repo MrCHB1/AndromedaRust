@@ -87,6 +87,8 @@ pub fn bin_search_notes_exact(notes: &Vec<Note>, tick: MIDITick) -> usize {
     if tick <= notes[low].start { return 0; }
     if tick >= notes[high].start { return high; }
 
+    let mut num_steps = 0;
+
     while low < high {
         let mid = (low + high) / 2;
         if notes[mid].start < tick {
@@ -94,9 +96,34 @@ pub fn bin_search_notes_exact(notes: &Vec<Note>, tick: MIDITick) -> usize {
         } else  {
             high = mid;
         }
+        num_steps += 1;
     }
 
+    println!("Searched in {num_steps} steps.");
     low
+}
+
+/// Supposedly is O(log(log(n))).
+pub fn veb_search_notes(notes: &Vec<Note>, tick: MIDITick) -> usize {
+    let mut num_steps = 0;
+    fn recursive(notes: &[Note], tick: MIDITick, offset: usize, num_steps: &mut i32) -> usize {
+        let n = notes.len();
+        if n == 0 { return 0; }
+        if n == 1 { println!("Searched in {num_steps} steps."); return if notes[0].start() <= tick { offset } else { 0 }; }
+
+        let block_size = (n as f64).sqrt() as usize;
+        let mut i = 0;
+
+        while i + block_size < n && notes[i + block_size].start() <= tick {
+            i += block_size;
+        }
+
+        let end = std::cmp::min(i + block_size + 1, n);
+        *num_steps += 1;
+        recursive(&notes[i..end], tick, offset + i, num_steps)
+    }
+
+    recursive(&notes, tick, 0, &mut num_steps)
 }
 
 pub fn get_notes_in_range(notes: &Vec<Note>, min_tick: MIDITick, max_tick: MIDITick, min_key: u8, max_key: u8, include_ends: bool) -> Vec<usize> {

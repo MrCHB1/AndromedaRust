@@ -298,13 +298,11 @@ impl Dialog for PluginDialog {
                         if let Some(step) = step { slider = slider.step_by(*step); }
                         
                         if ui.add(slider).changed() {
-                            /*let plugin = self.plugin.as_ref().unwrap();
-                            let mut plugin = plugin.try_borrow_mut().unwrap();
-                            let dialog_fields = plugin.dialog_field_table.as_mut().unwrap();*/
+                            let plugin = self.plugin.as_ref().unwrap();
+                            let field_id = field_id.to_string();
 
-                            Self::get_field_by_id(
-                                self.plugin.as_ref().unwrap(),
-                                field_id.to_string()).unwrap()
+                            Self::get_field_by_id(plugin, field_id).unwrap()
+                                .get::<Table>(1).unwrap()
                                 .set("value", *value)
                                 .unwrap();
                         }
@@ -318,6 +316,7 @@ impl Dialog for PluginDialog {
                             let field_id = field_id.to_string();
                             
                             Self::get_field_by_id(plugin, field_id).unwrap()
+                                .get::<Table>(1).unwrap()
                                 .set("value", value.clone())
                                 .unwrap();
                         }
@@ -331,6 +330,7 @@ impl Dialog for PluginDialog {
                             let field_id = field_id.to_string();
                             
                             Self::get_field_by_id(plugin, field_id).unwrap()
+                                .get::<Table>(1).unwrap()
                                 .set("value", *value)
                                 .unwrap();
                         }
@@ -346,6 +346,7 @@ impl Dialog for PluginDialog {
                                 let field_id = field_id.to_string();
                                 
                                 Self::get_field_by_id(plugin, field_id).unwrap()
+                                    .get::<Table>(1).unwrap()
                                     .set("value", *value)
                                     .unwrap();
                             }

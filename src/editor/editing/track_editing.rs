@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLoc
 
 use eframe::egui::{self, Ui};
 
-use crate::{app::{main_window::{EditorTool, EditorToolSettings}, rendering::note_cull_helper::NoteCullHelper, view_settings::ViewSettings}, editor::{actions::{EditorAction, EditorActions}, navigation::{PianoRollNavigation, TrackViewNavigation}, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{MIDITick, get_mouse_track_view_pos}}, midi::{events::{channel_event::ChannelEvent, note::Note}, midi_track::MIDITrack}};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings}, rendering::note_cull_helper::NoteCullHelper, view_settings::ViewSettings}, editor::{actions::{EditorAction, EditorActions}, navigation::{PianoRollNavigation, TrackViewNavigation}, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{MIDITick, SignedMIDITick, get_mouse_track_view_pos}}, midi::{events::{channel_event::ChannelEvent, note::Note}, midi_track::MIDITrack}};
 
 pub mod track_flags {
     pub const TRACK_EDIT_FLAGS_NONE: u16 = 0x0;
@@ -36,6 +36,10 @@ pub struct TrackEditing {
     curr_mouse_track_pos: (MIDITick, u16),
     right_clicked_track: u16,
     flags: u16,
+    
+    pub selection_range: (MIDITick, MIDITick, u16, u16),
+    draw_select_box: bool,
+
     pub ppq: u16,
 }
 
@@ -65,6 +69,8 @@ impl TrackEditing {
             flags: TRACK_EDIT_FLAGS_NONE,
             right_clicked_track: 0,
             ppq: 960,
+            selection_range: (0, 0, 0, 0),
+            draw_select_box: false
         }
     }
 
@@ -90,6 +96,19 @@ impl TrackEditing {
         let screen_y_trck = (screen_y_norm * nav.zoom_tracks_smoothed + nav.track_pos_smoothed) as u16;
 
         (screen_x_tick, screen_y_trck)
+    }
+
+    fn midi_track_pos_to_screen_pos(&self, midi_track_pos: (MIDITick, u16), ui: &mut Ui) -> (f32, f32) {
+        let rect = ui.min_rect();
+        let nav = self.nav.lock().unwrap();
+
+        let screen_x_norm = (midi_track_pos.0 as f32 - nav.tick_pos_smoothed) / nav.zoom_ticks_smoothed;
+        let screen_y_norm = (midi_track_pos.1 as f32 - nav.track_pos_smoothed) / nav.zoom_tracks_smoothed;
+
+        let screen_x = rect.left() + screen_x_norm * rect.width();
+        let screen_y = rect.top() + screen_y_norm * rect.height();
+
+        (screen_x, screen_y)
     }
 
     // ======== INPUT EVENTS ========
@@ -187,15 +206,65 @@ impl TrackEditing {
     // ======== TOOL MOUSE EVENTS ========
 
     fn select_mouse_down(&mut self) {
-
+        self.init_selection_box(self.mouse_info.mouse_midi_track_pos);
     }
 
     fn select_mouse_move(&mut self) {
-
+        self.update_selection_box(self.mouse_info.mouse_midi_track_pos);
     }
 
     fn select_mouse_up(&mut self) {
+        self.draw_select_box = false;
 
+        let (min_tick, max_tick, min_track, max_track) = self.get_selection_range();
+
+    }
+
+    // ======== SELECTION BOX ========
+
+    fn init_selection_box(&mut self, start_pos: (MIDITick, u16)) {
+        let snapped_tick = self.snap_tick(start_pos.0 as SignedMIDITick) as MIDITick;
+        self.selection_range = (snapped_tick, snapped_tick, start_pos.1, start_pos.1);
+        self.draw_select_box = true;
+    }
+
+    fn update_selection_box(&mut self, new_pos: (MIDITick, u16)) {
+        self.selection_range.1 = self.snap_tick(new_pos.0 as SignedMIDITick) as MIDITick;
+        self.selection_range.3 = new_pos.1;
+    }
+
+    fn get_selection_range(&self) -> (MIDITick, MIDITick, u16, u16) {
+        let (min_tick, max_tick) = {
+            if self.selection_range.0 > self.selection_range.1 {
+                (self.selection_range.1, self.selection_range.0)
+            } else {
+                (self.selection_range.0, self.selection_range.1)
+            }
+        };
+
+        let (min_track, max_track) = {
+            if self.selection_range.2 > self.selection_range.3 {
+                (self.selection_range.3, self.selection_range.2)
+            } else {
+                (self.selection_range.2, self.selection_range.3)
+            }
+        };
+
+        (min_tick, max_tick, min_track, max_track)
+    }
+
+    #[inline(always)]
+    pub fn get_can_draw_selection_box(&self) -> bool {
+        self.draw_select_box
+    }
+
+    pub fn get_selection_range_ui(&self, ui: &mut Ui) -> ((f32, f32), (f32, f32)) {
+        let (min_tick, max_tick, min_track, max_track) = self.get_selection_range();
+
+        let tl = self.midi_track_pos_to_screen_pos((min_tick, min_track), ui);
+        let br = self.midi_track_pos_to_screen_pos((max_tick, max_track), ui);
+
+        (tl, br)
     }
 
     // ======== HELPER FUNCTIONS ========
@@ -406,6 +475,28 @@ impl TrackEditing {
             },
             _ => {}
         }
+    }
+
+    // ======== MISC ========
+
+    fn snap_tick(&self, tick: SignedMIDITick) -> SignedMIDITick {
+        let snap = self.get_min_snap_tick_length() as SignedMIDITick;
+        if snap == 1 { return tick; }
+
+        let half = snap / 2;
+        if tick >= 0 {
+            ((tick + half) / snap) * snap
+        } else {
+            ((tick - half) / snap) * snap
+        }
+    }
+
+    fn get_min_snap_tick_length(&self) -> MIDITick {
+        let editor_tool = self.editor_tool.try_borrow().unwrap();
+        let snap_ratio = editor_tool.snap_ratio;
+        if snap_ratio.0 == 0 { return 1; }
+        return (self.ppq as MIDITick * 4 * snap_ratio.0 as MIDITick)
+            /  snap_ratio.1 as MIDITick;
     }
 
     // ======== FLAG HELPER FUNCTIONS ========

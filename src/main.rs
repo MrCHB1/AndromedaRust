@@ -26,8 +26,25 @@ fn main() -> eframe::Result {
     };
     native_options.centered = true;
 
-    eframe::run_native("Andromeda", native_options, Box::new(|cc| {
-        egui_extras::install_image_loaders(&cc.egui_ctx);
-        Ok(Box::new(MainWindow::new(cc)))
-    }))
+    //let app_result = std::panic::catch_unwind(|| {
+        eframe::run_native("Andromeda", native_options, Box::new(|cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(MainWindow::new(cc)))
+        }))
+    /* });
+
+    match app_result {
+        Ok(o) => {
+            o
+        },
+        Err(e) => {
+            // show a window after andromeda unfortunately crashes :(
+            rfd::MessageDialog::new()
+                .set_buttons(rfd::MessageButtons::Ok)
+                .set_title("Andromeda has crashed :c")
+                .set_description("A problem has occured and Andromeda needs to shut down. Sorry for the inconvenience. You can send a report to the Discord server if you want.")
+                .show();
+            Ok(())
+        }
+    }*/
 }

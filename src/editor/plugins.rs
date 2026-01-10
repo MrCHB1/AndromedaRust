@@ -13,9 +13,10 @@ use std::cell::RefCell;
 use include_dir::include_dir;
 
 static BUILTIN_PLUGIN_NAMES: &[&'static str] = &[
+    "batch_edit",
     "flip_x",
     "flip_y",
-    "humanize"
+    "humanize",
 ];
 
 pub enum PluginType {

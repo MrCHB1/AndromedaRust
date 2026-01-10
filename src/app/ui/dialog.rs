@@ -14,6 +14,7 @@ pub mod flags {
 pub mod names {
     pub const DIALOG_NAME_EF_STRETCH: &'static str = "EFStretchDialog";
     pub const DIALOG_NAME_EF_CHOP: &'static str = "EFChopDialog";
+    pub const DIALOG_NAME_EF_GLUE: &'static str = "EFGlueDialog";
     pub const DIALOG_NAME_EDITOR_SETTINGS: &'static str = "EditorSettings";
     pub const DIALOG_NAME_PROJECT_SETTINGS: &'static str = "ProjectSettings";
     pub const DIALOG_NAME_INSERT_META: &'static str = "InsertMeta";

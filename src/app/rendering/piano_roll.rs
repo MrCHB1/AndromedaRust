@@ -521,45 +521,19 @@ impl Renderer for PianoRollRenderer {
                                 let (note_start, note_end) = note_culler.get_track_cull_range(nav_curr_track);
                                 let n_off = note_start;
                                 let mut note_idx = n_off;
-                                /*let mut n_off = self.first_render_note[nav_curr_track as usize];
-                                if self.last_time > tick_pos_offs {
-                                    if n_off == 0 {
-                                        for note in &notes[0..notes.len()] {
-                                            if note.end() as f32 > tick_pos_offs { break; }
-                                            n_off += 1;
-                                        }
-                                    } else { // backwards instead of forwards
-                                        for note in notes[0..n_off].iter().rev() {
-                                            if (note.end() as f32) <= tick_pos_offs { break; }
-                                            n_off -= 1;
-                                        }
-                                    }
-                                    self.first_render_note[nav_curr_track as usize] = n_off;
-                                } else if self.last_time < tick_pos_offs {
-                                    for note in &notes[n_off..notes.len()] {
-                                        if note.end() as f32 > tick_pos_offs { break; }
-                                        n_off += 1;
-                                    }
-                                    self.first_render_note[nav_curr_track as usize] = n_off;
-                                }
-
-                                let mut note_idx = n_off;
-
-                                let note_end = {
-                                    let mut e = n_off;
-                                    for note in &notes[n_off..notes.len()] {
-                                        if note.start() as f32 > tick_pos_offs + zoom_ticks { break; }
-                                        e += 1;
-                                    }
-                                    e
-                                };*/
-                                // let sel_note_ids = match 
+                                
                                 let shared_sel_notes = self.selected.read().unwrap();
             
-                                let sel_ids = match shared_sel_notes.get_selected_ids_in_track(curr_track) {
+                                let empty: &[usize] = &[];
+                                let sel_ids = shared_sel_notes
+                                    .get_selected_ids_in_track(nav_curr_track)
+                                    .map(|v| v.as_slice())
+                                    .unwrap_or(empty);
+                                
+                                /*let sel_ids = match shared_sel_notes.get_selected_ids_in_track(curr_track) {
                                     Some(sel_ids) => sel_ids,
                                     None => &vec![]
-                                };
+                                };*/
 
                                 let mut sel_idx = 0;
                                 for note in &notes[n_off..note_end] {

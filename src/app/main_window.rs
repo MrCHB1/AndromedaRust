@@ -4,7 +4,7 @@ use crate::{
         custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, 
         audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, 
         editor::{
-            edit_functions::EFChopDialog, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}};
+            edit_functions::{EFChopDialog, EFGlueDialog}, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioSettings, ESGeneralSettings, ESSettingsWindow, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}, util::system_stats::SystemStats};
 use crate::editor::editing::{
     meta_editing::{MetaEditing, MetaEventInsertDialog},
     note_editing::{NoteEditing, note_edit_flags::*},
@@ -161,6 +161,8 @@ pub struct MainWindow {
     is_waiting_for_no_ui_hover: bool,
 
     // other
+    sys_stats: SystemStats,
+
     // override popup settings
     show_override_popup: bool,
     override_popup_msg: &'static str,
@@ -305,6 +307,7 @@ impl MainWindow {
         
         dialog_manager.register_dialog(DIALOG_NAME_EDITOR_MANUAL, Box::new(|| { Box::new(EditorManualDialog::default()) }));
         
+        // ewww spaghetti code... i have no other way of doing this though
         {
             let note_editing = self.note_editing.clone();
             let editor_functions = self.editor_functions.clone();
@@ -319,6 +322,13 @@ impl MainWindow {
             let editor_functions = self.editor_functions.clone();
             let editor_actions = self.editor_actions.clone();
             dialog_manager.register_dialog(DIALOG_NAME_EF_CHOP, Box::new(move || { Box::new(EFChopDialog::new(&note_editing, &editor_functions, &editor_actions)) }));
+        }
+
+        {
+            let note_editing = self.note_editing.clone();
+            let editor_functions = self.editor_functions.clone();
+            let editor_actions = self.editor_actions.clone();
+            dialog_manager.register_dialog(DIALOG_NAME_EF_GLUE, Box::new(move || { Box::new(EFGlueDialog::new(&note_editing, &editor_functions, &editor_actions)) }));
         }
 
         dialog_manager.register_dialog(DIALOG_NAME_EDITOR_INFO, Box::new(|| { Box::new(EditorInfo::default()) }));
@@ -585,7 +595,7 @@ impl MainWindow {
         let plugins = self.plugin_loader.as_ref().unwrap();
 
         let mut menu_bar = MainMenuBar::new();
-        menu_bar.add_menu_image_action("logo_small", Box::new(|mw| {mw.show_dialog("EditorInfo"); }), image_resources);
+        menu_bar.add_menu_image_action("logo_small", Box::new(|mw| {mw.show_dialog(DIALOG_NAME_EDITOR_INFO); }), image_resources);
 
         menu_bar.add_menu("File", vec![
             ("New Project".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.make_new_project(); })))),
@@ -638,6 +648,20 @@ impl MainWindow {
                         mw.apply_function(EditFunction::SliceAtTick(Vec::new(), playhead_pos));
                     })),
                     Box::new(|mw| {
+                        let shared_selected = mw.shared_selected_notes.read().unwrap();
+                        shared_selected.is_any_note_selected()
+                    })
+                )),
+                ("Glue notes...".into(), MenuItem::MenuButtonEnabled(
+                    Some(Box::new(|mw| { mw.apply_function(EditFunction::Glue(Vec::new(), 0, false)); })),
+                    Box::new(|mw| {  
+                        let shared_selected = mw.shared_selected_notes.read().unwrap();
+                        shared_selected.is_any_note_selected()
+                    })
+                )),
+                ("Remove Overlaps".into(),  MenuItem::MenuButtonEnabled(
+                    Some(Box::new(|mw| { mw.apply_function(EditFunction::RemoveOverlaps) })),
+                    Box::new(|mw| {  
                         let shared_selected = mw.shared_selected_notes.read().unwrap();
                         shared_selected.is_any_note_selected()
                     })
@@ -724,7 +748,7 @@ impl MainWindow {
             ]))
         ]);
         menu_bar.add_menu("Help", vec![
-            ("Manual".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("EditorManualDialog"); }))))
+            ("Manual".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog(DIALOG_NAME_EDITOR_MANUAL); }))))
         ]);
         self.menu_bar = Some(Arc::new(RwLock::new(menu_bar)));
     }
@@ -869,14 +893,19 @@ impl MainWindow {
                 self.note_properties_mouse_up_processed = false;
 
                 // self.ef_stretch_dialog.show();
-                self.show_dialog("StretchDialog");
+                self.show_dialog(DIALOG_NAME_EF_STRETCH);
                 // self.tool_dialogs_any_open = true;
             },
             EditFunction::Chop(_, _) => {
                 self.show_note_properties_popup = false;
                 self.note_properties_mouse_up_processed = false;
-                self.show_dialog("ChopDialog");
+                self.show_dialog(DIALOG_NAME_EF_CHOP);
             },
+            EditFunction::Glue(_, _, _) => {
+                self.show_note_properties_popup = false;
+                self.note_properties_mouse_up_processed = false;
+                self.show_dialog(DIALOG_NAME_EF_GLUE);
+            }
             EditFunction::SliceAtTick(_, playhead_tick) => {
                 //let project_manager = self.project_manager.read().unwrap();
                 let note_editing = self.note_editing.lock().unwrap();
@@ -924,6 +953,27 @@ impl MainWindow {
                     &mut editor_actions
                 );
             },
+            EditFunction::RemoveOverlaps => {
+                let note_editing = self.note_editing.lock().unwrap();
+                let tracks = note_editing.get_tracks();
+                let mut tracks = tracks.write().unwrap();
+
+                let curr_track = self.get_current_track().unwrap();
+                let notes = tracks[curr_track as usize].get_notes_mut();
+
+                let mut sel_notes = note_editing.get_shared_selected_ids().write().unwrap();
+                let sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+
+                let mut editor_functions = self.editor_functions.borrow_mut();
+                let mut editor_actions = self.editor_actions.borrow_mut();
+                editor_functions.apply_function(
+                    notes, 
+                    sel_notes, 
+                    EditFunction::RemoveOverlaps, 
+                    curr_track, 
+                    &mut editor_actions
+                );
+            }
             _ => {}
         }
     }
@@ -1431,50 +1481,6 @@ impl MainWindow {
         }
     }
 
-    /*fn handle_input(&mut self, ctx: &egui::Context, ui: &mut Ui) {
-        let render_type = {
-            let render_manager = self.render_manager.as_ref().unwrap().lock().unwrap();
-            *(render_manager.get_render_type().read().unwrap())
-        };
-
-        if ui.input(|i| i.pointer.primary_pressed()) {
-            let is_double_click = { 
-                let curr_time = ui.input(|i| i.time);
-                if curr_time - self.last_click_time < 0.25 {
-                    self.last_click_time = 0.0;
-                    true
-                } else { 
-                    self.last_click_time = curr_time;
-                    false
-                }
-            };
-            println!("{}", is_double_click);
-
-            self.handle_mouse_down(ctx, ui);
-
-            if is_double_click {
-                match render_type {
-                    RenderType::PianoRoll => { self.handle_mouse_double_down(ctx, ui) }
-                    RenderType::TrackView => {}
-                }
-            }
-        }
-
-        if ui.input(|i| i.pointer.secondary_pressed()) {
-            self.handle_right_mouse_down(ctx, ui);
-        }
-
-        if ui.input(|i| i.pointer.is_moving()) {
-            self.handle_mouse_move(ctx, ui);
-        }
-
-        if ui.input(|i| i.pointer.primary_released()) {
-            self.handle_mouse_up(ctx, ui);
-        }
-
-        self.register_key_downs(ctx, ui);
-    }*/
-
     fn handle_cursor_icon(&mut self, ctx: &egui::Context, ui: &mut Ui) {
         let render_type = {
             let render_manager = self.render_manager.as_ref().unwrap();
@@ -1491,57 +1497,69 @@ impl MainWindow {
         }
     }
 
-    /*fn update_editing_ui(&mut self, ui: &mut Ui) {
-        let mut note_editing = self.note_editing.lock().unwrap();
-        let mut track_editing = self.track_editing.lock().unwrap();
-        let mut data_editing = self.data_editing.lock().unwrap();
-
-        note_editing.update_from_ui(ui);
-        // note_editing.set_mouse_over_ui(self.mouse_over_ui);
-        note_editing.set_flag(NOTE_EDIT_MOUSE_OVER_UI, self.mouse_over_ui);
-
-        track_editing.update_from_ui(ui);
-        track_editing.set_mouse_over_ui(self.mouse_over_ui);
-    }*/
-
     fn draw_select_box(&mut self, ui: &mut Ui, callback: PaintCallback) {
+        let render_type = {
+            let render_manager = self.render_manager.as_ref().unwrap();
+            let rt = render_manager.lock().unwrap();
+            let rt = rt.get_render_type();
+            *rt
+        };
+
         ui.painter().add(callback);
-        {
-            let note_editing = self.note_editing.lock().unwrap();
 
-            if note_editing.get_can_draw_selection_box() {
-                let (tl, br) = note_editing.get_selection_range_ui(ui);
-                let is_eraser = {
-                    let editor_tool = self.editor_tool.try_borrow().unwrap();
-                    editor_tool.get_tool() == EditorTool::Eraser
-                };
+        let (draw, is_eraser, (tl, br)) = match render_type {
+            RenderType::PianoRoll => {
+                let note_editing = self.note_editing.lock().unwrap();
 
-                // let is_eraser = note_editing.is_eraser_active();
-
-                let rect = egui::Rect::from_min_max(
-                    egui::Pos2 { x: tl.0, y: tl.1 },
-                    egui::Pos2 { x: br.0, y: br.1 },
-                );
-
-                // Draw selection box with stylish semi-transparent fill and border
-                let (fill_color, stroke_color) = if is_eraser {
-                    (Color32::from_rgba_unmultiplied(255, 50, 50, 40), Color32::from_rgb(255, 80, 80))
+                if note_editing.get_can_draw_selection_box() {
+                    let (tl, br) = note_editing.get_selection_range_ui(ui);
+                    
+                    let is_eraser = {
+                        let editor_tool = self.editor_tool.try_borrow().unwrap();
+                        editor_tool.get_tool() == EditorTool::Eraser
+                    };
+                    (true, is_eraser, (tl, br))
                 } else {
-                    (Color32::from_rgba_unmultiplied(100, 150, 255, 30), Color32::from_rgb(120, 180, 255))
-                };
-                
-                ui.painter().rect(
-                    rect,
-                    2.0,
-                    fill_color,
-                    Stroke {
-                        width: 1.5,
-                        color: stroke_color,
-                    },
-                    egui::StrokeKind::Middle,
-                );
+                    (false, false, ((0.,0.),(0.,0.)))
+                }
+            },
+            RenderType::TrackView => {
+                let track_editing = self.track_editing.lock().unwrap();
+
+                if track_editing.get_can_draw_selection_box() {
+                    let (tl, br) = track_editing.get_selection_range_ui(ui);
+
+                    (true, false, (tl, br))
+                } else {
+                    (false, false, ((0.,0.),(0.,0.)))
+                }
             }
-        }
+        };
+
+        if !draw { return; }
+
+        let rect = egui::Rect::from_min_max(
+            egui::Pos2 { x: tl.0, y: tl.1 },
+            egui::Pos2 { x: br.0, y: br.1 },
+        );
+
+        // Draw selection box with stylish semi-transparent fill and border
+        let (fill_color, stroke_color) = if is_eraser {
+            (Color32::from_rgba_unmultiplied(255, 50, 50, 40), Color32::from_rgb(255, 80, 80))
+        } else {
+            (Color32::from_rgba_unmultiplied(100, 150, 255, 30), Color32::from_rgb(120, 180, 255))
+        };
+        
+        ui.painter().rect(
+            rect,
+            2.0,
+            fill_color,
+            Stroke {
+                width: 1.5,
+                color: stroke_color,
+            },
+            egui::StrokeKind::Middle,
+        );
     }
 
     fn draw_playhead_line(&mut self, rect: Rect, ui: &mut Ui) {
@@ -1610,7 +1628,6 @@ impl MainWindow {
                     let vp = info.viewport_in_pixels();
                     gl.enable(glow::SCISSOR_TEST);
                     gl.scissor(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
-                    // gl.viewport(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
                     gl.clear(glow::COLOR_BUFFER_BIT);
                     gl.clear_color(0.0, 0.0, 0.0, 1.0);
                     {
@@ -1868,15 +1885,6 @@ impl eframe::App for MainWindow {
             }
         }
 
-        /*let is_on_track_view = {
-            if let Some(render_manager) = self.render_manager.as_ref() {
-                let render_manager = render_manager.lock().unwrap();
-                *render_manager.get_render_type().read().unwrap() == RenderType::TrackView
-            } else {
-                false
-            }
-        };*/
-
         if let Some(playback_manager) = self.playback_manager.as_ref() {
             let playback_manager = playback_manager.lock().unwrap();
             if playback_manager.playing {
@@ -1906,6 +1914,27 @@ impl eframe::App for MainWindow {
                 menu_bar.draw_menu(self, ctx);
                 self.mouse_over_ui |= ctx.is_pointer_over_area();
             }
+
+            // cpu usage, ram usage, other stats
+            egui::TopBottomPanel::bottom("editor_stats").show(ctx, |ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                    if let Some((cpu, ram, ram_pers, updated)) = self.sys_stats.get_stats() {
+                        let cpu_str = format!("CPU: {cpu:.2}%");
+
+                        let cpu_label = if cpu >= 90.0 {
+                            RichText::color(cpu_str.into(), Color32::RED)
+                        } else if cpu >= 50.0 {
+                            RichText::color(cpu_str.into(), Color32::YELLOW)
+                        } else {
+                            RichText::new(cpu_str)
+                        };
+
+                        ui.label(cpu_label);
+                        ui.separator();
+                        ui.label(format!("RAM: {}", ram.to_string()));
+                    }
+                });
+            });
 
             // editor tool stuff
             egui::TopBottomPanel::top("editor_bar_top").show(ctx, |ui| {

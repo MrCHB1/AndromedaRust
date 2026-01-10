@@ -1,6 +1,6 @@
-use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
+use std::{cell::RefCell, collections::{HashMap, HashSet}, rc::Rc, sync::{Arc, Mutex}};
 use eframe::egui;
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, names::DIALOG_NAME_EF_STRETCH}, util::image_loader::ImageResources}, deprecated, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{MIDITick, SignedMIDITick, bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks}}, midi::events::note::Note};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, names::*}, util::image_loader::ImageResources}, deprecated, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{MIDITick, SignedMIDITick, bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks}}, midi::events::note::Note};
 use crate::editor::editing::note_editing::NoteEditing;
 
 // modular edit_function
@@ -11,14 +11,16 @@ pub enum EditFunction {
     //               max
     //               tick len
     Chop(Vec<usize>, MIDITick),
+    //               glue     |keep channels
+    //               threshold|separate
+    Glue(Vec<usize>, MIDITick, bool),
+    RemoveOverlaps,
     SliceAtTick(Vec<usize>, MIDITick),
     FadeNotes(bool)
 }
 
 #[derive(Default)]
-pub struct EditFunctions {
-
-}
+pub struct EditFunctions;
 
 impl EditFunctions {
     pub fn apply_function(&mut self, notes: &mut Vec<Note>, sel_note_ids: &mut Vec<usize>, func: EditFunction, curr_track: u16, editor_actions: &mut EditorActions) {
@@ -111,6 +113,90 @@ impl EditFunctions {
                     EditorAction::LengthChange(note_ids, changed_lengths, curr_track),
                 ]));
             },
+            EditFunction::Glue(note_ids, glue_threshold, separate_channels) => {
+                if note_ids.is_empty() { return; }
+
+                // take notes out so we can move them without cloning
+                let old_notes = std::mem::take(notes);
+                let (notes_to_glue, remaining_notes) = extract(old_notes, &note_ids);
+
+                // Table size:
+                // - if separate_channels: channel (0..15) * 128 + key (0..127)
+                // - if not separate: just key (0..127)
+                let table_size = if separate_channels { 16 * 128 } else { 128 };
+                // table entry: Option<(end_tick, kept_index_in_kept_notes)>
+                let mut table: Vec<Option<(MIDITick, usize)>> = vec![None; table_size];
+
+                let mut kept_notes: Vec<Note> = Vec::with_capacity(notes_to_glue.len());
+                let mut kept_original_ids: Vec<usize> = Vec::new(); // original selected indices of kept notes (in same order)
+                let mut kept_length_changes: Vec<SignedMIDITick> = Vec::new(); // aligned with kept_original_ids
+                let mut removed_notes: Vec<Note> = Vec::new(); // notes that were removed (moved out)
+                let mut removed_original_ids: Vec<usize> = Vec::new(); // their original indices (for undo if needed)
+
+                // notes_to_glue corresponds to note_ids order (extract preserves order). Zip to get original ids.
+                for (orig_id, note) in note_ids.into_iter().zip(notes_to_glue.into_iter()) {
+                    let key = note.key() as usize;
+                    let ch_index = if separate_channels { (note.channel() as usize) * 128 } else { 0 };
+                    let table_idx = ch_index + key;
+
+                    let note_start = note.start();
+                    let note_end = note.end();
+
+                    match table[table_idx] {
+                        None => {
+                            // first note for this key/channel -> keep it
+                            let kept_index = kept_notes.len();
+                            table[table_idx] = Some((note_end, kept_index));
+                            kept_original_ids.push(orig_id);
+                            kept_length_changes.push(0); // will be updated if later glued-to
+                            kept_notes.push(note); // moved in
+                        }
+                        Some((last_end, kept_index)) => {
+                            // check glue threshold (if gap <= glue_threshold we glue)
+                            // overlap is handled because note_start <= last_end => glue
+                            if note_start <= last_end + glue_threshold {
+                                // glue into the kept note at kept_index
+                                let last_note = &mut kept_notes[kept_index];
+                                let old_length = last_note.length();
+                                let last_start = last_note.start();
+                                let new_end = std::cmp::max(last_end, note_end);
+                                let new_length = new_end - last_start;
+
+                                // mutate kept note's length (moved note, no clone)
+                                *(last_note.length_mut()) = new_length;
+
+                                // update table's end for future glues on same key/channel
+                                table[table_idx] = Some((new_end, kept_index));
+
+                                // record the length delta for this kept note (overwrite if multiple glued notes extend it further)
+                                kept_length_changes[kept_index] = new_length as SignedMIDITick - old_length as SignedMIDITick;
+
+                                // record that this note was removed (so undo can re-place it)
+                                removed_original_ids.push(orig_id);
+                                removed_notes.push(note);
+                            } else {
+                                // cannot glue: become a new kept note
+                                let kept_index = kept_notes.len();
+                                table[table_idx] = Some((note_end, kept_index));
+                                kept_original_ids.push(orig_id);
+                                kept_length_changes.push(0);
+                                kept_notes.push(note);
+                            }
+                        }
+                    }
+                }
+
+                // merge kept notes back with remaining notes (kept_notes still in ascending start order)
+                let (merged, new_ids) = merge_notes_and_return_ids(remaining_notes, kept_notes);
+                *notes = merged;
+
+                editor_actions.register_action(EditorAction::Bulk(vec![
+                    EditorAction::DeleteNotes(removed_original_ids, Some(removed_notes), curr_track),
+                    EditorAction::LengthChange(new_ids, kept_length_changes, curr_track),
+                ]));
+
+                // NOTE: use `removed_notes` + `removed_original_ids` to also register the removal action in your undo stack.
+            },
             EditFunction::SliceAtTick(note_ids, slice_tick) => {
                 let mut changed_lengths = Vec::with_capacity(sel_note_ids.len());
                 let mut new_notes = Vec::with_capacity(sel_note_ids.len());
@@ -170,6 +256,45 @@ impl EditFunctions {
                 }
 
                 editor_actions.register_action(EditorAction::VelocityChange(sel_note_ids.clone(), vel_changes, curr_track));
+            },
+            EditFunction::RemoveOverlaps => {
+                if sel_note_ids.is_empty() { return; }
+
+                let old_notes = std::mem::take(notes);
+                let (mut extracted_notes, new_notes) = extract(old_notes, sel_note_ids);
+                let mut lookup: HashSet<(MIDITick, u8)> = HashSet::with_capacity(notes.len());
+
+                let mut kept_notes: Vec<Note> = Vec::with_capacity(notes.len());
+                let mut removed_indices: Vec<usize> = Vec::new();
+                let mut removed_notes: Vec<Note> = Vec::new();
+
+                for (idx, note) in extracted_notes.drain(..).enumerate() {
+                    let entry = (note.start(), note.key());
+
+                    if lookup.contains(&entry) { // note already exists lol
+                        removed_notes.push(note);
+                        removed_indices.push(idx);
+                    } else {
+                        lookup.insert(entry);
+                        kept_notes.push(note);
+                    }
+                }
+
+                let new_notes = merge_notes(new_notes, kept_notes);
+                *notes = new_notes;
+
+                if removed_notes.is_empty() { 
+                    println!("No overlapped notes were removed.");
+                    return;
+                }
+
+                println!("Removed {} notes.", removed_indices.len());
+
+                editor_actions.register_action(EditorAction::DeleteNotes(
+                    removed_indices, 
+                    Some(removed_notes), 
+                    curr_track
+                ));
             }
         }
     }
@@ -385,77 +510,88 @@ impl Dialog for EFChopDialog {
     fn get_dialog_title(&self) -> String {
         "Stretch Selection".into()
     }
-
-    /*fn show(&mut self) -> () {
-        self.is_shown = true;
-    }
-
-    fn close(&mut self) -> () {
-        self.is_shown = false;
-    }
-
-    fn is_showing(&self) -> bool {
-        self.is_shown
-    }
-
-    fn draw(&mut self, ctx: &egui::Context, _: &ImageResources) -> () {
-        if !self.is_showing() { return; }
-        egui::Window::new(RichText::new("Chop Selection").size(15.0))
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
-                self.target_tick_len.show("Chop tick length", ui, None);
-
-                ui.horizontal(|ui| {
-                    if ui.button("Confirm").clicked() {
-                        {
-                            let note_editing = self.note_editing.lock().unwrap();
-
-                            let notes = note_editing.get_notes();
-                            let mut notes = notes.write().unwrap();
-
-                            let sel_notes = note_editing.get_shared_selected_ids();
-                            let mut sel_notes = sel_notes.write().unwrap();
-
-                            let curr_track = note_editing.get_current_track();
-                            let notes = &mut notes[curr_track as usize];
-
-                            let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
-                            let sel_notes_copy = sel_notes.clone();
-
-                            let mut editor_actions = self.edit_actions.try_borrow_mut().unwrap();
-                            self.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Chop(sel_notes_copy, self.target_tick_len.value()), curr_track, &mut editor_actions);
-                        }
-                        self.close();
-                    }
-
-                    if ui.button("Cancel").clicked() {
-                        self.close();
-                    }
-                })
-            });
-    }*/
 }
 
-/*impl EFStretchDialog {
-    pub fn show(&mut self) { self.is_shown = true; }
-    pub fn close(&mut self) { self.is_shown = false; }
-}
-
-pub struct EFChopDialog {
-    pub use_tick_lens: bool,
-    pub snap_id: usize,
-    pub target_tick_len: NumericField<MIDITick>,
+pub struct EFGlueDialog {
+    pub glue_threshold: NumericField<MIDITick>,
+    pub separate_channels: bool,
     pub is_shown: bool,
+
+    note_editing: Arc<Mutex<NoteEditing>>,
+    edit_functions: Rc<RefCell<EditFunctions>>,
+    edit_actions: Rc<RefCell<EditorActions>>
 }
 
-impl Default for EFChopDialog {
+impl Default for EFGlueDialog {
     fn default() -> Self {
-        Self { use_tick_lens: false, snap_id: 0, target_tick_len: NumericField::new(240, Some(1), Some(MIDITick::MAX.into())), is_shown: false }
+        Self {
+            note_editing: Default::default(),
+            edit_functions: Default::default(),
+            edit_actions: Default::default(),
+            glue_threshold: NumericField::new(0, Some(0), Some(MIDITick::MAX.into())),
+            separate_channels: true,
+            is_shown: false }
     }
 }
 
-impl EFChopDialog {
-    pub fn show(&mut self) { self.is_shown = true; }
-    pub fn close(&mut self) { self.is_shown = false; }
-}*/
+impl EFGlueDialog {
+    pub fn new(
+        note_editing: &Arc<Mutex<NoteEditing>>,
+        edit_functions: &Rc<RefCell<EditFunctions>>,
+        edit_actions: &Rc<RefCell<EditorActions>>,
+    ) -> Self {
+        Self {
+            glue_threshold: NumericField::new(0, Some(0), Some(MIDITick::MAX.into())),
+            separate_channels: true,
+            is_shown: false,
+
+            note_editing: note_editing.clone(),
+            edit_functions: edit_functions.clone(),
+            edit_actions: edit_actions.clone()
+        }
+    }
+}
+
+impl Dialog for EFGlueDialog {
+    fn draw(&mut self, ui: &mut egui::Ui, _: &ImageResources) -> Option<DialogAction> {
+        self.glue_threshold.show("Glue threshold (in ticks)", ui, None);
+        ui.checkbox(&mut self.separate_channels, "Keep channels separate");
+        None
+    }
+
+    fn get_action_buttons(&self) -> Option<DialogActionButtons> {
+        Some(
+            DialogActionButtons::Ok(Box::new(|dlg| {
+                let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
+                let dlg_name = dlg.get_dialog_name();
+
+                let note_editing = dlg.note_editing.lock().unwrap();
+
+                let tracks = note_editing.get_tracks();
+                let mut tracks = tracks.write().unwrap();
+
+                let sel_notes = note_editing.get_shared_selected_ids();
+                let mut sel_notes = sel_notes.write().unwrap();
+
+                let curr_track = note_editing.get_current_track();
+                let notes = (*tracks)[curr_track as usize].get_notes_mut();
+
+                let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+                let sel_notes_copy = sel_notes.clone();
+
+                let mut editor_actions = dlg.edit_actions.try_borrow_mut().unwrap();
+                dlg.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Glue(sel_notes_copy, dlg.glue_threshold.value(), dlg.separate_channels), curr_track, &mut editor_actions);
+            
+                Some(DialogAction::Close(dlg_name))
+            }))
+        )
+    }
+
+    fn get_dialog_name(&self) -> &'static str {
+        DIALOG_NAME_EF_GLUE
+    }
+
+    fn get_dialog_title(&self) -> String {
+        "Glue notes".into()
+    }
+}

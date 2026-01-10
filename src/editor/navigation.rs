@@ -160,7 +160,7 @@ impl TrackViewNavigation {
     pub fn zoom_tracks_by(&mut self, fac: f32) {
         let mut new_zoom_tracks = self.zoom_tracks * fac;
         if new_zoom_tracks < 10.0 { new_zoom_tracks = 10.0; }
-        if new_zoom_tracks > 32.0 { new_zoom_tracks = 32.0; }
+        if new_zoom_tracks > 64.0 { new_zoom_tracks = 64.0; }
         self.zoom_tracks = new_zoom_tracks;
     }
 }

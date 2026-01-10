@@ -1,5 +1,5 @@
 use eframe::egui::{self, text::LayoutJob, Color32, FontId, RichText, Stroke, TextFormat, Ui};
-use crate::app::{ui::dialog::{Dialog, names::DIALOG_NAME_EDITOR_MANUAL}, util::image_loader::ImageResources};
+use crate::app::{ui::dialog::{Dialog, DialogAction, DialogActionButtons, names::DIALOG_NAME_EDITOR_MANUAL}, util::image_loader::ImageResources};
 
 #[derive(PartialEq, Eq)]
 enum EditorManualSection {
@@ -87,6 +87,12 @@ impl Dialog for EditorManualDialog {
 
     fn get_dialog_title(&self) -> String {
         "Andromeda Manual".into()
+    }
+
+    fn get_action_buttons(&self) -> Option<super::dialog::DialogActionButtons> {
+        Some(
+            DialogActionButtons::Ok(Box::new(|_| { Some(DialogAction::Close(DIALOG_NAME_EDITOR_MANUAL)) }))
+        )
     }
     /*fn show(&mut self) -> () {
         self.showing = true;

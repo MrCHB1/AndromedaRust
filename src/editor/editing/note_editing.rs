@@ -501,9 +501,14 @@ impl NoteEditing {
             let should_modify_selected = {
                 // let selected_ids = self.selected_note_ids.lock().unwrap();
                 let selected_ids = self.shared_selected_note_ids.read().unwrap();
-                let selected_ids = selected_ids.get_selected_ids_in_track(curr_track).unwrap();
+                let selected_ids = selected_ids.get_selected_ids_in_track(curr_track);
 
-                !selected_ids.is_empty() && selected_ids.contains(&clicked_idx)
+                match selected_ids {
+                    Some(selected_ids) => {
+                        !selected_ids.is_empty() && selected_ids.contains(&clicked_idx)
+                    },
+                    None => false
+                }
             };
 
             if should_modify_selected {
