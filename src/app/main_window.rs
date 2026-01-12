@@ -1931,7 +1931,7 @@ impl eframe::App for MainWindow {
 
                         ui.label(cpu_label);
                         ui.separator();
-                        ui.label(format!("RAM: {}", ram.to_string()));
+                        ui.label(format!("RAM: {} ({:.1}%)", ram.to_string(), ram_pers));
                     }
                 });
             });

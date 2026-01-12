@@ -124,6 +124,7 @@ impl EditFunctions {
                 // - if separate_channels: channel (0..15) * 128 + key (0..127)
                 // - if not separate: just key (0..127)
                 let table_size = if separate_channels { 16 * 128 } else { 128 };
+                
                 // table entry: Option<(end_tick, kept_index_in_kept_notes)>
                 let mut table: Vec<Option<(MIDITick, usize)>> = vec![None; table_size];
 
@@ -133,7 +134,6 @@ impl EditFunctions {
                 let mut removed_notes: Vec<Note> = Vec::new(); // notes that were removed (moved out)
                 let mut removed_original_ids: Vec<usize> = Vec::new(); // their original indices (for undo if needed)
 
-                // notes_to_glue corresponds to note_ids order (extract preserves order). Zip to get original ids.
                 for (orig_id, note) in note_ids.into_iter().zip(notes_to_glue.into_iter()) {
                     let key = note.key() as usize;
                     let ch_index = if separate_channels { (note.channel() as usize) * 128 } else { 0 };
@@ -144,18 +144,14 @@ impl EditFunctions {
 
                     match table[table_idx] {
                         None => {
-                            // first note for this key/channel -> keep it
                             let kept_index = kept_notes.len();
                             table[table_idx] = Some((note_end, kept_index));
                             kept_original_ids.push(orig_id);
                             kept_length_changes.push(0); // will be updated if later glued-to
-                            kept_notes.push(note); // moved in
+                            kept_notes.push(note);
                         }
                         Some((last_end, kept_index)) => {
-                            // check glue threshold (if gap <= glue_threshold we glue)
-                            // overlap is handled because note_start <= last_end => glue
                             if note_start <= last_end + glue_threshold {
-                                // glue into the kept note at kept_index
                                 let last_note = &mut kept_notes[kept_index];
                                 let old_length = last_note.length();
                                 let last_start = last_note.start();
@@ -194,8 +190,6 @@ impl EditFunctions {
                     EditorAction::DeleteNotes(removed_original_ids, Some(removed_notes), curr_track),
                     EditorAction::LengthChange(new_ids, kept_length_changes, curr_track),
                 ]));
-
-                // NOTE: use `removed_notes` + `removed_original_ids` to also register the removal action in your undo stack.
             },
             EditFunction::SliceAtTick(note_ids, slice_tick) => {
                 let mut changed_lengths = Vec::with_capacity(sel_note_ids.len());
@@ -508,7 +502,7 @@ impl Dialog for EFChopDialog {
     }
 
     fn get_dialog_title(&self) -> String {
-        "Stretch Selection".into()
+        "Chop selection".into()
     }
 }
 

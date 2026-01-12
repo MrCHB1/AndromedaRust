@@ -37,7 +37,7 @@ impl ToString for MemoryUnits {
             }
         };
 
-        format!("{num:.3} {unit}")
+        format!("{num:.2} {unit}")
     }
 }
 
