@@ -4,6 +4,7 @@ out vec4 fragColor;
 
 in vec2 uv;
 in float oddBarFac;
+flat in int isCurrTrack;
 in float bLength;
 in float bHeight;
 
@@ -19,6 +20,10 @@ void main() {
     vec3 color = vec3(0.2, 0.2, 0.25);
     color *= beat_odds_fac;
     color *= oddBarFac;
+
+    if (isCurrTrack == 1) {
+        color += vec3(0.15);
+    }
 
     if (uv.x * bLength <= 2.75 / width) {
         color *= 0.1;

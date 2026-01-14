@@ -197,7 +197,6 @@ impl Dialog for MetaEventInsertDialog {
                     match dlg.dialog_type {
                         MetaEventType::TimeSignature => {
                             data = vec![dlg.fields[0].1.as_u8(), dlg.fields[1].1.as_u8()];
-                            println!("{:?}", data);
                         },
                         MetaEventType::Tempo => {
                             data = tempo_as_bytes(dlg.fields[0].1.as_f32()).to_vec();

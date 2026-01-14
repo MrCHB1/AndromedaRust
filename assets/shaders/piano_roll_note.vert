@@ -12,6 +12,8 @@ out float noteWidth;
 out float noteHeight;
 
 uniform sampler2D noteColorTexture;
+uniform float keyboardHeight;
+uniform float width;
 
 void main() {
     vec3 n_color = texture2D(noteColorTexture, vec2(float(noteMeta & uint(0xF)) / 16.0, 0.5)).rgb;
@@ -72,5 +74,7 @@ void main() {
     }
 
     uv = uv_;
+    float kbWidth = keyboardHeight / width;
+    x_pos = (x_pos * (1.0 - kbWidth)) + kbWidth;
     gl_Position = vec4(vec2(x_pos, y_pos) * 2.0 - 1.0, 0.0, 1.0);
 }

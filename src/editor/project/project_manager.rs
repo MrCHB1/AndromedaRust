@@ -60,8 +60,6 @@ impl ProjectManager {
         project_info.author = "".into();
         project_info.description = "".into();
         self.project_data.ppq = 960;
-
-        println!("Project has no notes? {}", self.is_project_empty(true));
     }
 
     pub fn get_tempo_map(&self) -> &Arc<RwLock<TempoMap>> {

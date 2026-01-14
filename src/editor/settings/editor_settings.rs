@@ -1,13 +1,16 @@
 #![warn(unused)]
 
+use as_any::AsAny;
 use eframe::egui::{self, RichText, Ui};
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::DIALOG_NO_COLLAPSABLE, names::DIALOG_NAME_EDITOR_SETTINGS}}, audio::{event_playback::PlaybackManager, midi_devices::MIDIDevices}};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::DIALOG_NO_COLLAPSABLE, names::DIALOG_NAME_EDITOR_SETTINGS}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_devices::MIDIDevices}};
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use std::any::Any;
 
-pub trait Settings {
-    fn get_values(&self) -> HashMap<&str, Box<dyn Any + 'static>>;
+pub const PR_KEYBOARD_WIDTH: f32 = 100.0;
+
+pub trait Settings: Any {
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub struct ESGeneralSettings {
@@ -40,21 +43,20 @@ impl Default for ESGeneralSettings {
 }
 
 impl Settings for ESGeneralSettings {
-    fn get_values(&self) -> HashMap<&str, Box<dyn Any + 'static>> {
-        HashMap::from([
-            ("import_discard_empty_tracks", Box::new(self.import_discard_empty_tracks) as Box<dyn Any>),
-            ("import_keep_empty_with_cc", Box::new(self.import_keep_empty_with_cc) as Box<dyn Any>),
-            ("import_reassign_channels", Box::new(self.import_reassign_channels) as Box<dyn Any>),
-            ("import_max_ppq_override", Box::new(self.import_max_ppq_override) as Box<dyn Any>),
-            ("import_max_ppq_override_value", Box::new(self.import_max_ppq_override_value.value()) as Box<dyn Any>),
-            ("import_remove_overlaps", Box::new(self.import_remove_overlaps) as Box<dyn Any>),
-
-            ("export_discard_empty_tracks", Box::new(self.export_discard_empty_tracks) as Box<dyn Any>)
-        ])
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum ESAudioEngineType {
+    MidiIO,
+    KDMAPI,
+    Prerendered
+}
+
 pub struct ESAudioSettings {
+    md_engine: ESAudioEngineType,
     md_port_in: usize,
     md_port_out: usize,
 
@@ -62,9 +64,16 @@ pub struct ESAudioSettings {
     md_event_pool_size: NumericField<usize>
 }
 
+impl ESAudioSettings {
+    pub fn get_engine(&self) -> &ESAudioEngineType {
+        &self.md_engine
+    }
+}
+
 impl Default for ESAudioSettings {
     fn default() -> Self {
         Self {
+            md_engine: ESAudioEngineType::KDMAPI,
             md_port_in: 0,
             md_port_out: 0,
             md_event_pool_size: NumericField::new(4096, Some(100), Some(262144))
@@ -73,12 +82,8 @@ impl Default for ESAudioSettings {
 }
 
 impl Settings for ESAudioSettings {
-    fn get_values(&self) -> HashMap<&str, Box<dyn Any + 'static>> {
-        HashMap::from([
-            ("md_port_in",  Box::new(self.md_port_in) as Box<dyn Any>),
-            ("md_port_out", Box::new(self.md_port_out) as Box<dyn Any>),
-            ("md_event_pool_size", Box::new(self.md_event_pool_size.value()) as Box<dyn Any>),
-        ])
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -102,6 +107,7 @@ pub struct ESSettingsWindow {
     audio_settings: ESAudioSettings,
 
     midi_devices: Option<Arc<Mutex<MIDIDevices>>>,
+    kdmapi: Option<Arc<Mutex<KDMAPI>>>,
     playback_manager: Option<Arc<Mutex<PlaybackManager>>>
 }
 
@@ -112,6 +118,10 @@ impl ESSettingsWindow {
 
     pub fn use_midi_devices(&mut self, devices: &Arc<Mutex<MIDIDevices>>) {
         self.midi_devices = Some(devices.clone());
+    }
+
+    pub fn use_kdmapi(&mut self, kdmapi: &Arc<Mutex<KDMAPI>>) {
+        self.kdmapi = Some(kdmapi.clone());
     }
 
     pub fn use_playback_manager(&mut self, playback_manager: &Arc<Mutex<PlaybackManager>>) {
@@ -149,6 +159,48 @@ impl ESSettingsWindow {
     } 
 
     fn draw_audio_tab(&mut self, ui: &mut Ui) {
+        let playback_manager = self.playback_manager.as_mut().unwrap();
+        
+        ui.horizontal(|ui| {
+            let mut playback_manager = playback_manager.lock().unwrap();
+            if ui.selectable_label(self.audio_settings.md_engine == ESAudioEngineType::MidiIO, "MIDI I/O").clicked() {
+                self.audio_settings.md_engine = ESAudioEngineType::MidiIO;
+                
+                let midi_dev = self.midi_devices.as_ref().unwrap().clone();
+                playback_manager.switch_device(midi_dev);
+            }
+
+            if ui.selectable_label(self.audio_settings.md_engine == ESAudioEngineType::KDMAPI, "KDMAPI").clicked() {
+                self.audio_settings.md_engine = ESAudioEngineType::KDMAPI;
+
+                let kdmapi = self.kdmapi.as_ref().unwrap().clone();
+                playback_manager.switch_device(kdmapi);
+            }
+
+            ui.add_enabled_ui(false, |ui| {
+                if ui.selectable_label(self.audio_settings.md_engine == ESAudioEngineType::Prerendered, "Prerendered Audio (Not Implemented)").clicked() {
+                    self.audio_settings.md_engine = ESAudioEngineType::Prerendered;
+                }
+            });
+            
+        });
+
+        ui.separator();
+
+        match self.audio_settings.md_engine {
+            ESAudioEngineType::MidiIO => {
+                self.draw_audio_tab_midi_io(ui);
+            },
+            ESAudioEngineType::KDMAPI => {
+                self.draw_audio_tab_kdmapi(ui);
+            },
+            ESAudioEngineType::Prerendered => {
+                self.draw_audio_tab_kdmapi(ui);
+            },
+        }
+    }
+
+    fn draw_audio_tab_midi_io(&mut self, ui: &mut Ui) {
         if let Some(midi_devices) = self.midi_devices.as_ref() {
             let audio_settings = &mut self.audio_settings;
             ui.label(RichText::new("MIDI Input Devices").size(15.0));
@@ -196,6 +248,12 @@ impl ESSettingsWindow {
                 }
             }
         }
+    }
+
+    fn draw_audio_tab_kdmapi(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new("KDMAPI").size(15.0));
+        ui.separator();
+        ui.label("Open OmniMIDI to adjust settings.");
     }
 }
 

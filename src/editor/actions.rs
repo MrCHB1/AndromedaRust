@@ -19,6 +19,16 @@ pub enum EditorAction {
         Option<Vec<Note>>, // can be by user or from undo/redo
         u16 // note group (track)
     ),
+    PlaceNotesMultiTrack(
+        Vec<Vec<usize>>,
+        Option<Vec<Vec<Note>>>,
+        Vec<u16>
+    ),
+    DeleteNotesMultiTrack(
+        Vec<Vec<usize>>,
+        Option<Vec<Vec<Note>>>,
+        Vec<u16>
+    ),
     LengthChange(Vec<usize>, Vec<SignedMIDITick>, u16), // this action stores the change in length of notes.
     VelocityChange(Vec<usize>, Vec<i8>, u16),
     ChannelChange(Vec<usize>, Vec<i8>, u16),
@@ -40,6 +50,14 @@ pub enum EditorAction {
         bool // if this track is the last track
     ),
     SwapTracks(u16, u16),
+    DecomposeTrack(
+        u16, // index of track that got decomposed
+        u16 // how many channnels decomposed
+    ),
+    ComposeTrack(
+        u16,
+        u16
+    ),
     Bulk(Vec<EditorAction>) // for bulk actions
 }
 
@@ -137,6 +155,12 @@ impl EditorActions {
             EditorAction::DeleteNotes(note_id, deleted_notes, note_group) => {
                 EditorAction::PlaceNotes(note_id, deleted_notes, note_group)
             },
+            EditorAction::PlaceNotesMultiTrack(note_id_track, deleted_notes_track, note_groups) => {
+                EditorAction::DeleteNotesMultiTrack(note_id_track, deleted_notes_track, note_groups)
+            },
+            EditorAction::DeleteNotesMultiTrack(note_id_track, deleted_notes_track, note_groups) => {
+                EditorAction::PlaceNotesMultiTrack(note_id_track, deleted_notes_track, note_groups)
+            },
             EditorAction::LengthChange(note_id, length_delta, note_group) => {
                 EditorAction::LengthChange(note_id, length_delta.iter().map(|l| -l).collect(), note_group)
             },
@@ -175,6 +199,12 @@ impl EditorActions {
             },
             EditorAction::SwapTracks(track_1, track_2) => {
                 EditorAction::SwapTracks(track_1, track_2)
+            },
+            EditorAction::DecomposeTrack(track, channel_count) => {
+                EditorAction::ComposeTrack(track, channel_count)
+            },
+            EditorAction::ComposeTrack(track, channel_count) => {
+                EditorAction::DecomposeTrack(track, channel_count)
             },
             EditorAction::Bulk(actions) => {
                 {

@@ -102,7 +102,7 @@ impl MIDIDevices {
         Ok(())
     }
 
-    pub fn send_event(&mut self, raw_event: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn send_raw_event(&mut self, raw_event: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(conn) = self.out_connection.as_mut() {
             conn.send(raw_event)?;
         }
@@ -122,15 +122,28 @@ impl MIDIDevices {
 impl MIDIAudioEngine for MIDIDevices {
     /// This will open the current MIDI port for sending events.
     fn init_audio(&mut self) {
+        // no out port yet..? maybe try looking for the first available one
+        if self.curr_midi_out_port.is_none() {
+            match self.connect_in_port(0) {
+                Ok(()) => { println!("Successfully connected to the first MIDI-Out port. "); }
+                Err(e) => { println!("Something went wrong when trying to connect to MIDI out. {}", e.to_string()); return; }
+            }
+        }
+
         self.connect_out_port(self.curr_midi_out_port.unwrap()).unwrap();
     }
 
     fn close_stream(&mut self) {
+        // just to be safe
+        if let Some(conn) = self.out_connection.take() {
+            drop(conn);
+        }
+
         self.out_connection = None;
         self.curr_midi_out_port = None;
     }
 
     fn send_event(&mut self, raw_event: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-        self.send_event(raw_event)
+        self.send_raw_event(raw_event)
     }
 }

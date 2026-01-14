@@ -5,6 +5,7 @@ use crate::app::view_settings::{VS_PianoRoll_DataViewState,
     VS_PianoRoll_OnionState, 
 ViewSettings};
 use crate::audio::event_playback::PlaybackManager;
+use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
 //use crate::editor::note_editing::GhostNote;
 use crate::editor::editing::note_editing::GhostNote;
@@ -92,7 +93,8 @@ pub struct DataViewRenderer {
 
     note_cull_helper: Arc<Mutex<NoteCullHelper>>,
 
-    pub ghost_notes: Option<Arc<Mutex<Vec<Note>>>>
+    pub ghost_notes: Option<Arc<Mutex<Vec<Note>>>>,
+    selected: Arc<RwLock<SharedSelectedNotes>>
 }
 
 impl DataViewRenderer {
@@ -105,6 +107,7 @@ impl DataViewRenderer {
         bar_cacher: &Arc<Mutex<BarCacher>>,
         note_colors: &Arc<Mutex<NoteColors>>,
         note_cull_helper: &Arc<Mutex<NoteCullHelper>>,
+        shared_selected_notes: &Arc<RwLock<SharedSelectedNotes>>
     ) -> Self {
         let dv_program = ShaderProgram::create_from_files(gl.clone(), "./assets/shaders/data_view_bg");
         let dv_handles_program = ShaderProgram::create_from_files(gl.clone(), "./assets/shaders/data_view_handles");
@@ -204,7 +207,7 @@ impl DataViewRenderer {
             note_colors: note_colors.clone(),
 
             note_cull_helper: note_cull_helper.clone(),
-
+            selected: shared_selected_notes.clone(),
             ghost_notes: None
         }
     }
@@ -344,14 +347,23 @@ impl DataViewRenderer {
 
             // 2. draw current track on top
             let notes = tracks[nav_curr_track as usize].get_notes();
-
             if !notes.is_empty() {
                 let mut curr_handle = 0;
 
                 note_culler.update_cull_for_track(nav_curr_track, tick_pos_offs, zoom_ticks, false);
                 let (note_start, note_end) = note_culler.get_track_cull_range(nav_curr_track);
-                
                 let n_off = note_start;
+                let mut note_idx = n_off;
+                
+                let shared_sel_notes = self.selected.read().unwrap();
+
+                let empty: &[usize] = &[];
+                let sel_ids = shared_sel_notes
+                    .get_selected_ids_in_track(nav_curr_track)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(empty);
+
+                let mut sel_idx = 0;
                 for note in &notes[n_off..note_end] {
                     let trk_chan = ((nav_curr_track as usize) << 4) | (note.channel() as usize);
                     {
@@ -364,11 +376,18 @@ impl DataViewRenderer {
                             1: {
                                 let mut note_meta = note_colors.get_index(trk_chan) as u32;
                                 note_meta |= (note.velocity() as u32) << 4;
+
+                                if sel_idx < sel_ids.len() && note_idx == sel_ids[sel_idx] {
+                                    note_meta |= 1 << 13;
+                                    sel_idx += 1;
+                                }   
+
                                 note_meta
                             }
                         };
                     }
 
+                    note_idx += 1;
                     handle_id += 1;
 
                     if handle_id >= HANDLE_BUFFER_SIZE {

@@ -4,7 +4,7 @@ use std::{
 };
 
 const COPY_DIR: &'static str = "assets";
-const IGNORE_DIRS: [&'static str; 1] = ["assets/plugins/builtin"];
+const IGNORE_DIRS: [&'static str; 2] = ["assets/plugins/builtin", "assets/plugins/custom"];
 
 fn copy_dir<P, Q>(from: P, to: Q, ignore_paths: &[PathBuf])
 where

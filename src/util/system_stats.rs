@@ -10,6 +10,12 @@ pub enum MemoryUnits {
     TeraBytes(f64) // rarely possible but here just in case
 }
 
+impl Default for MemoryUnits {
+    fn default() -> Self {
+        Self::Bytes(0)
+    }
+}
+
 impl ToString for MemoryUnits {
     fn to_string(&self) -> String {
         let num: f64;
@@ -44,7 +50,12 @@ impl ToString for MemoryUnits {
 pub struct SystemStats {
     sys: System,
     pid: Pid,
-    refresh_timer: Instant
+    refresh_timer: Instant,
+
+    pub cpu_usage: f32,
+    pub memory_usage: MemoryUnits,
+    pub memory_pers: f32,
+    pub total_memory: u64
 }
 
 impl Default for SystemStats {
@@ -52,48 +63,50 @@ impl Default for SystemStats {
         let mut sys = System::new_all();
         sys.refresh_all();
 
+        let total_memory = sys.total_memory();
         Self {
             sys,
             refresh_timer: Instant::now(),
-            pid: sysinfo::get_current_pid().unwrap()
+            pid: sysinfo::get_current_pid().unwrap(),
+
+            cpu_usage: 0.0,
+            memory_usage: MemoryUnits::default(),
+            memory_pers: 0.0,
+            total_memory
         }
     }
 }
 
 impl SystemStats {
-    /// Returns CPU Usage (%), Ram Usage (bytes, KB, MB, GB, TB), % of RAM used, and if the stats has updated
-    pub fn get_stats(&mut self) -> Option<(f32, MemoryUnits, f32, bool)> {
-        let rtimer = self.refresh_timer.elapsed().as_secs_f64();
-
-        let mut updated = false;
-        if rtimer >= 0.5 {
-            self.sys.refresh_all();
+    pub fn update(&mut self) {
+        let rtimer = self.refresh_timer.elapsed().as_secs_f32();
+        
+        if rtimer >= 1.0 {
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[self.pid]), true);
             self.refresh_timer = Instant::now();
-            updated = true;
+        } else {
+            return;
         }
 
+        // at this point, we can safely the stats now
         if let Some(process) = self.sys.process(self.pid) {
-            Some((
-                process.cpu_usage() / self.sys.cpus().len() as f32,
-                {
-                    let memory = process.memory();
-                    if memory >= 1000000000000 {
-                        MemoryUnits::TeraBytes(memory as f64 / 1000000000000.0f64)
-                    } else if memory >= 1000000000 {
-                        MemoryUnits::GigaBytes(memory as f64 / 1000000000.0f64)
-                    } else if memory >= 1000000 {
-                        MemoryUnits::MegaBytes(memory as f64 / 1000000.0f64)
-                    } else if memory >= 1000 {
-                        MemoryUnits::KiloBytes(memory as f64 / 1000.0f64)
-                    } else {
-                        MemoryUnits::Bytes(memory)
-                    }
-                },
-                (process.memory() as f64 / self.sys.total_memory() as f64) as f32 * 100.0,
-                updated
-            ))
-        } else {
-            None
+            let memory = process.memory();
+
+            self.cpu_usage = process.cpu_usage() / self.sys.cpus().len() as f32;
+            self.memory_usage = {
+                if memory >= 1000000000000 {
+                    MemoryUnits::TeraBytes(memory as f64 / 1000000000000.0f64)
+                } else if memory >= 1000000000 {
+                    MemoryUnits::GigaBytes(memory as f64 / 1000000000.0f64)
+                } else if memory >= 1000000 {
+                    MemoryUnits::MegaBytes(memory as f64 / 1000000.0f64)
+                } else if memory >= 1000 {
+                    MemoryUnits::KiloBytes(memory as f64 / 1000.0f64)
+                } else {
+                    MemoryUnits::Bytes(memory)
+                }
+            };
+            self.memory_pers = (memory as f64 / self.total_memory as f64) as f32 * 100.0;
         }
     }
 }

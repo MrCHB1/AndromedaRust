@@ -77,8 +77,24 @@ impl SharedSelectedNotes {
         self.selected_notes_hash.insert(track, ids);
     }
 
+    pub fn add_selected_to_track(&mut self, ids: Vec<usize>, track: u16) {
+        let mut selected = self.take_selected_from_track(track);
+        selected.extend(ids);
+        selected.sort_unstable();
+        selected.dedup();
+        self.selected_notes_hash.insert(track, selected);
+    }
+
     pub fn take_selected_from_track(&mut self, track: u16) -> Vec<usize> {
         std::mem::take(&mut self.selected_notes_hash.entry(track).or_default())
+    }
+
+    pub fn take_selected_from_all(&mut self) -> Vec<(u16, Vec<usize>)> {
+        let mut result = Vec::with_capacity(self.selected_notes_hash.len());
+        for (track, ids) in self.selected_notes_hash.drain() {
+            result.push((track, ids));
+        }
+        result
     }
 
     pub fn clear_selected(&mut self) {

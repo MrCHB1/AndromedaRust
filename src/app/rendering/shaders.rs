@@ -34,19 +34,20 @@ impl ShaderProgram {
             let vert = gl.create_shader(glow::VERTEX_SHADER).unwrap();
             gl.shader_source(vert, &src_vert);
             gl.compile_shader(vert);
-            assert!(gl.get_shader_compile_status(vert), "Vertex shader error");
+            assert!(gl.get_shader_compile_status(vert), "Vertex shader error\n{}", gl.get_shader_info_log(vert));
 
             let frag = gl.create_shader(glow::FRAGMENT_SHADER).unwrap();
             gl.shader_source(frag, &src_frag);
             gl.compile_shader(frag);
-            assert!(gl.get_shader_compile_status(frag), "Fragment shader error");
+            assert!(gl.get_shader_compile_status(frag), "Fragment shader error\n{}", gl.get_shader_info_log(frag));
 
             let program = gl.create_program().unwrap();
             gl.attach_shader(program, vert);
             gl.attach_shader(program, frag);
             gl.link_program(program);
-            assert!(gl.get_program_link_status(program), "Program link error");
+            assert!(gl.get_program_link_status(program), "Program link error\n{}", gl.get_program_info_log(program));
 
+            println!("Program linked. \n{}", gl.get_program_info_log(program));
             gl.delete_shader(vert);
             gl.delete_shader(frag);
             

@@ -104,9 +104,6 @@ impl EditFunctions {
                 let old_notes = std::mem::take(notes);
                 let (merged, chopped_ids) = merge_notes_and_return_ids(old_notes, new_notes);
                 *notes = merged;
-
-                // println!("{:?}", chopped_ids);
-
                 // finally, register the function for undo/redoing
                 editor_actions.register_action(EditorAction::Bulk(vec![
                     EditorAction::PlaceNotes(chopped_ids, None, curr_track),

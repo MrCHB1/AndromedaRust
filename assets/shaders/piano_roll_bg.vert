@@ -8,8 +8,10 @@ out vec2 uv;
 out float oddBarFac;
 out float bLength;
 
+uniform float width;
 uniform float prBarBottom;
 uniform float prBarTop;
+uniform float keyboardHeight;
 
 void main() {
     float x_pos = 0.0f;
@@ -37,5 +39,7 @@ void main() {
     oddBarFac = (int(barNumber) % 2 == 1) ? 0.8 : 1.0;
     bLength = barLength;
 
+    float kbWidth = keyboardHeight / width;
+    x_pos = x_pos * (1.0 - kbWidth) + kbWidth;
     gl_Position = vec4(vec2(x_pos, y_pos) * 2.0 - 1.0, 0.0, 1.0);
 }

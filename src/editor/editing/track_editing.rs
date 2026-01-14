@@ -1,23 +1,28 @@
 #![warn(unused)]
-use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLock}};
+use std::{cell::RefCell, collections::{HashMap, HashSet, VecDeque}, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
-use eframe::egui::{self, Ui};
+use eframe::egui::{self, Key, Ui};
 
-use crate::{app::{main_window::{EditorTool, EditorToolSettings}, rendering::note_cull_helper::NoteCullHelper, view_settings::ViewSettings}, editor::{actions::{EditorAction, EditorActions}, navigation::{PianoRollNavigation, TrackViewNavigation}, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{MIDITick, SignedMIDITick, get_mouse_track_view_pos}}, midi::{events::{channel_event::ChannelEvent, note::Note}, midi_track::MIDITrack}};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings}, rendering::{RenderManager, note_cull_helper::NoteCullHelper}, view_settings::ViewSettings}, editor::{actions::{EditorAction, EditorActions}, editing::{SharedSelectedNotes, note_editing::note_sequence_funcs::{extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids}}, navigation::{PianoRollNavigation, TrackViewNavigation}, project::{project_data::ProjectData, project_manager::ProjectManager}, util::{MIDITick, SignedMIDITick, bin_search_notes, bin_search_notes_exact, get_mouse_track_view_pos, get_notes_in_range}}, midi::{events::{channel_event::ChannelEvent, note::Note}, midi_track::MIDITrack}};
 
 pub mod track_flags {
     pub const TRACK_EDIT_FLAGS_NONE: u16 = 0x0;
     pub const TRACK_EDIT_MOUSE_OVER_UI: u16 = 0x1;
     pub const TRACK_EDIT_MOUSE_DOWN_ON_UI: u16 = 0x2;
-    pub const TRACK_EDIT_ANY_DIALOG_OPEN: u16 = 0x4;
+    pub const TRACK_EDIT_SELECTION_MOVE: u16 = 0x4;
+    pub const TRACK_EDIT_ANY_DIALOG_OPEN: u16 = 0x8;
+
+    pub const TRACK_EDIT_SHIFT_DOWN: u16 = 0x100;
 }
 
 use track_flags::*;
 
 #[derive(Default)]
 struct TrackEditMouseInfo {
+    mouse_pos: (f32, f32),
     mouse_midi_track_pos: (MIDITick, u16),
     last_mouse_click_pos: (MIDITick, u16),
+    mouse_over_selection: bool
 }
 
 // because im a lazy mf, i put note track editing as a separate file
@@ -26,6 +31,7 @@ pub struct TrackEditing {
     project_manager: Arc<RwLock<ProjectManager>>,
     // project_manager: Arc<RwLock<ProjectManager>>,
     view_settings: Arc<Mutex<ViewSettings>>,
+    shared_selected_note_ids: Arc<RwLock<SharedSelectedNotes>>,
 
     editor_tool: Rc<RefCell<EditorToolSettings>>,
     editor_actions: Rc<RefCell<EditorActions>>,
@@ -39,6 +45,10 @@ pub struct TrackEditing {
     
     pub selection_range: (MIDITick, MIDITick, u16, u16),
     draw_select_box: bool,
+    // true after user makes a selection in track view
+    pub has_selection: bool,
+
+    ghost_notes: Arc<Mutex<Vec<(u16, Vec<Note>)>>>,
 
     pub ppq: u16,
 }
@@ -53,6 +63,7 @@ impl TrackEditing {
         nav: &Arc<Mutex<TrackViewNavigation>>,
 
         view_settings: &Arc<Mutex<ViewSettings>>,
+        shared_selected_note_ids: &Arc<RwLock<SharedSelectedNotes>>,
     ) -> Self {
         Self {
             project_manager: project_manager.clone(),
@@ -70,7 +81,12 @@ impl TrackEditing {
             right_clicked_track: 0,
             ppq: 960,
             selection_range: (0, 0, 0, 0),
-            draw_select_box: false
+
+            ghost_notes: Arc::new(Mutex::new(Vec::new())),
+
+            draw_select_box: false,
+            has_selection: false,
+            shared_selected_note_ids: shared_selected_note_ids.clone()
         }
     }
 
@@ -82,7 +98,10 @@ impl TrackEditing {
         };
 
         // self.mouse_info.mouse_midi_track_pos = get_mouse_track_view_pos(ui, &self.nav);
+        self.mouse_info.mouse_pos = (mouse_x, mouse_y);
         self.mouse_info.mouse_midi_track_pos = self.screen_pos_to_midi_track_pos((mouse_x, mouse_y), ui);
+
+        self.set_flag(TRACK_EDIT_SHIFT_DOWN, ui.input(|i| i.modifiers.shift));
     }
 
     fn screen_pos_to_midi_track_pos(&self, screen_pos: (f32, f32), ui: &mut Ui) -> (MIDITick, u16) {
@@ -123,10 +142,14 @@ impl TrackEditing {
             editor_tool.get_tool().clone()
         };
 
+        {
+            let track_pos = self.get_mouse_track_pos();
+            self.change_track(track_pos);
+        }
+
         match editor_tool {
             EditorTool::Pencil => {
-                let track_pos = self.get_mouse_track_pos();
-                self.change_track(track_pos);
+
             },
             EditorTool::Selector => {
                 self.select_mouse_down();
@@ -201,23 +224,77 @@ impl TrackEditing {
         if ui.input(|i| i.key_pressed(egui::Key::ArrowDown) && i.modifiers.command) {
             if curr_track < u16::MAX { self.change_track(curr_track + 1); }
         }
+
+        if ui.input(|i| i.key_pressed(Key::Delete)) {
+            self.delete_selection();
+        }
     }
 
     // ======== TOOL MOUSE EVENTS ========
 
     fn select_mouse_down(&mut self) {
-        self.init_selection_box(self.mouse_info.mouse_midi_track_pos);
+        let shift_down = self.get_flag(TRACK_EDIT_SHIFT_DOWN);
+
+        let mouse_over_selection = self.is_mouse_over_select_area();
+
+        if !mouse_over_selection {
+            // make a new selection
+            if !shift_down { self.deselect_all(); }
+            self.init_selection_box(self.mouse_info.mouse_midi_track_pos);
+        } else {
+            // move the selection
+            self.selected_notes_to_ghost_notes();
+        }
+
+        self.set_flag(TRACK_EDIT_SELECTION_MOVE, mouse_over_selection);
     }
 
     fn select_mouse_move(&mut self) {
-        self.update_selection_box(self.mouse_info.mouse_midi_track_pos);
+        if self.get_flag(TRACK_EDIT_SELECTION_MOVE) {
+
+        } else {
+            self.update_selection_box(self.mouse_info.mouse_midi_track_pos);
+        }
     }
 
     fn select_mouse_up(&mut self) {
-        self.draw_select_box = false;
+        // self.has_selection = true;
+        // self.draw_select_box = false;
 
-        let (min_tick, max_tick, min_track, max_track) = self.get_selection_range();
+        // let (min_tick, max_tick, min_track, max_track) = self.get_selection_range();
+        if self.get_flag(TRACK_EDIT_SELECTION_MOVE) {
+            // apply note movement
+            self.apply_ghost_notes();
+        } else {
+            let shift_down = self.get_flag(TRACK_EDIT_SHIFT_DOWN);
+            // select notes
+            if !shift_down { self.deselect_all() };
+            
+            self.draw_select_box = false;
 
+            let region = self.get_selection_range();
+
+            if let Some(selected_ids_with_track) = self.get_note_ids_in_region(region) {
+                self.has_selection = true;
+                let mut shared_selected = self.shared_selected_note_ids.write().unwrap();
+
+                let mut num_selected = 0;
+                // select notes in each track, one by one
+                for (track, ids) in selected_ids_with_track {
+                    num_selected += ids.len();
+                    if shift_down {
+                        (*shared_selected).add_selected_to_track(ids, track);
+                    } else {
+                        (*shared_selected).set_selected_in_track(ids, track);
+                    }
+                }
+
+                println!("Selected {num_selected} notes in track view.");
+            } else {
+                // no notes were selected at all, existing selection cleared already
+                println!("Selected no notes in track view.");
+            }
+        }
     }
 
     // ======== SELECTION BOX ========
@@ -244,9 +321,9 @@ impl TrackEditing {
 
         let (min_track, max_track) = {
             if self.selection_range.2 > self.selection_range.3 {
-                (self.selection_range.3, self.selection_range.2)
+                (self.selection_range.3, self.selection_range.2 + 1)
             } else {
-                (self.selection_range.2, self.selection_range.3)
+                (self.selection_range.2, self.selection_range.3 + 1)
             }
         };
 
@@ -267,6 +344,162 @@ impl TrackEditing {
         (tl, br)
     }
 
+    pub fn is_mouse_over_select_area(&self) -> bool {
+        if !self.has_selection { return false; }
+        
+        let (min_tick, max_tick, min_track, max_track) = self.get_selection_range();
+        let (mouse_x, mouse_y) = self.mouse_info.mouse_midi_track_pos;
+        
+        mouse_x > min_tick && mouse_x < max_tick && mouse_y >= min_track && mouse_y <= max_track
+    }
+
+    // ======== SELECTION HELPER FUNCTIONS ========
+
+    /// Gets all Note IDs within a region. Returns (start track, Vec<Vec<usize>>)
+    fn get_note_ids_in_region(&self, region: (MIDITick, MIDITick, u16, u16)) -> Option<Vec<(u16, Vec<usize>)>> {
+        let (min_tick, max_tick, min_track, max_track) = region;
+        if min_tick == max_tick { return None; }
+
+        let mut all_ids = Vec::with_capacity((max_track - min_track + 1) as usize);
+
+        let project_manager = self.project_manager.read().unwrap();
+        let tracks = project_manager.get_tracks().read().unwrap();
+        
+        // no notes can be selected if the min track is higher than what's actually present
+        if min_track >= tracks.len() as u16 { return None; }
+
+        for trk in min_track..max_track {
+            if trk >= tracks.len() as u16 { break; }
+
+            let track = tracks[trk as usize].get_notes();
+            if track.is_empty() { continue; }
+
+            let ids = get_notes_in_range(&track, min_tick, max_tick, 0, 127, true);
+            if !ids.is_empty() { all_ids.push((trk, ids)) };
+        }
+
+        if all_ids.is_empty() { return None; }
+
+        Some(all_ids)
+    }
+
+    fn deselect_all(&mut self) {
+        self.has_selection = false;
+
+        let mut shared_selected = self.shared_selected_note_ids.write().unwrap();
+        shared_selected.clear_selected();
+    }
+
+    fn delete_selection(&mut self) {
+        {
+            let project_manager = self.project_manager.read().unwrap();
+            let mut tracks = project_manager.get_tracks().write().unwrap();
+
+            let mut selected = self.shared_selected_note_ids.write().unwrap();
+
+            let mut affected_tracks = Vec::new();
+            let mut deleted_notes = Vec::new();
+            let mut deleted_ids = Vec::new();
+            for (trk, ids) in selected.take_selected_from_all() {
+                let notes_ = (*tracks)[trk as usize].get_notes_mut();
+                let notes = std::mem::take(notes_);
+                
+                let (deleted, kept) = extract(notes, &ids);
+                *notes_ = kept;
+
+                affected_tracks.push(trk);
+                deleted_notes.push(deleted);
+                deleted_ids.push(ids);
+            }
+
+            let mut editor_actions = self.editor_actions.borrow_mut();
+            editor_actions.register_action(EditorAction::DeleteNotesMultiTrack(deleted_ids, Some(deleted_notes), affected_tracks));
+        }
+
+        // deselect
+        self.deselect_all();
+    }
+
+    // ======== GHOST NOTE STUFF ========
+
+    fn selected_notes_to_ghost_notes(&mut self) {
+        let (_, _, min_track, max_track) = self.get_selection_range();
+
+        let mut old_notes = {
+            let project_manager = self.project_manager.read().unwrap();
+            let mut tracks = project_manager.get_tracks().write().unwrap();
+            
+            let mut notes = Vec::with_capacity((max_track - min_track) as usize);
+            for trk in min_track..max_track {
+                if trk >= tracks.len() as u16 { break; }
+
+                let notes_ = std::mem::take((*tracks)[trk as usize].get_notes_mut());
+                notes.push((trk, notes_));
+            }
+
+            notes
+        };
+
+        let tmp_ghosts= {
+            let mut tmp_ghosts = Vec::new();
+
+            for (trk, notes) in old_notes.drain(..) {
+                let (tg, new_notes) = {
+                    let selected = self.shared_selected_note_ids.read().unwrap();
+                    extract(notes, selected.get_selected_ids_in_track(trk).unwrap())
+                };
+                
+                tmp_ghosts.push((trk, tg));
+                self.set_notes_in_track(trk, new_notes);
+            }
+
+            tmp_ghosts
+        };
+
+        {
+            let mut shared_selected = self.shared_selected_note_ids.write().unwrap();
+            shared_selected.clear_selected();
+        }
+
+        let mut ghost_notes = self.ghost_notes.lock().unwrap();
+        *ghost_notes = tmp_ghosts;
+    }
+
+    fn apply_ghost_notes(&mut self) -> Vec<(u16, Vec<usize>)> {
+        let mut ghost_notes = {
+            let mut ghost_notes = self.ghost_notes.lock().unwrap();
+            std::mem::take(&mut *ghost_notes)
+        };
+
+        let mut tracks = {
+            let project_manager = self.project_manager.read().unwrap();
+            let mut tracks = project_manager.get_tracks().write().unwrap();
+            std::mem::take(&mut *tracks)
+        };
+
+        let mut trk_ids = Vec::with_capacity(ghost_notes.len());
+
+        for (trk, notes) in ghost_notes.drain(..) {
+            let track = (*tracks)[trk as usize].get_notes_mut();
+            let old_notes = std::mem::take(track);
+            let (merged, ids) = merge_notes_and_return_ids(old_notes, notes);
+
+            *track = merged;
+            
+            {
+                let mut selected = self.shared_selected_note_ids.write().unwrap();
+                selected.set_selected_in_track(ids.clone(), trk);
+            }
+
+            trk_ids.push((trk, ids));
+        }
+
+        let project_manager = self.project_manager.read().unwrap();
+        (*(project_manager.get_tracks().write().unwrap())) = tracks;
+        
+        trk_ids
+    }
+
     // ======== HELPER FUNCTIONS ========
 
     #[inline(always)]
@@ -278,6 +511,13 @@ impl TrackEditing {
     fn get_pianoroll_track(&self) -> u16 {
         let nav = self.pr_nav.lock().unwrap();
         nav.curr_track
+    }
+
+    fn set_notes_in_track(&mut self, track: u16, notes_: Vec<Note>) {
+        let project_manager = self.project_manager.read().unwrap();
+        let mut tracks = project_manager.get_tracks().write().unwrap();
+        let notes = (*tracks)[track as usize].get_notes_mut();
+        *notes = notes_;
     }
 
     fn insert_notes_and_ch_evs(&mut self, track: u16, notes: Vec<Note>, ch_evs: Vec<ChannelEvent>) {
@@ -363,6 +603,77 @@ impl TrackEditing {
 
         (notes.remove(track as usize), ch_evs.remove(track as usize))
     }*/
+
+    /// Decomposes a track with multiple channels into multiple tracks, each containing only one channel
+    pub fn decompose_track(&mut self, track: u16, should_register: bool) {
+        let (notes, ch_evs) = {
+            let project_manager = self.project_manager.read().unwrap();
+            let mut tracks = project_manager.get_tracks().write().unwrap();
+            (
+                std::mem::take(tracks[track as usize].get_notes_mut()),
+                std::mem::take(tracks[track as usize].get_channel_evs_mut()),
+            )
+        };
+
+        if notes.is_empty() && ch_evs.is_empty() {
+            return;
+        }
+
+        // Allocate exactly how many channels we actually have
+        let mut decomposed: Vec<(Vec<Note>, Vec<ChannelEvent>)> = Vec::with_capacity(16);
+        for _ in 0..16 {
+            decomposed.push((Vec::new(), Vec::new()));
+        }
+
+        // Assign notes
+        for note in notes {
+            let ch = note.channel() as usize;
+            decomposed[ch].0.push(note);
+        }
+
+        // Assign channel events
+        for ev in ch_evs {
+            let ch = ev.channel as usize;
+            decomposed[ch].1.push(ev);
+        }
+
+        // Keep only non-empty tracks
+        let decomposed: Vec<(Vec<Note>, Vec<ChannelEvent>)> =
+            decomposed.into_iter().filter(|t| !t.0.is_empty() || !t.1.is_empty()).collect();
+
+        if decomposed.is_empty() {
+            return;
+        }
+
+        let decomposed_count = decomposed.len();
+
+        {
+            let project_manager = self.project_manager.read().unwrap();
+            let mut tracks = project_manager.get_tracks().write().unwrap();
+
+            // Pre-allocate space for new tracks instead of inserting repeatedly
+            tracks.reserve(decomposed_count.saturating_sub(1));
+
+            // Replace base track first, then append additional tracks
+            for (i, (notes_for_channel, evs_for_channel)) in decomposed.into_iter().enumerate() {
+                if i == 0 {
+                    let track_mut = &mut tracks[track as usize];
+                    *track_mut.get_notes_mut() = notes_for_channel;
+                    *track_mut.get_channel_evs_mut() = evs_for_channel;
+                } else {
+                    let mut new_track = MIDITrack::default();
+                    *new_track.get_notes_mut() = notes_for_channel;
+                    *new_track.get_channel_evs_mut() = evs_for_channel;
+                    tracks.insert(track as usize + i, new_track); // only do insert for new tracks
+                }
+            }
+        }
+
+        if should_register {
+            let mut editor_actions = self.editor_actions.borrow_mut();
+            editor_actions.register_action(EditorAction::DecomposeTrack(track, decomposed_count as u16));
+        }
+    }
 
     pub fn append_empty_track(&mut self) {
         let project_manager = self.project_manager.read().unwrap();
@@ -469,6 +780,80 @@ impl TrackEditing {
                 if *track_rem_idx < curr_track {
                     self.change_track(curr_track - 1);
                 }
+            },
+            EditorAction::PlaceNotesMultiTrack(_, removed_notes, tracks) => {
+                assert!(removed_notes.is_some(), "[PLACE NOTES] Something has gone wrong while trying to add back notes in multiple tracks.");
+                
+                let recovered_notes = removed_notes.take().unwrap();
+
+                for (recovered_notes, track) in recovered_notes.into_iter().zip(tracks) {
+                    let old_notes = {
+                        let project_manager = self.project_manager.read().unwrap();
+                        let mut tracks_ = project_manager.get_tracks().write().unwrap();
+
+                        std::mem::take((*tracks_)[*track as usize].get_notes_mut())
+                    };
+                    let merged = merge_notes(old_notes, recovered_notes);
+                    self.set_notes_in_track(*track, merged);
+                }
+            },
+            EditorAction::DeleteNotesMultiTrack(note_ids, notes_deleted, tracks) => {
+                let mut notes_deleted_ = Vec::new();
+
+                for (note_ids, track) in note_ids.into_iter().zip(tracks) {
+                    let old_notes = {
+                        let project_manager = self.project_manager.read().unwrap();
+                        let mut tracks_ = project_manager.get_tracks().write().unwrap();
+
+                        std::mem::take((*tracks_)[*track as usize].get_notes_mut())
+                    };
+                    
+                    let mut shared_selected = self.shared_selected_note_ids.write().unwrap();
+                        let old_sel_ids = shared_selected.take_selected_from_track(*track);
+                        let (deleted, new_notes, new_ids) = extract_and_remap_ids(old_notes, &note_ids, old_sel_ids);
+                        shared_selected.set_selected_in_track(new_ids, *track);
+                    drop(shared_selected);
+
+                    self.set_notes_in_track(*track, new_notes);
+
+                    notes_deleted_.push(deleted);
+                }
+
+                *notes_deleted = Some(notes_deleted_);
+            },
+            EditorAction::ComposeTrack(base_track, channel_count) => {
+                let decomposed_tracks = {
+                    let project_manager = self.project_manager.read().unwrap();
+                    let mut tracks = project_manager.get_tracks().write().unwrap();
+
+                    let mut decomp = Vec::new();
+                    for i in 0..(*channel_count) {
+                        let notes = std::mem::take(tracks[(*base_track + i) as usize].get_notes_mut());
+                        decomp.push(notes);
+                    }
+
+                    decomp
+                };
+
+                let composed = decomposed_tracks
+                    .into_iter()
+                    .reduce(|a, b| merge_notes(a, b))
+                    .unwrap_or_else(Vec::new);
+
+                {
+                    let project_manager = self.project_manager.read().unwrap();
+                    let mut tracks = project_manager.get_tracks().write().unwrap();
+                    let track = tracks[*base_track as usize].get_notes_mut();
+                    *track = composed;
+
+                    // remove empty tracks
+                    for i in (1..*channel_count).rev() {
+                        tracks.remove((*base_track + i) as usize);
+                    }
+                }
+            },
+            EditorAction::DecomposeTrack(base_track, _) => {
+                self.decompose_track(*base_track, false);
             },
             EditorAction::SwapTracks(track_1, track_2) => {
                 self.swap_tracks_and_register(*track_1, *track_2, false);

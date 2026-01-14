@@ -3,15 +3,17 @@ layout (location = 0) in vec2 vPos;
 
 layout (location = 1) in float barStart;
 layout (location = 2) in float barLength;
-layout (location = 3) in uint barNumber;
+layout (location = 3) in uint barMeta;
 
 out vec2 uv;
 out float oddBarFac;
+flat out int isCurrTrack;
 out float bLength;
 out float bHeight;
 
 uniform float tvBarBottom;
 uniform float tvBarTop;
+uniform int currTrack;
 
 void main() {
     float x_pos = 0.0f;
@@ -31,7 +33,8 @@ void main() {
     }
 
     uv = vPos;
-    oddBarFac = (int(barNumber) % 2 == 1) ? 0.8 : 1.0;
+    oddBarFac = ((uint(barMeta) >> uint(31)) == uint(1)) ? 0.8 : 1.0;
+    isCurrTrack = ((uint(barMeta) & uint(0xFFFF)) == uint(currTrack)) ? 1 : 0;
     bLength = barLength;
     bHeight = tvBarTop - tvBarBottom;
 

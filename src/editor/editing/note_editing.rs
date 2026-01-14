@@ -1,5 +1,5 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
-use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::{RenderManager, data_view::DataViewRenderer}}, editor::{actions::{EditorAction, EditorActions}, editing::{SharedClipboard, SharedSelectedNotes, note_editing::note_sequence_funcs::{extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids, move_all_notes_by, move_each_note_by, remove_note}}, navigation::PianoRollNavigation, util::{MIDITick, SignedMIDITick, find_note_at, get_absolute_max_tick_from_ids, get_mouse_midi_pos, get_notes_in_range}}, midi::{events::note::Note, midi_track::MIDITrack}};
+use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::{RenderManager, data_view::DataViewRenderer}}, editor::{actions::{EditorAction, EditorActions}, editing::{SharedClipboard, SharedSelectedNotes, note_editing::note_sequence_funcs::{extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids, move_all_notes_by, move_each_note_by, remove_note}}, navigation::PianoRollNavigation, settings::editor_settings::PR_KEYBOARD_WIDTH, util::{MIDITick, SignedMIDITick, find_note_at, get_absolute_max_tick_from_ids, get_mouse_midi_pos, get_notes_in_range}}, midi::{events::note::Note, midi_track::MIDITrack}};
 use eframe::egui::{self, Context, CursorIcon, Key, Ui};
 use note_edit_flags::*;
 
@@ -874,7 +874,6 @@ impl NoteEditing {
         let mut ghost_notes = self.ghost_notes.lock().unwrap();
         *ghost_notes = tmp_ghosts;
         // *ghost_notes = self.notes_into_ghost_notes(tmp_ghosts, selected);
-        println!("{}", ghost_notes.len());
     }
 
     fn note_id_as_first_ghost_note(&mut self, id: usize) {
@@ -903,7 +902,7 @@ impl NoteEditing {
         let (gn_start, gn_key) = {
             let (mouse_tick, mouse_key) = self.mouse_info.mouse_midi_pos;
             let start = mouse_tick;
-            let key = mouse_key;
+            let key = if mouse_key > 127 { 127 } else { mouse_key };
             (start, key)
         };
 
@@ -1486,9 +1485,13 @@ impl NoteEditing {
     fn midi_pos_to_ui_pos(&self, ui: &mut Ui, tick_pos: MIDITick, key_pos: u8) -> (f32, f32) {
         let nav = self.nav.lock().unwrap();
         let rect = ui.min_rect();
-        let mut ui_x = (tick_pos as f32 - nav.tick_pos_smoothed) / nav.zoom_ticks_smoothed;
+        let keyboard_width = PR_KEYBOARD_WIDTH / rect.width();
+        
+        let tick_pos = tick_pos as f32;
+        let mut ui_x = (tick_pos - nav.tick_pos_smoothed) / nav.zoom_ticks_smoothed;
         let mut ui_y = (key_pos as f32 - nav.key_pos_smoothed) / nav.zoom_keys_smoothed;
 
+        ui_x = ui_x * (1.0 - keyboard_width) + keyboard_width; // account for keyboard
         ui_x = ui_x * rect.width() + rect.left();
         ui_y = (1.0 - ui_y) * rect.height() + rect.top();
 

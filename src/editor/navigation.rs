@@ -50,11 +50,14 @@ impl PianoRollNavigation {
         change_fn(self.tick_pos);
     }
 
-    pub fn update_smoothed_values(&mut self) {
-        self.tick_pos_smoothed = (self.tick_pos * 0.1) + (self.tick_pos_smoothed * 0.9);
-        self.key_pos_smoothed = (self.key_pos * 0.1) + (self.key_pos_smoothed * 0.9);
-        self.zoom_ticks_smoothed = (self.zoom_ticks * 0.1) + (self.zoom_ticks_smoothed * 0.9);
-        self.zoom_keys_smoothed = (self.zoom_keys * 0.1) + (self.zoom_keys_smoothed * 0.9);
+    pub fn update_smoothed_values(&mut self, dt: f32) {
+        let smooth = 15.0;
+        let alpha = 1.0 - (-smooth * dt).exp();
+
+        self.tick_pos_smoothed += (self.tick_pos - self.tick_pos_smoothed) * alpha;                
+        self.key_pos_smoothed += (self.key_pos - self.key_pos_smoothed) * alpha;                
+        self.zoom_ticks_smoothed += (self.zoom_ticks - self.zoom_ticks_smoothed) * alpha;                
+        self.zoom_keys_smoothed += (self.zoom_keys - self.zoom_keys_smoothed) * alpha;
     }
 
     /// If the smoothed values aren't close enough to the actual underlying values, returns true.
@@ -132,11 +135,14 @@ impl TrackViewNavigation {
         change_fn(self.tick_pos);
     }
 
-    pub fn update_smoothed_values(&mut self) {
-        self.tick_pos_smoothed = (self.tick_pos * 0.1) + (self.tick_pos_smoothed * 0.9);
-        self.track_pos_smoothed = (self.track_pos * 0.1) + (self.track_pos_smoothed * 0.9);
-        self.zoom_ticks_smoothed = (self.zoom_ticks * 0.1) + (self.zoom_ticks_smoothed * 0.9);
-        self.zoom_tracks_smoothed = (self.zoom_tracks * 0.1) + (self.zoom_tracks_smoothed * 0.9);
+    pub fn update_smoothed_values(&mut self, dt: f32) {
+        let smooth = 15.0;
+        let alpha = 1.0 - (-smooth * dt).exp();
+
+        self.tick_pos_smoothed += (self.tick_pos - self.tick_pos_smoothed) * alpha;
+        self.track_pos_smoothed += (self.track_pos - self.track_pos_smoothed) * alpha;
+        self.zoom_ticks_smoothed += (self.zoom_ticks - self.zoom_ticks_smoothed) * alpha;
+        self.zoom_tracks_smoothed += (self.zoom_tracks - self.zoom_tracks_smoothed) * alpha;
     }
 
     /// If the smoothed values aren't close enough to the actual underlying values, returns true.

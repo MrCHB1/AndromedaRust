@@ -1,6 +1,7 @@
 use crate::app::shared::NoteColors;
+use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
-use crate::editor::navigation::TrackViewNavigation;
+use crate::editor::navigation::{PianoRollNavigation, TrackViewNavigation};
 use crate::editor::project::project_data::ProjectData;
 use crate::editor::project::project_manager::ProjectManager;
 use crate::midi::events::note::Note;
@@ -20,29 +21,31 @@ use crate::app::rendering::{
 
 use crate::set_attribute;
 
-const NOTE_BUFFER_SIZE: usize = 4096;
+const NOTE_BUFFER_SIZE: usize = 32768;
 const BAR_BUFFER_SIZE: usize = 32;
 
 // track view background
 pub type BarStart = f32;
 pub type BarLength = f32;
-pub type BarNumber = u32;
+// pub type BarNumber = u32;
+// pub type BarTrack = u32;
+pub type BarMeta = u32;
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Clone, Copy)]
-pub struct RenderTrackViewBar(BarStart, BarLength, BarNumber);
+pub struct RenderTrackViewBar(BarStart, BarLength, BarMeta);
 
 // track view notes
 pub type NoteRect = [f32; 4]; // (start, length, note bottom, note top)
 pub type NoteMeta = u32;
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RenderTrackViewNote(NoteRect, NoteMeta);
 
 pub type Position = [f32; 2];
 
-#[repr(C, packed)]
+#[repr(C)]
 pub struct Vertex(Position);
 
 pub const QUAD_VERTICES: [Vertex; 4] = [
@@ -59,6 +62,7 @@ const QUAD_INDICES: [u32; 6] = [
 
 pub struct TrackViewRenderer {
     pub navigation: Arc<Mutex<TrackViewNavigation>>,
+    pr_nav: Arc<Mutex<PianoRollNavigation>>,
     pub bar_cacher: Arc<Mutex<BarCacher>>,
     pub window_size: Vec2<>,
     pub ppq: u16,
@@ -87,6 +91,7 @@ pub struct TrackViewRenderer {
     first_render_note: Vec<usize>,
     last_time: f32,
 
+    selected: Arc<RwLock<SharedSelectedNotes>>,
     render_active: bool
 }
 
@@ -94,9 +99,11 @@ impl TrackViewRenderer {
     pub unsafe fn new(
         project_manager: &Arc<RwLock<ProjectManager>>,
         nav: &Arc<Mutex<TrackViewNavigation>>,
+        pr_nav: &Arc<Mutex<PianoRollNavigation>>,
         gl: &Arc<glow::Context>,
         bar_cacher: &Arc<Mutex<BarCacher>>,
-        colors: &Arc<Mutex<NoteColors>>
+        colors: &Arc<Mutex<NoteColors>>,
+        shared_selected_notes: &Arc<RwLock<SharedSelectedNotes>>
     ) -> Self {
         let tv_program = ShaderProgram::create_from_files(gl.clone(), "./assets/shaders/track_view_bg");
         let tv_notes_program = ShaderProgram::create_from_files(gl.clone(), "./assets/shaders/track_view_note");
@@ -118,7 +125,7 @@ impl TrackViewRenderer {
             RenderTrackViewBar {
                 0: 0.0,
                 1: 1.0,
-                2: 0
+                2: 0,
             }; BAR_BUFFER_SIZE
         ];
         tv_instance_buffer.set_data(tv_bars_render.as_slice(), glow::DYNAMIC_DRAW);
@@ -127,7 +134,7 @@ impl TrackViewRenderer {
         set_attribute!(glow::FLOAT, tv_vertex_array, tv_bar_start, RenderTrackViewBar::0);
         let tv_bar_length = tv_program.get_attrib_location("barLength").unwrap();
         set_attribute!(glow::FLOAT, tv_vertex_array, tv_bar_length, RenderTrackViewBar::1);
-        let tv_bar_number = tv_program.get_attrib_location("barNumber").unwrap();
+        let tv_bar_number = tv_program.get_attrib_location("barMeta").unwrap();
         set_attribute!(glow::UNSIGNED_INT, tv_vertex_array, tv_bar_number, RenderTrackViewBar::2);
 
         gl.vertex_attrib_divisor(1, 1);
@@ -185,6 +192,7 @@ impl TrackViewRenderer {
 
         Self {
             navigation: nav.clone(),
+            pr_nav: pr_nav.clone(),
             window_size: Vec2::new(0.0, 0.0),
             bar_cacher: bar_cacher.clone(),
             tv_program,
@@ -209,6 +217,7 @@ impl TrackViewRenderer {
 
             last_note_start,
             first_render_note,
+            selected: shared_selected_notes.clone(),
             render_active: false,
             last_time: 0.0
         }
@@ -216,21 +225,6 @@ impl TrackViewRenderer {
 
     fn get_time(&self) -> f32 {
         let nav = self.navigation.lock().unwrap();
-
-        /*let is_playing = {
-            let playback_manager = self.playback_manager.lock().unwrap();
-            playback_manager.playing
-        };
-
-        let nav_ticks = {
-            let playback_manager = self.playback_manager.lock().unwrap();
-            if is_playing {
-                playback_manager.get_playback_ticks() as f32
-            } else {
-                nav.tick_pos_smoothed
-            }
-        };*/
-
         nav.tick_pos_smoothed
     }
 }
@@ -273,6 +267,10 @@ impl Renderer for TrackViewRenderer {
                     self.tv_program.set_float("tvBarTop", bar_top / num_bars);
                     self.tv_program.set_float("tvBarBottom", bar_bottom / num_bars);
                     self.tv_program.set_float("ppqNorm", self.ppq as f32 / zoom_ticks);
+                    {
+                        let nav = self.pr_nav.lock().unwrap();
+                        self.tv_program.set_int("currTrack", nav.curr_track as i32);
+                    }
 
                     while curr_bar_tick <= zoom_ticks + tick_pos {
                         // TODO: proper bar position calculation because of signature change events
@@ -291,7 +289,11 @@ impl Renderer for TrackViewRenderer {
                         self.bars_render[bar_id] = RenderTrackViewBar {
                             0: ((curr_bar_tick - tick_pos) / zoom_ticks),
                             1: ((bar_length as f32) / zoom_ticks),
-                            2: bar_num as u32
+                            2: {
+                                let curr_track = (curr_track as u32) & 0xFFFF;
+                                let odd_bar = (bar_num as u32) & 0b1;
+                                (odd_bar << 31) | (curr_track)
+                            },
                         };
 
                         bar_id += 1;
@@ -331,6 +333,8 @@ impl Renderer for TrackViewRenderer {
 
                 self.tv_notes_program.set_float("width", self.window_size.x);
                 self.tv_notes_program.set_float("height", self.window_size.y);
+                self.tv_notes_program.set_float("zoomTicks", 1.0 / zoom_ticks);
+                self.tv_notes_program.set_float("zoomTracks", 1.0 / zoom_tracks);
 
                 // let all_render_notes = self.render_notes.read().unwrap();
                 let all_tracks = self.all_tracks.read().unwrap();
@@ -344,26 +348,7 @@ impl Renderer for TrackViewRenderer {
                     self.last_note_start = vec![0; all_tracks.len()];
                     self.first_render_note = vec![0; all_tracks.len()];
                 }
-                
-                /*let track_start = {
-                    let mut track_start = 0;
-                    for track in 1..=all_render_notes.len() {
-                        if track as f32 >= track_pos { break; }
-                        track_start += 1;
-                    }
-                    track_start
-                };
 
-                let track_end = {
-                    let mut track_end = track_start;
-                    for track in track_start..all_render_notes.len() {
-                        if track as f32 >= track_pos + zoom_tracks { break; }
-                        track_end += 1;
-                    }
-                    track_end
-                };*/
-
-                // O(n) -> O(1)
                 let total_tracks = all_tracks.len() as isize;
                 let track_start = (track_pos.ceil() as isize - 1).clamp(0, total_tracks) as usize;
                 let track_end = ((track_pos + zoom_tracks).ceil() as isize).clamp(0, total_tracks) as usize;
@@ -371,6 +356,7 @@ impl Renderer for TrackViewRenderer {
                 let mut note_id = 0;
                 let mut curr_track = track_start;
 
+                let shared_sel_notes = self.selected.read().unwrap();
                 for tracks in &all_tracks[track_start..track_end] {
                     let notes = tracks.get_notes();
                     if notes.is_empty() {
@@ -406,17 +392,17 @@ impl Renderer for TrackViewRenderer {
                         self.first_render_note[curr_track as usize] = n_off;
                     }
 
-                    /*let note_end = {
-                        let mut e = n_off;
-                        for note in &notes[n_off..notes.len()] {
-                            if note.start() as f32 > tick_pos + zoom_ticks { break; }
-                            e += 1;
-                        }
-                        e
-                    };*/
-
                     // TEST: Binary search instead of linear search
                     let note_end = n_off + notes[n_off..].partition_point(|note| note.start() as f32 <= tick_pos + zoom_ticks);
+
+                    // selected ids
+                    let sel_ids = shared_sel_notes 
+                        .get_selected_ids_in_track(curr_track as u16)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+
+                    let mut sel_idx = 0;
+                    let mut note_idx = n_off;
 
                     for note in &notes[n_off..note_end] {
                         // if notes.is_empty() { curr_channel += 1; continue; }
@@ -427,16 +413,24 @@ impl Renderer for TrackViewRenderer {
                             let trk_chan = ((curr_track as usize) << 4) | (note.channel() as usize);
                             
                             self.notes_render[note_id] = RenderTrackViewNote {
-                                0: [(note.start as f32 - tick_pos) / zoom_ticks,
-                                    (note.length as f32) / zoom_ticks,
-                                    note_bottom / zoom_tracks,
-                                    note_top / zoom_tracks],
+                                0: [(note.start as f32 - tick_pos),
+                                    (note.length as f32),
+                                    note_bottom,
+                                    note_top],
                                 1: {
-                                    note_colors.get_index(trk_chan) as u32
+                                    let mut note_meta = note_colors.get_index(trk_chan) as u32;
+                                    
+                                    if sel_idx < sel_ids.len() && note_idx == sel_ids[sel_idx] {
+                                        note_meta |= 1 << 13;
+                                        sel_idx += 1;
+                                    }
+
+                                    note_meta
                                 }
                             };
 
                             note_id += 1;
+                            note_idx += 1;
 
                             if note_id >= NOTE_BUFFER_SIZE {
                                 self.tv_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
@@ -451,7 +445,7 @@ impl Renderer for TrackViewRenderer {
                 }
 
                 if note_id != 0 {
-                    self.tv_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
+                    self.tv_notes_ibo.set_data(&self.notes_render[..note_id], glow::DYNAMIC_DRAW);
                     self.gl.draw_elements_instanced(
                         glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, note_id as i32);
                 }
@@ -475,11 +469,7 @@ impl Renderer for TrackViewRenderer {
         self.ppq = ppq;
     }
 
-    /*fn set_ghost_notes(&mut self, _notes: Arc<Mutex<Vec<crate::app::main_window::GhostNote>>>) {
-        
+    fn set_selected(&mut self, selected_ids: &Arc<RwLock<SharedSelectedNotes>>) {
+        self.selected = selected_ids.clone();
     }
-
-    fn clear_ghost_notes(&mut self) {
-        
-    }*/
 }

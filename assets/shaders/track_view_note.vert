@@ -11,18 +11,23 @@ out float noteWidth;
 out float noteHeight;
 
 uniform sampler2D noteColorTexture;
+uniform float zoomTicks;
+uniform float zoomTracks;
 
 void main() {
-    color = texture2D(noteColorTexture, vec2(float(noteMeta & uint(0xF)) / 16.0, 0.5)).rgb;
-    
+    color = texture2D(noteColorTexture, vec2(float((noteMeta & uint(0xF))) / 16.0, 0.5)).rgb;
+    if ((noteMeta & uint(1 << 13)) != uint(0)) {
+        color = vec3(0.9, 0.4, 0.4);
+    }
+
     vec2 uv_;
     float x_pos = 0.0f;
     float y_pos = 0.0f;
 
-    float noteStart = noteRect.x;
-    float noteLength = noteRect.y;
-    float noteBottom = noteRect.z;
-    float noteTop = noteRect.w;
+    float noteStart = noteRect.x * zoomTicks;
+    float noteLength = noteRect.y * zoomTicks;
+    float noteBottom = noteRect.z * zoomTracks;
+    float noteTop = noteRect.w * zoomTracks;
 
     noteWidth = noteLength;
     noteHeight = noteTop - noteBottom;

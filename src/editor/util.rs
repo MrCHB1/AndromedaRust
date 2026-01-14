@@ -1,7 +1,7 @@
 #![warn(unused)]
 use eframe::egui::Ui;
 
-use crate::{editor::navigation::{PianoRollNavigation, TrackViewNavigation}, midi::events::{meta_event::{MetaEvent, MetaEventType}, note::Note}};
+use crate::{editor::{navigation::{PianoRollNavigation, TrackViewNavigation}, settings::editor_settings::PR_KEYBOARD_WIDTH}, midi::events::{meta_event::{MetaEvent, MetaEventType}, note::Note}};
 use std::{cmp::Ordering, collections::{HashMap}, path::PathBuf, sync::{Arc, Mutex}};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 
@@ -430,6 +430,9 @@ pub fn get_mouse_midi_pos(ui: &mut Ui, nav: &Arc<Mutex<PianoRollNavigation>>) ->
 
         let nav = nav.lock().unwrap();
 
+        let keyboard_width = PR_KEYBOARD_WIDTH / rect.width();
+        let mouse_x = (mouse_x - keyboard_width) / (1.0 - keyboard_width);
+        
         let mouse_tick_pos = (mouse_x * nav.zoom_ticks_smoothed + nav.tick_pos_smoothed) as MIDITick;
         let (mouse_key_pos_rounded, mouse_key_pos) = (
             (mouse_y * nav.zoom_keys_smoothed + nav.key_pos_smoothed).round() as u8,

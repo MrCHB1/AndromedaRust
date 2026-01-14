@@ -53,7 +53,8 @@ impl RenderManager {
         playback_manager: Arc<Mutex<PlaybackManager>>,
         bar_cacher: Arc<Mutex<BarCacher>>,
         colors: &Arc<Mutex<NoteColors>>,
-        note_cull_helper: &Arc<Mutex<NoteCullHelper>>
+        note_cull_helper: &Arc<Mutex<NoteCullHelper>>,
+        shared_selected_notes: &Arc<RwLock<SharedSelectedNotes>>
     ) {
         // initialize piano roll renderer
         {
@@ -72,6 +73,7 @@ impl RenderManager {
                     &bar_cacher,
                     colors,
                     note_cull_helper,
+                    shared_selected_notes,
                 )
             }));
 
@@ -80,9 +82,11 @@ impl RenderManager {
                 TrackViewRenderer::new(
                     &project_manager,
                     &track_view_nav,
+                    &nav,
                     &gl,
                     &bar_cacher,
-                    colors
+                    colors,
+                    shared_selected_notes
                 )
             }));
 

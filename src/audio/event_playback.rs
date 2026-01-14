@@ -513,4 +513,30 @@ impl PlaybackManager {
             self.playing = false;
         }
     }
+
+    pub fn switch_device(&mut self, device: Arc<Mutex<dyn MIDIAudioEngine + Send>>) {
+        let last_tick = self.playback_pos_ticks.load(Ordering::SeqCst);
+        if self.playing {
+            self.stop();
+            self.reset_events();
+        }
+
+        {
+            let mut device_ = self.device.lock().unwrap();
+            device_.close_stream();
+        }
+
+        self.device = device;
+
+        {
+            let mut device = self.device.lock().unwrap();
+            device.init_audio();
+        }
+
+        if self.playing {
+            self.navigate_to(last_tick);
+            self.start_playback();
+            self.run_synth_loop();
+        }
+    }
 }

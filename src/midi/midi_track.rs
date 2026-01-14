@@ -1,6 +1,6 @@
 use crate::midi::events::{channel_event::ChannelEvent, meta_event::MetaEvent, note::Note};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MIDITrack {
     pub muted: bool,
     pub channel_events: Vec<ChannelEvent>,
