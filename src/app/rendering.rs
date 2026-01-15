@@ -81,9 +81,11 @@ impl RenderManager {
             let track_view_renderer = Arc::new(Mutex::new(unsafe {
                 TrackViewRenderer::new(
                     &project_manager,
+                    &view_settings,
                     &track_view_nav,
                     &nav,
                     &gl,
+                    &playback_manager,
                     &bar_cacher,
                     colors,
                     shared_selected_notes

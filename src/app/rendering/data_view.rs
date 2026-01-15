@@ -8,13 +8,9 @@ use crate::audio::event_playback::PlaybackManager;
 use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
 //use crate::editor::note_editing::GhostNote;
-use crate::editor::editing::note_editing::GhostNote;
-use crate::editor::project::project_data::ProjectData;
 use crate::editor::project::project_manager::ProjectManager;
 use crate::midi::events::note::Note;
 use crate::midi::midi_track::MIDITrack;
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 use eframe::egui::Vec2;
 use eframe::glow;
@@ -65,7 +61,7 @@ const QUAD_INDICES: [u32; 6] = [
 
 pub struct DataViewRenderer {
     pub navigation: Arc<Mutex<PianoRollNavigation>>,
-    // pub playback_manager: Arc<Mutex<PlaybackManager>>,
+    playback_manager: Arc<Mutex<PlaybackManager>>,
     pub bar_cacher: Arc<Mutex<BarCacher>>,
     pub window_size: Vec2<>,
     pub ppq: u16,
@@ -94,7 +90,12 @@ pub struct DataViewRenderer {
     note_cull_helper: Arc<Mutex<NoteCullHelper>>,
 
     pub ghost_notes: Option<Arc<Mutex<Vec<Note>>>>,
-    selected: Arc<RwLock<SharedSelectedNotes>>
+    selected: Arc<RwLock<SharedSelectedNotes>>,
+
+    last_view_offset: f32,
+    view_offset: f32,
+    last_zoom: f32,
+    started_playing: bool
 }
 
 impl DataViewRenderer {
@@ -103,7 +104,7 @@ impl DataViewRenderer {
         view_settings: &Arc<Mutex<ViewSettings>>,
         nav: &Arc<Mutex<PianoRollNavigation>>,
         gl: &Arc<glow::Context>,
-        _playback_manager: &Arc<Mutex<PlaybackManager>>,
+        playback_manager: &Arc<Mutex<PlaybackManager>>,
         bar_cacher: &Arc<Mutex<BarCacher>>,
         note_colors: &Arc<Mutex<NoteColors>>,
         note_cull_helper: &Arc<Mutex<NoteCullHelper>>,
@@ -184,7 +185,7 @@ impl DataViewRenderer {
             bar_cacher: bar_cacher.clone(),
             window_size: Vec2::new(0.0, 0.0),
             gl: gl.clone(),
-            // playback_manager: playback_manager.clone(),
+            playback_manager: playback_manager.clone(),
             ppq: 960,
 
             dv_program,
@@ -208,28 +209,30 @@ impl DataViewRenderer {
 
             note_cull_helper: note_cull_helper.clone(),
             selected: shared_selected_notes.clone(),
-            ghost_notes: None
+            ghost_notes: None,
+
+            last_view_offset: 0.0,
+            view_offset: 0.0,
+            last_zoom: 0.0,
+            started_playing: false
         }
     }
 
     fn get_time(&self) -> f32 {
         let nav = self.navigation.lock().unwrap();
-
-        /*let is_playing = {
-            let playback_manager = self.playback_manager.lock().unwrap();
-            playback_manager.playing
-        };
-
-        let nav_ticks = {
-            let mut playback_manager = self.playback_manager.lock().unwrap();
-            if is_playing {
-                playback_manager.get_playback_ticks() as f32
-            } else {
-                nav.tick_pos_smoothed
+        let view_settings = self.view_settings.lock().unwrap();
+        if view_settings.pr_autoscroll {
+            {
+                let playback_manager = self.playback_manager.lock().unwrap();
+                if playback_manager.playing {
+                    playback_manager.get_playback_ticks() as f32
+                } else {
+                    nav.tick_pos_smoothed
+                }
             }
-        };*/
-
-        nav.tick_pos_smoothed
+        } else {
+            nav.tick_pos_smoothed
+        }
     }
 
     fn draw_note_velocities(&mut self, tick_pos: f32, zoom_ticks: f32) {
@@ -274,7 +277,7 @@ impl DataViewRenderer {
             let mut handle_id = 0;
             let mut curr_track = 0;
 
-            let tick_pos_offs = tick_pos;
+            let tick_pos_offs = tick_pos + self.view_offset;
 
             // bind before rendering
             self.dv_handles_vao.bind();
@@ -493,7 +496,36 @@ impl Renderer for DataViewRenderer {
                 nav.zoom_ticks_smoothed
             };
 
-            let tick_pos_offs = tick_pos;
+            let (is_playing, view_offset) = {
+                let playback_manager = self.playback_manager.lock().unwrap();
+                let mut view_offset = self.last_view_offset;
+                if playback_manager.playing && !self.started_playing {
+                    let nav = self.navigation.lock().unwrap();
+                    view_offset = nav.tick_pos_smoothed - playback_manager.playback_start_pos as f32;
+                    self.last_view_offset = view_offset;
+                    self.last_zoom = zoom_ticks;
+                    self.started_playing = true;
+                } else if !playback_manager.playing {
+                    self.started_playing = false;
+                    self.last_view_offset = 0.0;
+                }
+
+                view_offset = if self.last_zoom > 0.0 {
+                    view_offset * (zoom_ticks / self.last_zoom)
+                } else {
+                    view_offset
+                };
+
+                let autoscroll = {
+                    let view_settings = self.view_settings.lock().unwrap();
+                    view_settings.pr_autoscroll
+                };
+                
+                (playback_manager.playing, if autoscroll { view_offset } else { 0.0 })
+            };
+
+            self.view_offset = view_offset;
+            let tick_pos_offs = tick_pos + self.view_offset;
 
             // RENDER BARS
             {

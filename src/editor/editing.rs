@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::midi::events::note::Note;
+use crate::{editor::util::{MIDITick, SignedMIDITick}, midi::events::note::Note};
 
 pub mod note_editing;
 pub mod meta_editing;
@@ -11,14 +11,15 @@ pub mod data_editing;
 /// Contains information about what notes were copied
 #[derive(Default)]
 pub struct SharedClipboard {
-    notes_clipboard_map: HashMap<u16, Vec<Note>>
+    notes_clipboard_map: HashMap<u16, Vec<Note>>,
+    pub offset_from_playhead: SignedMIDITick,
 }
 
 impl SharedClipboard {
     /// This will override the current clipboard.
-    pub fn move_notes_to_clipboard(&mut self, notes: Vec<Note>, track: u16) {
+    pub fn move_notes_to_clipboard(&mut self, notes: Vec<Note>, track: u16, clear_clipboard: bool) {
         let clipboard_map = &mut self.notes_clipboard_map;
-        clipboard_map.clear();
+        if clear_clipboard { clipboard_map.clear(); }
         clipboard_map.insert(track, notes);
     }
 
@@ -39,6 +40,7 @@ impl SharedClipboard {
         for (&track, notes) in self.notes_clipboard_map.iter() {
             retrieved.push((track, notes.clone()));
         }
+        retrieved.sort_by_key(|t| t.0);
         retrieved
     }
     
@@ -49,6 +51,19 @@ impl SharedClipboard {
     pub fn is_clipboard_empty(&self) -> bool {
         self.notes_clipboard_map.is_empty()
     }
+
+    pub fn get_clipboard_start_tick(&self) -> MIDITick {
+        let mut start_tick = MIDITick::MAX;
+
+        for (_, notes) in self.notes_clipboard_map.iter() {
+            let first_note_tick = (*notes).first().unwrap().start();
+            if first_note_tick <= start_tick {
+                start_tick = first_note_tick;
+            }
+        }
+
+        start_tick
+    }
 }
 
 #[derive(Default)]
@@ -57,6 +72,12 @@ pub struct SharedSelectedNotes {
 }
 
 impl SharedSelectedNotes {
+    pub fn get_active_selected_tracks(&self) -> Vec<u16> {
+        let mut tracks: Vec<u16> = self.selected_notes_hash.keys().map(|i| *i).collect();
+        tracks.sort();
+        tracks
+    }
+
     pub fn get_selected_ids_in_track(&self, track: u16) -> Option<&Vec<usize>> {
         self.selected_notes_hash.get(&track)
     }

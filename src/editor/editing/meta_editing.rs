@@ -1,6 +1,24 @@
-use eframe::egui::{self, RichText};
+use eframe::egui;
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::*, names::DIALOG_NAME_INSERT_META}}, editor::{actions::{EditorAction, EditorActions}, midi_bar_cacher::BarCacher, tempo_map::TempoMap, util::{MIDITick, tempo_as_bytes}}, midi::events::meta_event::{MetaEvent, MetaEventType}};
+use crate::{
+    app::{
+        custom_widgets::{NumberField, NumericField},
+        ui::dialog::{
+            flags::*,
+            names::DIALOG_NAME_INSERT_META,
+            Dialog,
+            DialogAction,
+            DialogActionButtons,
+        },
+    },
+    editor::{
+        actions::{EditorAction, EditorActions},
+        midi_bar_cacher::BarCacher,
+        tempo_map::TempoMap,
+        util::{tempo_as_bytes, MIDITick},
+    },
+    midi::events::meta_event::{MetaEvent, MetaEventType},
+};
 
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLock}};
 

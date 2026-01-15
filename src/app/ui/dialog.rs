@@ -22,6 +22,7 @@ pub mod names {
     pub const DIALOG_NAME_EDITOR_INFO: &'static str = "EditorInfo";
     pub const DIALOG_NAME_PLUGIN_DIALOG: &'static str = "LuaPluginDialog";
     pub const DIALOG_NAME_PLUGIN_ERROR_DIALOG: &'static str = "LuaPluginErrorDialog";
+    pub const DIALOG_NAME_FILTER_CHANNELS: &'static str = "FilterChannels";
 }
 
 pub enum DialogAction {
@@ -44,7 +45,7 @@ use flags::*;
 pub trait Dialog: AsAny {
     /// Called before the dialog is shown.
     /// If initialization was unsuccessful, the resulting [Err] will contain the message explaining why it failed.
-    fn init_dialog(&mut self, _: Vec<Box<dyn Any>>) -> Result<(), &'static str> { Ok(()) }
+    fn init_dialog(&mut self, args: Vec<Box<dyn Any>>) -> Result<(), &'static str> { Ok(()) }
     
     // fn draw(&mut self, ctx: &egui::Context, image_resources: &ImageResources) -> Option<DialogAction>;
     fn draw(&mut self, ui: &mut Ui, image_resources: &ImageResources) -> Option<DialogAction>;

@@ -1,6 +1,19 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
 
-use crate::{app::{main_window::{EditorTool, EditorToolSettings}, view_settings::{VS_PianoRoll_DataViewState, ViewSettings}}, editor::{actions::{EditorAction, EditorActions}, navigation::PianoRollNavigation, util::MIDITick}, midi::{events::channel_event::ChannelEvent, midi_track::MIDITrack}};
+use crate::{
+    app::{
+        main_window::{EditorTool, EditorToolSettings},
+        view_settings::{VS_PianoRoll_DataViewState, ViewSettings},
+    },
+    editor::{
+        actions::{EditorAction, EditorActions},
+        navigation::PianoRollNavigation,
+        util::MIDITick,
+    },
+    midi::{
+        midi_track::MIDITrack,
+    },
+};
 
 pub mod data_edit_flags {
     pub const DATA_EDIT_FLAGS_NONE: u16 = 0x0;

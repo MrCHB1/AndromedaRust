@@ -7,6 +7,8 @@ mod editor;
 mod audio;
 mod util;
 
+use std::{panic, sync::Mutex};
+
 use crate::app::main_window::MainWindow;
 
 #[macro_export]
@@ -16,7 +18,31 @@ macro_rules! deprecated {
     }};
 }
 
+static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+fn make_panic_hook() {
+    panic::set_hook(Box::new(|panic_info| {
+        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown panic".to_string()
+        };
+
+        let location = panic_info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        *LAST_PANIC.lock().unwrap() = Some(format!("Panic at {}\n{}", location, msg));
+    }));
+}
+
 fn main() -> eframe::Result {
+    dotenvy::dotenv().ok();
+    make_panic_hook();
+    
     let mut native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
         viewport: eframe::egui::ViewportBuilder::default()

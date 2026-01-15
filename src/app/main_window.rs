@@ -1,10 +1,8 @@
 // abstraction is NEEDED!!
 use crate::{
-    app::{
-        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, 
-        audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, 
-        editor::{
-            edit_functions::{EFChopDialog, EFGlueDialog}, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioEngineType, ESAudioSettings, ESGeneralSettings, ESSettingsWindow, PR_KEYBOARD_WIDTH, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}, util::{system_stats::SystemStats, timer::Timer}};
+    LAST_PANIC, app::{
+        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog, selection_dialogs::filter_channels::FilterChannelsDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, editor::{
+            edit_functions::{EFChopDialog, EFGlueDialog}, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioEngineType, ESAudioSettings, ESGeneralSettings, ESSettingsWindow, PR_KEYBOARD_WIDTH, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}, util::{send_discord_webhook_crash_message, system_stats::SystemStats, timer::Timer}};
 use crate::editor::editing::{
     meta_editing::{MetaEditing, MetaEventInsertDialog},
     note_editing::{NoteEditing, note_edit_flags::*},
@@ -36,7 +34,7 @@ use crate::{
 };
 use eframe::glow;
 use std::{
-    cell::RefCell, collections::HashMap, fs, path::{Path, PathBuf}, rc::Rc, sync::{Arc, LazyLock, Mutex, RwLock}, time::Instant
+    cell::RefCell, collections::HashMap, fs, panic::{AssertUnwindSafe, catch_unwind}, path::{Path, PathBuf}, rc::Rc, sync::{Arc, LazyLock, Mutex, RwLock}, time::Instant
 };
 
 pub static PLUGIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| path_rel_to_abs("./assets/plugins".into()));
@@ -193,8 +191,11 @@ pub struct MainWindow {
     context_menu_shown: bool,
 
     // ==== OTHER ====
+    last_playhead_frac: f32,
+    last_is_playing: bool,
     sys_stats: SystemStats,
-    timer: Timer
+    timer: Timer,
+    has_crashed: bool,
 }
 
 impl MainWindow {
@@ -205,9 +206,11 @@ impl MainWindow {
             MIDIDevices::new().unwrap()
         )));
 
-        s.kdmapi = Some(Arc::new(Mutex::new(
-            KDMAPI::new()
-        )));
+        s.kdmapi = Some(Arc::new(Mutex::new({
+            let mut kdmapi = KDMAPI::new();
+            kdmapi.init();
+            kdmapi
+        })));
 
         // initialize settings
         s.settings = vec![
@@ -384,6 +387,10 @@ impl MainWindow {
                 Box::new(plugin_dialog)
             }));
         }
+
+        dialog_manager.register_dialog(DIALOG_NAME_FILTER_CHANNELS, Box::new(move || {
+            Box::new(FilterChannelsDialog::default())
+        }));
     }
 
     fn import_midi_file(&mut self) {
@@ -494,6 +501,11 @@ impl MainWindow {
         }
     }
 
+    fn get_ppq(&self) -> u16 {
+        let project_manager = self.project_manager.read().unwrap();
+        project_manager.get_ppq()
+    }
+
     fn init_view_settings(&mut self) {
         let mut view_settings = ViewSettings::default();
         view_settings.pr_curr_track.on_change = Some(Box::new(|| {
@@ -585,8 +597,29 @@ impl MainWindow {
             let editor_tool = &self.editor_tool;
             let render_manager = self.render_manager.as_ref().unwrap();
             // self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.editor_actions, &self.toolbar_settings)));
-            let note_editing = NoteEditing::new(tracks, nav, editor_tool, &self.editor_actions, &self.toolbar_settings, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.shared_clipboard, &self.shared_selected_notes);
-            let track_editing = TrackEditing::new(&self.project_manager, &self.editor_tool, &self.editor_actions, &self.nav.as_ref().unwrap(), self.track_view_nav.as_ref().unwrap(), self.view_settings.as_ref().unwrap(), &self.shared_selected_notes);
+            let note_editing = NoteEditing::new(
+                tracks,
+                nav,
+                editor_tool,
+                &self.editor_actions,
+                &self.toolbar_settings,
+                render_manager,
+                self.data_view_renderer.as_ref().unwrap(),
+                &self.shared_clipboard,
+                &self.shared_selected_notes
+            );
+
+            let track_editing = TrackEditing::new(
+                &self.project_manager,
+                &self.editor_tool,
+                &self.editor_actions,
+                &self.nav.as_ref().unwrap(),
+                self.track_view_nav.as_ref().unwrap(),
+                self.view_settings.as_ref().unwrap(),
+                &self.shared_clipboard,
+                &self.shared_selected_notes,
+                &self.playhead
+            );
 
             self.note_editing = Arc::new(Mutex::new(note_editing));
             self.meta_editing = Arc::new(Mutex::new(MetaEditing::new(metas, &self.bar_cacher, &self.editor_actions, tempo_map)));
@@ -621,6 +654,19 @@ impl MainWindow {
             ("Copy".into(), MenuItem::MenuButtonEnabled(Some(Box::new(|mw| { mw.request_editing_copy(); })), Box::new(|mw| { mw.can_copy() }))),
             ("Cut".into(), MenuItem::MenuButtonEnabled(Some(Box::new(|mw| { mw.request_editing_cut(); })), Box::new(|mw| { mw.can_copy() }))),
             ("Paste".into(), MenuItem::MenuButtonEnabled(Some(Box::new(|mw| { mw.request_editing_paste(); })), Box::new(|mw| { mw.can_paste() }))),
+            ("".into(), MenuItem::Separator),
+            ("Select...".into(), MenuItem::SubMenu(vec![
+                ("Filter Selection...".into(), MenuItem::SubMenu(vec![
+                    ("Filter channnels".into(), MenuItem::MenuButtonEnabled(
+                        Some(Box::new(|mw| {
+                            mw.filter_selection_channels()
+                        })), Box::new(|mw| {
+                            let sel = mw.shared_selected_notes.read().unwrap();
+                            sel.is_any_note_selected()
+                        }))
+                    )
+                ]))
+            ]))
         ]);
         menu_bar.add_menu("Options", vec![
             ("Preferences...".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("EditorSettings"); }))))
@@ -864,6 +910,17 @@ impl MainWindow {
         let curr_track = self.get_current_track().unwrap();
         let mut note_editing = self.note_editing.lock().unwrap();
         note_editing.paste_notes(curr_track);
+    }
+
+    fn filter_selection_channels(&mut self) {
+        let mut dialog_manager = self.dialog_manager.borrow_mut();
+        let shared_selected_notes = self.shared_selected_notes.clone();
+        let note_editing = self.note_editing.clone();
+        
+        dialog_manager.open_dialog_by_name(DIALOG_NAME_FILTER_CHANNELS, vec![
+            Box::new(shared_selected_notes),
+            Box::new(note_editing)
+        ]);
     }
 
     fn insert_meta(&mut self, meta_type: MetaEventType) {
@@ -1583,36 +1640,602 @@ impl MainWindow {
         self.update_smoothed_values(ctx);
     }
 
+    fn draw_select_box(&mut self, ui: &mut Ui, callback: PaintCallback) {
+        let render_type = {
+            let render_manager = self.render_manager.as_ref().unwrap();
+            let rt = render_manager.lock().unwrap();
+            let rt = rt.get_render_type();
+            *rt
+        };
+
+        ui.painter().add(callback);
+
+        let (draw, is_eraser, has_selected_in_trackview, (tl, br)) = match render_type {
+            RenderType::PianoRoll => {
+                let note_editing = self.note_editing.lock().unwrap();
+
+                if note_editing.get_can_draw_selection_box() {
+                    let (tl, br) = note_editing.get_selection_range_ui(ui);
+                    
+                    let is_eraser = {
+                        let editor_tool = self.editor_tool.try_borrow().unwrap();
+                        editor_tool.get_tool() == EditorTool::Eraser
+                    };
+                    (true, is_eraser, false, (tl, br))
+                } else {
+                    (false, false, false, ((0.,0.),(0.,0.)))
+                }
+            },
+            RenderType::TrackView => {
+                let track_editing = self.track_editing.lock().unwrap();
+
+                let (tl, br) = track_editing.get_selection_range_ui(ui);
+                (track_editing.get_can_draw_selection_box() || track_editing.has_selection, false, track_editing.has_selection, (tl, br))
+            }
+        };
+
+        if !draw { return; }
+
+        let rect = egui::Rect::from_min_max(
+            egui::Pos2 { x: tl.0, y: tl.1 },
+            egui::Pos2 { x: br.0, y: br.1 },
+        );
+
+        // Draw selection box with stylish semi-transparent fill and border
+        let (fill_color, stroke_color) = if is_eraser {
+            (Color32::from_rgba_unmultiplied(255, 50, 50, 40), Color32::from_rgb(255, 80, 80))
+        } else {
+            (Color32::from_rgba_unmultiplied(100, 150, 255, 30), Color32::from_rgb(120, 180, 255))
+        };
+        
+        if has_selected_in_trackview {
+            ui.painter().rect_stroke(
+                rect,
+                0.0,
+                Stroke {
+                    width: 1.0, color: Color32::WHITE
+                },
+                egui::StrokeKind::Middle
+            );
+        } else {
+            ui.painter().rect(
+                rect,
+                2.0,
+                fill_color,
+                Stroke {
+                    width: 1.5,
+                    color: stroke_color,
+                },
+                egui::StrokeKind::Middle,
+            );
+        }
+    }
+
+    fn draw_playhead_line(&mut self, rect: Rect, ui: &mut Ui) {
+        
+        let mut playhead_pos = {
+            let autoscroll = {
+                let view_settings = self.view_settings.as_ref().unwrap().lock().unwrap();
+                view_settings.pr_autoscroll
+            };
+
+            let playhead_pos = {
+                if autoscroll {
+                    let playhead = self.playhead.borrow();
+                    
+                    playhead.start_tick as f32 - if self.is_on_track_view() {
+                        let nav = self.track_view_nav.as_ref().unwrap().lock().unwrap();
+                        nav.tick_pos_smoothed
+                    } else {
+                        let nav = self.nav.as_ref().unwrap().lock().unwrap();
+                        nav.tick_pos_smoothed
+                    }
+
+                } else {
+                    self.get_playhead_pos(true)
+                }
+            };
+
+            let (min_tick, max_tick) = self.get_view_tick_range();
+            let is_playing = self.is_playing();
+
+            let mut playhead_pos = playhead_pos / (max_tick as f32 - min_tick as f32);
+
+            if is_playing && autoscroll {
+                if is_playing != self.last_is_playing {
+                    self.last_playhead_frac = playhead_pos;
+                } else {
+                    playhead_pos = self.last_playhead_frac;
+                }
+            }
+
+            self.last_is_playing = self.is_playing();
+            playhead_pos
+        };
+
+        // playhead line
+        if playhead_pos > 0.0 && playhead_pos < 1.0 {
+            let keyboard_width = PR_KEYBOARD_WIDTH / rect.width();
+            if !self.is_on_track_view() { playhead_pos = playhead_pos * (1.0 - keyboard_width) + keyboard_width; }
+            playhead_pos = playhead_pos * rect.width() + rect.left();
+            ui.painter().add(
+                Shape::line_segment(
+                    [
+                        Pos2 { x: playhead_pos, y: rect.min.y },
+                        Pos2 { x: playhead_pos, y: rect.max.y }
+                    ],
+                    Stroke::new(1.0, Color32::WHITE)
+                )
+            );
+        }
+    }
+
+    fn is_playing(&self) -> bool {
+        let playback_manager = self.playback_manager.as_ref().unwrap().lock().unwrap();
+        playback_manager.playing
+    }
+
+    fn is_on_track_view(&self) -> bool {
+        let render_manager = self.render_manager.as_ref().unwrap().lock().unwrap();
+        render_manager.get_render_type() == &RenderType::TrackView
+    }
+
+    fn allocate_for_keyboard(&self, ui: &mut Ui) {
+        if self.is_on_track_view() { return; }
+        ui.allocate_exact_size([PR_KEYBOARD_WIDTH, 1.0].into(), egui::Sense::hover());
+    }
+
+    fn draw_ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let any_window_opened = self.is_any_dialog_shown();
+
+        // initialize gl if not initialized already
+        if self.gl.is_none() {
+            if let Some(gl) = frame.gl() {
+                self.gl = Some(gl.clone());
+                self.on_gl_init(ctx);
+            }
+        }
+
+        if let Some(playback_manager) = self.playback_manager.as_ref() {
+            let playback_manager = playback_manager.lock().unwrap();
+            if playback_manager.playing {
+                ctx.request_repaint();
+            }
+        };
+
+        // i have no idea where to put this statement lol
+        {
+            let mut project_manager = self.project_manager.write().unwrap();
+            if project_manager.ppq_changed {
+                let ppq = project_manager.get_ppq();
+                self.update_global_ppq(ppq);
+                project_manager.ppq_changed = false;
+            }
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let menu_bar = {
+                let mb = self.menu_bar.as_mut().unwrap();
+                mb.clone()
+            };
+
+            // Menu Bar at top
+            {
+                let mut menu_bar = menu_bar.write().unwrap();
+                menu_bar.draw_menu(self, ctx);
+                self.mouse_over_ui |= ctx.is_pointer_over_area();
+            }
+
+            self.draw_process_stats(ctx, ui);
+
+            // editor tool stuff
+            self.draw_editor_tools(ctx);
+            self.draw_playback_buttons(ctx);
+
+            // draw side bar buttons
+            egui::SidePanel::right("editor_side_controls")
+                .exact_width(40.0)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    self.draw_sidebar(ctx, ui);
+                    self.mouse_over_ui |= ui.ui_contains_pointer();
+                });
+
+            // Meta event viewer on the left
+            self.draw_meta_event_view(ctx, ui);
+            self.mouse_over_ui |= ctx.is_pointer_over_area();
+
+            self.draw_playhead_ui(ctx);
+
+            {
+                let (dataview_state, _dataview_size) = if let Some(view_settings) = self.view_settings.as_ref() {
+                    let vs = view_settings.lock().unwrap();
+                    (vs.pr_dataview_state, vs.pr_dataview_size)
+                } else {
+                    (VS_PianoRoll_DataViewState::Hidden, 200.0)
+                };
+
+                self.draw_scroll_navigation(ctx, ui);
+
+                if dataview_state != VS_PianoRoll_DataViewState::Hidden && !self.is_on_track_view() {
+                    egui::TopBottomPanel::bottom("data_viewer")
+                        // .resizable(true)
+                        // .default_height(_dataview_size)
+                        .show(ctx, |ui| {
+                            // if let Some(view_settings) = self.view_settings.as_mut() {
+                            //     let mut vs = view_settings.lock().unwrap();
+                            //     vs.pr_dataview_size = ui.min_rect().height();
+                            // };
+                            
+                            ui.horizontal(|ui| {
+                                self.allocate_for_keyboard(ui);
+
+                                ui.vertical(|ui| {
+                                    let mut mouse_over_ui = false;
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Property");
+                                        egui::ComboBox::from_label("")
+                                            .selected_text(dataview_state.to_string())
+                                            .show_ui(ui, |ui| {
+                                                let view_settings = self.view_settings.as_mut().unwrap();
+                                                let mut view_settings = view_settings.lock().unwrap();
+
+                                                ui.selectable_value(&mut view_settings.pr_dataview_state, VS_PianoRoll_DataViewState::NoteVelocities, "Velocity");
+                                                ui.selectable_value(&mut view_settings.pr_dataview_state, VS_PianoRoll_DataViewState::PitchBend, "Pitch Bend");
+                                            });
+                                    });
+
+                                    mouse_over_ui |= ui.ui_contains_pointer();
+                                    self.draw_data_viewer(ctx, ui, mouse_over_ui, any_window_opened);
+                                });
+
+                                self.mouse_over_ui |= ui.ui_contains_pointer();
+                            });
+
+                            self.mouse_over_ui |= ui.ui_contains_pointer();
+                    });
+                }
+            }
+
+            // piano roll / track view rendering
+            egui::CentralPanel::default().show(ctx, |ui| {
+                self.draw(ctx, ui, self.mouse_over_ui, any_window_opened);
+                self.mouse_over_ui = false;
+            });
+        });
+
+        if self.show_override_popup {
+            self.show_note_properties_popup = false;
+            egui::Window::new(RichText::new("Confirmation").size(10.0))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(RichText::new(self.override_popup_msg).size(15.0));
+                    ui.horizontal(|ui| {
+                        if ui.button("Yup").clicked() {
+                            if let Some(func) = self.override_popup_func.take() {
+                                func(self, ctx)
+                            }
+                            self.show_override_popup = false;
+                        }
+
+                        if ui.button("Nah").clicked() {
+                            self.show_override_popup = false;
+                        }
+                        self.mouse_over_ui |= ui.ui_contains_pointer();
+                    });
+                    self.mouse_over_ui |= ui.ui_contains_pointer();
+                });
+        }
+
+        {
+            let img_resources = self.image_resources.as_ref().unwrap();
+            self.dialog_drawer.update_dialogs(ctx, img_resources);
+        }
+    }
+
+    fn draw_editor_tools(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("editor_bar_top").show(ctx, |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                ui.spacing_mut().button_padding = egui::vec2(1.0, 1.0);
+
+                {
+                    let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
+
+                    if ui.add({
+                        let images = self.image_resources.as_ref().unwrap();
+                        egui::ImageButton::new(&*images.get_image_handle(String::from("pencil"))).selected(editor_tool.curr_tool == EditorTool::Pencil)
+                    }).clicked() {
+                        editor_tool.switch_tool(EditorTool::Pencil);
+                        self.is_waiting_for_no_ui_hover = false;
+                    }
+
+                    if ui.add({
+                        let images = self.image_resources.as_ref().unwrap();
+                        egui::ImageButton::new(&*images.get_image_handle(String::from("eraser"))).selected(editor_tool.curr_tool == EditorTool::Eraser)
+                    }).clicked() {
+                        // let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
+                        editor_tool.switch_tool(EditorTool::Eraser);
+                        self.is_waiting_for_no_ui_hover = false;
+                    }
+
+                    if ui.add({
+                        let images = self.image_resources.as_ref().unwrap();
+                        egui::ImageButton::new(&*images.get_image_handle(String::from("select"))).selected(editor_tool.curr_tool == EditorTool::Selector)
+                    }).clicked() {
+                        // let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
+                        editor_tool.switch_tool(EditorTool::Selector);
+                        self.is_waiting_for_no_ui_hover = false;
+                    }
+                }
+
+                ui.separator();
+                ui.menu_button("Note Snap", |ui| {
+                    {
+                        let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
+                        for (ratio, name) in SNAP_MAPPINGS {
+                            if ui
+                                .checkbox(&mut (ratio == editor_tool.snap_ratio), name)
+                                .clicked()
+                            {
+                                editor_tool.snap_ratio = ratio;
+                            }
+                        }
+                    }
+                    self.mouse_over_ui |= ui.ui_contains_pointer();
+                });
+                ui.separator();
+                // note gate and velocity
+                {
+                    let mut tbs = self.toolbar_settings.try_borrow_mut().unwrap();
+                    tbs.note_gate.show("Gate", ui, Some(30.0));
+                    tbs.note_velocity.show("Velo", ui, Some(30.0));
+                    tbs.note_channel.show("Chan", ui, Some(30.0));
+                }
+
+                ui.separator();
+                
+                // workaround :/
+                let mut tracks_need_update = false;
+                let mut track_to_change_to = 0;
+
+                if let Some(vs) = self.view_settings.as_ref() {
+                    let mut vs = vs.lock().unwrap();
+                    ui.label("View Track");
+                    egui::ComboBox::from_id_salt("onion_track")
+                        .selected_text(format!("{}", vs.pr_onion_state.to_string()))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::NoOnion, "No tracks");
+                            ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewAll, "All tracks");
+                            ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewNext, "Next track");
+                            ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewPrevious, "Previous track");
+                            self.mouse_over_ui |= ui.ui_contains_pointer();
+                        });
+                    ui.label("Onion Color");
+                    egui::ComboBox::from_id_salt("onion_coloring")
+                        .selected_text(format!("{}", vs.pr_onion_coloring.to_string()))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut vs.pr_onion_coloring, VS_PianoRoll_OnionColoring::GrayedOut, "Grayed Out");
+                            ui.selectable_value(&mut vs.pr_onion_coloring, VS_PianoRoll_OnionColoring::PartialColor, "Partial Color");
+                            ui.selectable_value(&mut vs.pr_onion_coloring, VS_PianoRoll_OnionColoring::FullColor, "Full Color");
+                            self.mouse_over_ui |= ui.ui_contains_pointer();
+                        });
+                    vs.pr_curr_track.show("Curr. Track", ui, Some(50.0));
+                    if vs.pr_curr_track.changed() {
+                        println!("Track changed");
+                        tracks_need_update = true;
+                        track_to_change_to = vs.pr_curr_track.value();
+                    }
+                    ui.separator();
+                }
+
+                if tracks_need_update {
+                    {
+                        let mut project_manager = self.project_manager.write().unwrap();
+                        project_manager.get_project_data_mut().validate_tracks(track_to_change_to);
+                    }
+                    // let mut project_data = self.project_data.try_borrow_mut().unwrap();
+                    // project_data.validate_tracks(track_to_change_to);
+                    
+                    if let Some(nav) = self.nav.as_ref() {
+                        let mut nav = nav.lock().unwrap();
+                        nav.curr_track = track_to_change_to;
+                    }
+                }
+
+                {
+                    let mut colors = self.note_colors.lock().unwrap();
+                    let color_indexing = colors.get_index_type_mut();
+                    ui.label("Color notes by");
+                    egui::ComboBox::from_id_salt("color_notes_by")
+                        .selected_text(format!("{}", color_indexing.to_string()))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(color_indexing, NoteColorIndexing::Track, "Track");
+                            ui.selectable_value(color_indexing, NoteColorIndexing::Channel, "Channel");
+                            ui.selectable_value(color_indexing, NoteColorIndexing::ChannelTrack, "Track & Channel");
+                            self.mouse_over_ui |= ui.ui_contains_pointer();
+                        });
+                    ui.separator();
+                }
+
+                // zoom buttons, temporarily text
+                if ui.add({
+                    let images = self.image_resources.as_ref().unwrap();
+                    egui::ImageButton::new(&*images.get_image_handle(String::from("zoom_x_in"))).frame(false)
+                }).clicked() {
+                    self.curr_view_zoom_in_by(Some(1.0 / GLOBAL_ZOOM_FACTOR), None);
+                }
+
+                if ui.add({
+                    let images = self.image_resources.as_ref().unwrap();
+                    egui::ImageButton::new(&*images.get_image_handle(String::from("zoom_x_out"))).frame(false)
+                }).clicked() {
+                    self.curr_view_zoom_in_by(Some(GLOBAL_ZOOM_FACTOR), None);
+                }
+
+                ui.separator();
+
+                if ui.add({
+                    let images = self.image_resources.as_ref().unwrap();
+                    egui::ImageButton::new(&*images.get_image_handle(String::from("zoom_y_in"))).frame(false)
+                }).clicked() {
+                    self.curr_view_zoom_in_by(None, Some(1.0 / GLOBAL_ZOOM_FACTOR));
+                }
+
+                if ui.add({
+                    let images = self.image_resources.as_ref().unwrap();
+                    egui::ImageButton::new(&*images.get_image_handle(String::from("zoom_y_out"))).frame(false)
+                }).clicked() {
+                    self.curr_view_zoom_in_by(None, Some(GLOBAL_ZOOM_FACTOR));
+                }
+
+                self.mouse_over_ui |= ui.ui_contains_pointer();
+            });
+            //ui.separator();
+            self.mouse_over_ui |= ui.ui_contains_pointer();
+        });
+    }
+
+    fn draw_playback_buttons(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("playback_buttons").show(ctx, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            ui.spacing_mut().button_padding = egui::vec2(1.0, 1.0);
+
+            ui.horizontal(|ui| {
+                {
+                    let ppq = self.get_ppq() as MIDITick;
+
+                    if ui.button("<-").clicked() {
+                        let mut playback_manager = self.playback_manager.as_mut().unwrap().lock().unwrap();
+                        let ticks = playback_manager.get_playback_ticks().saturating_sub(ppq);
+                        // lmao this has to be the worst way to navigate
+                        let last_play_state = playback_manager.playing;
+                        if last_play_state { playback_manager.toggle_playback(); }
+                        playback_manager.navigate_to(ticks);
+                        if last_play_state { playback_manager.toggle_playback(); }
+                    }
+
+                    if ui.button(if self.is_playing() { "||" } else { "|>" }).clicked() {
+                        let mut playback_manager = self.playback_manager.as_mut().unwrap().lock().unwrap();
+                        playback_manager.toggle_playback();
+                    }
+                    
+                    if ui.button("->").clicked() {
+                        let mut playback_manager = self.playback_manager.as_mut().unwrap().lock().unwrap();
+                        let ticks = playback_manager.get_playback_ticks().saturating_add(ppq);
+                        let last_play_state = playback_manager.playing;
+                        if last_play_state { playback_manager.toggle_playback(); }
+                        playback_manager.navigate_to(ticks);
+                        if last_play_state { playback_manager.toggle_playback(); }
+                    }
+                }
+                ui.separator();
+                ui.label("Autoscroll");
+
+                let mut view_settings = self.view_settings.as_mut().unwrap().lock().unwrap();
+                ui.checkbox(&mut view_settings.pr_autoscroll, "");
+            });
+
+            self.mouse_over_ui |= ui.ui_contains_pointer();
+        });
+    }
+
+    fn draw_playhead_ui(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("Playhead").show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                let (min_tick, max_tick) = self.get_view_tick_range();
+                self.allocate_for_keyboard(ui);
+                ui.style_mut().spacing.slider_width = ui.available_width();
+
+                let mut playhead_time = {
+                    let view_settings = self.view_settings.as_ref().unwrap().lock().unwrap();
+                    if view_settings.pr_autoscroll {
+                        let playhead = self.playhead.borrow();
+                        playhead.start_tick
+                    } else {
+                        self.get_playhead_pos(false) as MIDITick
+                    }
+                };
+
+                if ui.add(
+                    egui::Slider::new(&mut playhead_time, min_tick..=max_tick)
+                    .show_value(false)
+                    .clamping(egui::SliderClamping::Never)
+                ).changed() {
+                    let min_snap_length = {
+                        let editor_tool = self.editor_tool.try_borrow().unwrap();
+                        let snap_ratio = editor_tool.snap_ratio;
+                        if snap_ratio.0 == 0 { 1 }
+                        else {
+                            let ppq = {
+                                let project_manager = self.project_manager.read().unwrap();
+                                project_manager.get_ppq() as MIDITick
+                            };
+                            (ppq * 4 * snap_ratio.0 as MIDITick) / snap_ratio.1 as MIDITick
+                        }
+                    };
+
+                    let playhead_time = playhead_time.rounded_div(min_snap_length) * min_snap_length;
+                    self.set_playhead_pos(playhead_time);
+                    println!("{}", playhead_time);
+                }
+            });
+            self.mouse_over_ui |= ui.ui_contains_pointer();
+        });
+    }
+
     fn draw_sidebar(&mut self, _ctx: &egui::Context, ui: &mut Ui) {
+        
         let images = self.image_resources.as_ref().unwrap();
         
         {
             let mut note_editing = self.note_editing.lock().unwrap();
+            let mut track_editing = self.track_editing.lock().unwrap();
 
             let track = note_editing.get_current_track();
+            
             let has_selected = {
-                let shared_sel = note_editing.get_shared_selected_ids().read().unwrap();
+                let shared_sel = self.shared_selected_notes.read().unwrap();
                 shared_sel.is_any_note_selected()
             };
 
             if ui.add_enabled(has_selected, {
                 egui::ImageButton::new(&*images.get_image_handle(String::from("copy")))
             }).clicked() {
-                (*note_editing).copy_notes(track);
+                let is_track_view = self.is_on_track_view();
+                if is_track_view {
+                    (*track_editing).copy_notes();
+                } else {
+                    (*note_editing).copy_notes(track);
+                }
             }
 
             if ui.add_enabled(has_selected, {
                 // let images = self.image_resources.as_ref().unwrap();
                 egui::ImageButton::new(&*images.get_image_handle(String::from("cut")))
             }).clicked() {
-                (*note_editing).cut_selected_notes(track);
+                let is_track_view = self.is_on_track_view();
+                if is_track_view {
+                    (*track_editing).cut_notes();
+                } else {
+                    (*note_editing).cut_selected_notes(track);
+                }
+                
             }
 
             if ui.add_enabled(self.can_paste(), {
                 // let images = self.image_resources.as_ref().unwrap();
                 egui::ImageButton::new(&*images.get_image_handle(String::from("paste")))
             }).clicked() {
-                (*note_editing).paste_notes(track);
+                let is_track_view = self.is_on_track_view();
+                if is_track_view {
+                    (*track_editing).paste_notes(track);
+                } else {
+                    (*note_editing).paste_notes(track);
+                }
             }
         }
 
@@ -1699,32 +2322,6 @@ impl MainWindow {
                     }
                 }
             }
-            /*if let Some(nav) = self.nav.as_mut() {
-                let latest_note_start = {
-                    let notes = self.note_editing.lock().unwrap();
-                    notes.latest_note_start
-                };
-
-                let mut nav = nav.lock().unwrap();
-                let mut tick_pos = nav.tick_pos;
-                let mut tick_end = nav.tick_pos + nav.zoom_ticks;
-
-                if ui.add(
-                    DoubleSlider::new(&mut tick_pos, &mut tick_end, 0.0..=(latest_note_start as f32))
-                    .width(ui.available_width())
-                    .separation_distance(480.0)
-                ).changed() {
-                    {
-                        let mut rend = self.render_manager.as_ref().unwrap().lock().unwrap();
-                        
-                        nav.change_tick_pos(tick_pos, |time| {
-                            rend.get_active_renderer().lock().unwrap().time_changed(time as u64);
-                        });
-                    }
-                    nav.zoom_ticks = tick_end - tick_pos;
-                }
-
-            }*/
 
             self.mouse_over_ui |= ui.ui_contains_pointer();
         });
@@ -1747,6 +2344,8 @@ impl MainWindow {
                 ).changed() {
                     nav.track_pos = track_pos;
                 }
+
+                self.mouse_over_ui |= ui.ui_contains_pointer();
             });
         }
     }
@@ -1788,8 +2387,8 @@ impl MainWindow {
         };
 
         ui.painter().add(callback);
-
         self.draw_data_view_edit_line(ctx, ui);
+        self.mouse_over_ui |= mouse_over_ui;
     }
 
     fn draw_data_view_edit_line(&mut self, ctx: &egui::Context, ui: &mut Ui) {
@@ -1968,450 +2567,44 @@ impl MainWindow {
             });
         });
     }
-
-    fn draw_select_box(&mut self, ui: &mut Ui, callback: PaintCallback) {
-        let render_type = {
-            let render_manager = self.render_manager.as_ref().unwrap();
-            let rt = render_manager.lock().unwrap();
-            let rt = rt.get_render_type();
-            *rt
-        };
-
-        ui.painter().add(callback);
-
-        let (draw, is_eraser, has_selected_in_trackview, (tl, br)) = match render_type {
-            RenderType::PianoRoll => {
-                let note_editing = self.note_editing.lock().unwrap();
-
-                if note_editing.get_can_draw_selection_box() {
-                    let (tl, br) = note_editing.get_selection_range_ui(ui);
-                    
-                    let is_eraser = {
-                        let editor_tool = self.editor_tool.try_borrow().unwrap();
-                        editor_tool.get_tool() == EditorTool::Eraser
-                    };
-                    (true, is_eraser, false, (tl, br))
-                } else {
-                    (false, false, false, ((0.,0.),(0.,0.)))
-                }
-            },
-            RenderType::TrackView => {
-                let track_editing = self.track_editing.lock().unwrap();
-
-                let (tl, br) = track_editing.get_selection_range_ui(ui);
-                (track_editing.get_can_draw_selection_box() || track_editing.has_selection, false, track_editing.has_selection, (tl, br))
-            }
-        };
-
-        if !draw { return; }
-
-        let rect = egui::Rect::from_min_max(
-            egui::Pos2 { x: tl.0, y: tl.1 },
-            egui::Pos2 { x: br.0, y: br.1 },
-        );
-
-        // Draw selection box with stylish semi-transparent fill and border
-        let (fill_color, stroke_color) = if is_eraser {
-            (Color32::from_rgba_unmultiplied(255, 50, 50, 40), Color32::from_rgb(255, 80, 80))
-        } else {
-            (Color32::from_rgba_unmultiplied(100, 150, 255, 30), Color32::from_rgb(120, 180, 255))
-        };
-        
-        if has_selected_in_trackview {
-            ui.painter().rect_stroke(
-                rect,
-                0.0,
-                Stroke {
-                    width: 1.0, color: Color32::WHITE
-                },
-                egui::StrokeKind::Middle
-            );
-        } else {
-            ui.painter().rect(
-                rect,
-                2.0,
-                fill_color,
-                Stroke {
-                    width: 1.5,
-                    color: stroke_color,
-                },
-                egui::StrokeKind::Middle,
-            );
-        }
-    }
-
-    fn draw_playhead_line(&mut self, rect: Rect, ui: &mut Ui) {
-        let mut playhead_pos = {
-            let playhead_pos = self.get_playhead_pos(true);
-            let (min_tick, max_tick) = self.get_view_tick_range();
-            playhead_pos / (max_tick as f32 - min_tick as f32)
-        };
-
-        // playhead line
-        if playhead_pos > 0.0 && playhead_pos < 1.0 {
-            let keyboard_width = PR_KEYBOARD_WIDTH / rect.width();
-            if !self.is_on_track_view() { playhead_pos = playhead_pos * (1.0 - keyboard_width) + keyboard_width; }
-            playhead_pos = playhead_pos * rect.width() + rect.left();
-            ui.painter().add(
-                Shape::line_segment(
-                    [
-                        Pos2 { x: playhead_pos, y: rect.min.y },
-                        Pos2 { x: playhead_pos, y: rect.max.y }
-                    ],
-                    Stroke::new(1.0, Color32::WHITE)
-                )
-            );
-        }
-    }
-
-    fn is_on_track_view(&self) -> bool {
-        let render_manager = self.render_manager.as_ref().unwrap().lock().unwrap();
-        render_manager.get_render_type() == &RenderType::TrackView
-    }
-
-    fn allocate_for_keyboard(&self, ui: &mut Ui) {
-        if self.is_on_track_view() { return; }
-        ui.allocate_exact_size([PR_KEYBOARD_WIDTH, 1.0].into(), egui::Sense::hover());
-    }
 }
 
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let any_window_opened = self.is_any_dialog_shown();
-
-        // initialize gl if not initialized already
-        if self.gl.is_none() {
-            if let Some(gl) = frame.gl() {
-                self.gl = Some(gl.clone());
-                self.on_gl_init(ctx);
-            }
+        if self.has_crashed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
         }
 
-        if let Some(playback_manager) = self.playback_manager.as_ref() {
-            let playback_manager = playback_manager.lock().unwrap();
-            if playback_manager.playing {
-                ctx.request_repaint();
-            }
-        };
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.draw_ui(ctx, frame);
+            panic!("Test");
+        }));
 
-        // i have no idea where to put this statement lol
-        {
-            let mut project_manager = self.project_manager.write().unwrap();
-            if project_manager.ppq_changed {
-                let ppq = project_manager.get_ppq();
-                self.update_global_ppq(ppq);
-                project_manager.ppq_changed = false;
-            }
-        }
+        if let Err(_) = result {
+            self.has_crashed = true;
+            
+            // show a window after andromeda unfortunately crashes :(
+            let msg = LAST_PANIC
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| "Unknown panic".to_string());
+            
+            rfd::MessageDialog::new()
+                .set_buttons(rfd::MessageButtons::Ok)
+                .set_title("Catastrophic Error")
+                .set_description(
+                    format!("A problem has occured and Andromeda needs to shut down. Sorry for the inconvenience. A report will automatically be sent to developers.
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let menu_bar = {
-                let mb = self.menu_bar.as_mut().unwrap();
-                mb.clone()
-            };
+---------- Details ----------
 
-            // Menu Bar at top
-            {
-                let mut menu_bar = menu_bar.write().unwrap();
-                menu_bar.draw_menu(self, ctx);
-                self.mouse_over_ui |= ctx.is_pointer_over_area();
-            }
+{msg}"))
+                .show();
 
-            self.draw_process_stats(ctx, ui);
-
-            // editor tool stuff
-            egui::TopBottomPanel::top("editor_bar_top").show(ctx, |ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                    ui.spacing_mut().button_padding = egui::vec2(1.0, 1.0);
-
-                    {
-                        let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
-
-                        if ui.add({
-                            let images = self.image_resources.as_ref().unwrap();
-                            egui::ImageButton::new(&*images.get_image_handle(String::from("pencil"))).selected(editor_tool.curr_tool == EditorTool::Pencil)
-                        }).clicked() {
-                            editor_tool.switch_tool(EditorTool::Pencil);
-                            self.is_waiting_for_no_ui_hover = false;
-                        }
-
-                        if ui.add({
-                            let images = self.image_resources.as_ref().unwrap();
-                            egui::ImageButton::new(&*images.get_image_handle(String::from("eraser"))).selected(editor_tool.curr_tool == EditorTool::Eraser)
-                        }).clicked() {
-                            // let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
-                            editor_tool.switch_tool(EditorTool::Eraser);
-                            self.is_waiting_for_no_ui_hover = false;
-                        }
-
-                        if ui.add({
-                            let images = self.image_resources.as_ref().unwrap();
-                            egui::ImageButton::new(&*images.get_image_handle(String::from("select"))).selected(editor_tool.curr_tool == EditorTool::Selector)
-                        }).clicked() {
-                            // let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
-                            editor_tool.switch_tool(EditorTool::Selector);
-                            self.is_waiting_for_no_ui_hover = false;
-                        }
-                    }
-
-                    ui.separator();
-                    ui.menu_button("Note Snap", |ui| {
-                        {
-                            let mut editor_tool = self.editor_tool.try_borrow_mut().unwrap();
-                            for (ratio, name) in SNAP_MAPPINGS {
-                                if ui
-                                    .checkbox(&mut (ratio == editor_tool.snap_ratio), name)
-                                    .clicked()
-                                {
-                                    editor_tool.snap_ratio = ratio;
-                                }
-                            }
-                        }
-                        self.mouse_over_ui |= ui.ui_contains_pointer();
-                    });
-                    ui.separator();
-                    // note gate and velocity
-                    {
-                        let mut tbs = self.toolbar_settings.try_borrow_mut().unwrap();
-                        tbs.note_gate.show("Gate", ui, Some(30.0));
-                        tbs.note_velocity.show("Velo", ui, Some(30.0));
-                        tbs.note_channel.show("Chan", ui, Some(30.0));
-                    }
-
-                    ui.separator();
-                    
-                    // workaround :/
-                    let mut tracks_need_update = false;
-                    let mut track_to_change_to = 0;
-
-                    if let Some(vs) = self.view_settings.as_ref() {
-                        let mut vs = vs.lock().unwrap();
-                        ui.label("View Track");
-                        egui::ComboBox::from_id_salt("onion_track")
-                            .selected_text(format!("{}", vs.pr_onion_state.to_string()))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::NoOnion, "No tracks");
-                                ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewAll, "All tracks");
-                                ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewNext, "Next track");
-                                ui.selectable_value(&mut vs.pr_onion_state, VS_PianoRoll_OnionState::ViewPrevious, "Previous track");
-                                self.mouse_over_ui |= ui.ui_contains_pointer();
-                            });
-                        ui.label("Onion Color");
-                        egui::ComboBox::from_id_salt("onion_coloring")
-                            .selected_text(format!("{}", vs.pr_onion_coloring.to_string()))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut vs.pr_onion_coloring, VS_PianoRoll_OnionColoring::GrayedOut, "Grayed Out");
-                                ui.selectable_value(&mut vs.pr_onion_coloring, VS_PianoRoll_OnionColoring::PartialColor, "Partial Color");
-                                ui.selectable_value(&mut vs.pr_onion_coloring, VS_PianoRoll_OnionColoring::FullColor, "Full Color");
-                                self.mouse_over_ui |= ui.ui_contains_pointer();
-                            });
-                        vs.pr_curr_track.show("Curr. Track", ui, Some(50.0));
-                        if vs.pr_curr_track.changed() {
-                            println!("Track changed");
-                            tracks_need_update = true;
-                            track_to_change_to = vs.pr_curr_track.value();
-                        }
-                        ui.separator();
-                    }
-
-                    if tracks_need_update {
-                        {
-                            let mut project_manager = self.project_manager.write().unwrap();
-                            project_manager.get_project_data_mut().validate_tracks(track_to_change_to);
-                        }
-                        // let mut project_data = self.project_data.try_borrow_mut().unwrap();
-                        // project_data.validate_tracks(track_to_change_to);
-                        
-                        if let Some(nav) = self.nav.as_ref() {
-                            let mut nav = nav.lock().unwrap();
-                            nav.curr_track = track_to_change_to;
-                        }
-                    }
-
-                    {
-                        let mut colors = self.note_colors.lock().unwrap();
-                        let color_indexing = colors.get_index_type_mut();
-                        ui.label("Color notes by");
-                        egui::ComboBox::from_id_salt("color_notes_by")
-                            .selected_text(format!("{}", color_indexing.to_string()))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(color_indexing, NoteColorIndexing::Track, "Track");
-                                ui.selectable_value(color_indexing, NoteColorIndexing::Channel, "Channel");
-                                ui.selectable_value(color_indexing, NoteColorIndexing::ChannelTrack, "Track & Channel");
-                                self.mouse_over_ui |= ui.ui_contains_pointer();
-                            });
-                        ui.separator();
-                    }
-
-                    // zoom buttons, temporarily text
-                    if ui.add({
-                        let images = self.image_resources.as_ref().unwrap();
-                        egui::ImageButton::new(&*images.get_image_handle(String::from("zoom_x_in"))).frame(false)
-                    }).clicked() {
-                        self.curr_view_zoom_in_by(Some(1.0 / GLOBAL_ZOOM_FACTOR), None);
-                    }
-
-                    if ui.add({
-                        let images = self.image_resources.as_ref().unwrap();
-                        egui::ImageButton::new(&*images.get_image_handle(String::from("zoom_x_out"))).frame(false)
-                    }).clicked() {
-                        self.curr_view_zoom_in_by(Some(GLOBAL_ZOOM_FACTOR), None);
-                    }
-
-                    ui.separator();
-
-                    if ui.add({
-                        let images = self.image_resources.as_ref().unwrap();
-                        egui::ImageButton::new(&*images.get_image_handle(String::from("zoom_y_in"))).frame(false)
-                    }).clicked() {
-                        self.curr_view_zoom_in_by(None, Some(1.0 / GLOBAL_ZOOM_FACTOR));
-                    }
-
-                    if ui.add({
-                        let images = self.image_resources.as_ref().unwrap();
-                        egui::ImageButton::new(&*images.get_image_handle(String::from("zoom_y_out"))).frame(false)
-                    }).clicked() {
-                        self.curr_view_zoom_in_by(None, Some(GLOBAL_ZOOM_FACTOR));
-                    }
-
-                    //int_edit_field(ui, "Gate", &mut tbs.note_gate, 1, u16::MAX.into(), Some(30.0));
-                    //int_edit_field(ui, "Velo", &mut tbs.note_velocity, 1, 127, Some(30.0));
-
-                    self.mouse_over_ui |= ui.ui_contains_pointer();
-                });
-                //ui.separator();
-                self.mouse_over_ui |= ui.ui_contains_pointer();
-            });
-
-            // draw side bar buttons
-            egui::SidePanel::right("editor_side_controls")
-                .exact_width(40.0)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    self.draw_sidebar(ctx, ui);
-                    self.mouse_over_ui |= ui.ui_contains_pointer();
-                });
-
-            // Meta event viewer on the left
-            self.draw_meta_event_view(ctx, ui);
-            self.mouse_over_ui |= ctx.is_pointer_over_area();
-
-            egui::TopBottomPanel::top("Playhead").show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let (min_tick, max_tick) = self.get_view_tick_range();
-                    self.allocate_for_keyboard(ui);
-                    ui.style_mut().spacing.slider_width = ui.available_width();
-                    // let mut playhead_time = self.playhead.start_tick;
-                    let mut playhead_time = self.get_playhead_pos(false) as MIDITick;
-                    if ui.add(
-                        egui::Slider::new(&mut playhead_time, min_tick..=max_tick)
-                        .show_value(false)
-                        .clamping(egui::SliderClamping::Never)
-                    ).changed() {
-                        let min_snap_length = {
-                            let editor_tool = self.editor_tool.try_borrow().unwrap();
-                            let snap_ratio = editor_tool.snap_ratio;
-                            if snap_ratio.0 == 0 { 1 }
-                            else {
-                                let ppq = {
-                                    let project_manager = self.project_manager.read().unwrap();
-                                    project_manager.get_ppq() as MIDITick
-                                };
-                                (ppq * 4 * snap_ratio.0 as MIDITick) / snap_ratio.1 as MIDITick
-                            }
-                        };
-
-                        let playhead_time = playhead_time.rounded_div(min_snap_length) * min_snap_length;
-                        self.set_playhead_pos(playhead_time);
-                        println!("{}", playhead_time);
-                    }
-                });
-                self.mouse_over_ui |= ui.ui_contains_pointer();
-            });
-
-            {
-                let (dataview_state, _dataview_size) = if let Some(view_settings) = self.view_settings.as_ref() {
-                    let vs = view_settings.lock().unwrap();
-                    (vs.pr_dataview_state, vs.pr_dataview_size)
-                } else {
-                    (VS_PianoRoll_DataViewState::Hidden, 0.25)
-                };
-
-                self.draw_scroll_navigation(ctx, ui);
-
-                if dataview_state != VS_PianoRoll_DataViewState::Hidden && !self.is_on_track_view() {
-                    egui::TopBottomPanel::bottom("data_viewer").show(ctx, |ui| {
-                        ui.horizontal(|ui| {
-                            self.allocate_for_keyboard(ui);
-                            ui.vertical(|ui| {
-                                //let available_width = ui.available_width();
-                                //ui.allocate_exact_size(Vec2 { x: available_width, y: 200.0 }, egui::Sense::hover());
-                                
-                                let mut mouse_over_ui = false;
-                                //egui::TopBottomPanel::top("dataview_menu").show(ctx, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label("Property");
-                                        egui::ComboBox::from_label("")
-                                            .selected_text(dataview_state.to_string())
-                                            .show_ui(ui, |ui| {
-                                                let view_settings = self.view_settings.as_mut().unwrap();
-                                                let mut view_settings = view_settings.lock().unwrap();
-
-                                                ui.selectable_value(&mut view_settings.pr_dataview_state, VS_PianoRoll_DataViewState::NoteVelocities, "Velocity");
-                                                ui.selectable_value(&mut view_settings.pr_dataview_state, VS_PianoRoll_DataViewState::PitchBend, "Pitch Bend");
-                                            });
-                                    });
-
-                                //    mouse_over_ui |= ui.ui_contains_pointer();
-                                //});
-
-                                // ui.separator();
-                                mouse_over_ui |= ui.ui_contains_pointer();
-                                self.draw_data_viewer(ctx, ui, mouse_over_ui, any_window_opened);
-                            });
-
-                            self.mouse_over_ui |= ui.ui_contains_pointer();
-                        });
-                    });
-                }
-            }
-
-            // piano roll / track view rendering
-            egui::CentralPanel::default().show(ctx, |ui| {
-                self.draw(ctx, ui, self.mouse_over_ui, any_window_opened);
-                self.mouse_over_ui = false;
-            });
-        });
-
-        if self.show_override_popup {
-            self.show_note_properties_popup = false;
-            egui::Window::new(RichText::new("Confirmation").size(10.0))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label(RichText::new(self.override_popup_msg).size(15.0));
-                    ui.horizontal(|ui| {
-                        if ui.button("Yup").clicked() {
-                            if let Some(func) = self.override_popup_func.take() {
-                                func(self, ctx)
-                            }
-                            self.show_override_popup = false;
-                        }
-
-                        if ui.button("Nah").clicked() {
-                            self.show_override_popup = false;
-                        }
-                        self.mouse_over_ui |= ui.ui_contains_pointer();
-                    });
-                    self.mouse_over_ui |= ui.ui_contains_pointer();
-                });
-        }
-
-        {
-            let img_resources = self.image_resources.as_ref().unwrap();
-            self.dialog_drawer.update_dialogs(ctx, img_resources);
+            //if let Some(url) = std::env::var("DISCORD_CRASH_WEBHOOK_URL").ok() {
+                send_discord_webhook_crash_message("http://127.0.0.1:8000/send", &msg).unwrap();
+            //}
         }
     }
 }

@@ -1,4 +1,5 @@
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
 use std::fs::File;
 use std::io::{Read, Result, Seek, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -72,15 +73,12 @@ impl MIDIFile {
         let file_stream = Arc::new(Mutex::new(File::open(path)?));
 
         // === parse header ===
-        // check header first
-        {
-            let mut fs = file_stream.lock().unwrap();
-            let (header, length) = self.read_u32x2(&mut fs);
-            assert!(header == 0x4D546864 && length == 6, "Invalid file header.");
-        }
-
         let (format, trk_count, ppq) = {
             let mut fs = file_stream.lock().unwrap();
+
+            let (header, length) = self.read_u32x2(&mut fs);
+            assert!(header == 0x4D546864 && length == 6, "Invalid file header.");
+
             self.read_u16x3(&mut fs)
         };
 
@@ -310,6 +308,31 @@ impl MIDIEvent {
     }
 }
 
+struct TimedEvent {
+    time: MIDITick,
+    event: MIDIEvent 
+}
+
+impl Eq for TimedEvent {}
+
+impl PartialEq for TimedEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.time == other.time
+    }
+}
+
+impl Ord for TimedEvent {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.time.cmp(&self.time)
+    }
+}
+
+impl PartialOrd for TimedEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 pub struct MIDIFileWriter {
     ppq: u16,
     track_count: u16,
@@ -408,62 +431,47 @@ impl MIDIFileWriter {
 
     fn notes_to_events(&self, notes: Vec<&Note>) -> Vec<MIDIEvent> {
         let mut seq: Vec<MIDIEvent> = Vec::new();
-        let mut note_off_times: VecDeque<(MIDIEvent, MIDITick)> = VecDeque::new();
+        let mut note_offs: BinaryHeap<TimedEvent> = BinaryHeap::new();
         let mut prev_time = 0;
 
-        for note in notes.iter() {
-            while !note_off_times.is_empty() && note_off_times.front().unwrap().1 <= note.start {
-                let mut ev = note_off_times.pop_front().unwrap();
-                ev.0.delta = ev.1 - prev_time;
-                seq.push(ev.0);
-                prev_time = ev.1;
+        for note in notes {
+            while let Some(top) = note_offs.peek() {
+                if top.time > note.start { break; }
+
+                let TimedEvent { time, mut event } = note_offs.pop().unwrap();
+                event.delta = time - prev_time;
+                prev_time = time;
+                seq.push(event);
             }
 
             seq.push(MIDIEvent {
-                delta: note.start - prev_time,
-                data: vec![0x90 | note.channel(), note.key, note.velocity]
+                delta: note.start() - prev_time,
+                data: vec![
+                    0x90 | note.channel(),
+                    note.key(),
+                    note.velocity()
+                ]
             });
-            prev_time = note.start;
-            let time = note.start + note.length;
-            let off = (MIDIEvent {
-                delta: 0,
-                data: vec![0x80 | note.channel(), note.key, 0x00]
-            }, time);
-            let mut pos = note_off_times.len() / 2;
-            if note_off_times.is_empty() { note_off_times.push_back(off); }
-            else {
-                let mut jump = note_off_times.len() / 4;
-                loop {
-                    if jump <= 0 { jump = 1; }
-                    // if pos < 0 { pos = 0; }
-                    if pos >= note_off_times.len() { pos = note_off_times.len() - 1; }
-                    let u = &note_off_times[pos];
-                    if u.1 >= time {
-                        if pos == 0 || note_off_times[pos - 1].1 < time {
-                            note_off_times.insert(pos, (MIDIEvent {
-                                delta: 0,
-                                data: vec![0x80 | note.channel(), note.key, 0x00]
-                            }, time));
-                            break;
-                        } else { pos -= jump; }
-                    } else {
-                        if pos == note_off_times.len() - 1 {
-                            note_off_times.push_back((MIDIEvent {
-                                delta: 0,
-                                data: vec![0x80 | note.channel(), note.key, 0x00]
-                            }, time));
-                            break;
-                        } else { pos += jump; }
-                    }
-                    jump /= 2;
+
+            prev_time = note.start();
+
+            note_offs.push(TimedEvent {
+                time: note.start() + note.length(),
+                event: MIDIEvent {
+                    delta: 0,
+                    data: vec![
+                        0x80 | note.channel(),
+                        note.key,
+                        0x00
+                    ]
                 }
-            }
+            });
         }
 
-        for (mut ev, time) in note_off_times.into_iter() {
-            ev.delta = time - prev_time;
-            seq.push(ev);
+        while let Some(TimedEvent { time, mut event }) = note_offs.pop() {
+            event.delta = time - prev_time;
             prev_time = time;
+            seq.push(event);
         }
 
         return seq;

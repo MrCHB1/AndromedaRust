@@ -112,15 +112,6 @@ impl MainMenuBar {
     pub fn draw_menu(&mut self, parent: &mut MainWindow, ctx: &egui::Context) {
         egui::TopBottomPanel::top("menu_bar")
         .show(ctx, |ui| {
-            let id = ui.id().with("menu_bar");
-            ctx.memory_mut(|mem| {
-                mem.request_focus(id);
-                mem.set_focus_lock_filter(id, EventFilter {
-                    tab: false, // get rid of tab track view switch conflicts
-                    ..Default::default()
-                });
-            });
-
             egui::menu::bar(ui, |ui| {
                 for (menu_label_type, menu_contents) in self.menu.iter_mut() {
                     match menu_label_type {

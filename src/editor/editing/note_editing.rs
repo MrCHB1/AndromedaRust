@@ -1,5 +1,51 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
-use crate::{app::{main_window::{EditorTool, EditorToolSettings, ToolBarSettings}, rendering::{RenderManager, data_view::DataViewRenderer}}, editor::{actions::{EditorAction, EditorActions}, editing::{SharedClipboard, SharedSelectedNotes, note_editing::note_sequence_funcs::{extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids, move_all_notes_by, move_each_note_by, remove_note}}, navigation::PianoRollNavigation, settings::editor_settings::PR_KEYBOARD_WIDTH, util::{MIDITick, SignedMIDITick, find_note_at, get_absolute_max_tick_from_ids, get_mouse_midi_pos, get_notes_in_range}}, midi::{events::note::Note, midi_track::MIDITrack}};
+use crate::{
+    app::{
+        main_window::{
+            EditorTool,
+            EditorToolSettings,
+            ToolBarSettings
+        },
+        rendering::{
+            RenderManager,
+            data_view::DataViewRenderer
+        }
+    },
+    editor::{
+        actions::{
+            EditorAction,
+            EditorActions
+        },
+        editing::{
+            SharedClipboard,
+            SharedSelectedNotes,
+            note_editing::note_sequence_funcs::{
+                extract,
+                extract_and_remap_ids,
+                merge_notes,
+                merge_notes_and_return_ids,
+                move_all_notes_by,
+                move_each_note_by,
+                remove_note
+            }
+        },
+        navigation::PianoRollNavigation,
+        settings::editor_settings::PR_KEYBOARD_WIDTH,
+        util::{
+            MIDITick,
+            SignedMIDITick,
+            find_note_at,
+            get_absolute_max_tick_from_ids,
+            get_mouse_midi_pos,
+            get_notes_in_range
+        }
+    },
+    midi::{
+        events::note::Note,
+        midi_track::MIDITrack
+    }
+};
+
 use eframe::egui::{self, Context, CursorIcon, Key, Ui};
 use note_edit_flags::*;
 
@@ -21,33 +67,6 @@ pub mod note_edit_flags {
 }
 
 pub mod note_sequence_funcs;
-
-pub struct GhostNote {
-    id: Option<usize>,
-    note: Note
-}
-
-impl GhostNote {
-    #[inline(always)]
-    pub fn note_mut(&mut self) -> &mut Note {
-        &mut self.note
-    }
-
-    #[inline(always)]
-    pub fn get_note(&self) -> &Note {
-        &self.note
-    }
-
-    #[inline(always)]
-    pub fn into_note(self) -> Note {
-        self.note
-    }
-
-    #[inline(always)]
-    pub fn set_note(&mut self, note: Note) {
-        self.note = note
-    }
-}
 
 #[derive(Default)]
 struct NoteEditMouseInfo {
@@ -313,17 +332,17 @@ impl NoteEditing {
                 self.duplicate_selected_notes();
                 println!("Done");
             }
-        }
 
-        if ui.input(|i| i.key_pressed(Key::Delete)) {
-            let sel_ids = {
-                let mut shared_sel_ids = self.shared_selected_note_ids.write().unwrap();
-                shared_sel_ids.take_selected_from_track(curr_track)
-                // let mut selected_ids = self.selected_note_ids.lock().unwrap();
-                // std::mem::take(&mut *selected_ids)
-            };
+            if ui.input(|i| i.key_pressed(Key::Delete)) {
+                let sel_ids = {
+                    let mut shared_sel_ids = self.shared_selected_note_ids.write().unwrap();
+                    shared_sel_ids.take_selected_from_track(curr_track)
+                    // let mut selected_ids = self.selected_note_ids.lock().unwrap();
+                    // std::mem::take(&mut *selected_ids)
+                };
 
-            self.delete_notes_no_remap(sel_ids);
+                self.delete_notes_no_remap(sel_ids);
+            }
         }
     }
 
@@ -1002,15 +1021,6 @@ impl NoteEditing {
         //    .collect()
     }
 
-    fn notes_into_ghost_notes(&self, notes: Vec<Note>, orig_ids: Vec<usize>) -> Vec<GhostNote> {
-        notes.into_iter().zip(orig_ids.clone()).map(|(note, id)| {
-            GhostNote {
-                id: Some(id),
-                note
-            }
-        }).collect()
-    }
-
     fn merge_ghost_notes(&mut self, track: u16) -> Vec<usize> {
         let ghost_notes = self.ghost_notes_into_notes();
         let curr_notes_track = self.take_notes_curr_track();
@@ -1148,7 +1158,7 @@ impl NoteEditing {
         let copied_notes = self.clone_notes(track, selected);
         
         let mut shared_clipboard = self.shared_clipboard.write().unwrap();
-        shared_clipboard.move_notes_to_clipboard(copied_notes, track);
+        shared_clipboard.move_notes_to_clipboard(copied_notes, track, true);
         // self.notes_clipboard = notes_clipboard;
     }
 
@@ -1167,7 +1177,7 @@ impl NoteEditing {
         let copied_cut_notes = notes_to_cut.clone();
         {
             let mut shared_clipboard = self.shared_clipboard.write().unwrap();
-            shared_clipboard.move_notes_to_clipboard(copied_cut_notes, track);
+            shared_clipboard.move_notes_to_clipboard(copied_cut_notes, track, true);
         }
         // self.notes_clipboard = notes_to_cut.clone();
 

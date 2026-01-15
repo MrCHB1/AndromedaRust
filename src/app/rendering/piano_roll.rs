@@ -4,7 +4,6 @@ use crate::app::shared::NoteColors;
 use crate::audio::event_playback::PlaybackManager;
 use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
-use crate::editor::project::project_data::ProjectData;
 use crate::editor::project::project_manager::ProjectManager;
 use crate::editor::settings::editor_settings::PR_KEYBOARD_WIDTH;
 use crate::editor::util::MIDITick;
@@ -12,11 +11,7 @@ use crate::midi::midi_track::MIDITrack;
 use eframe::egui::Vec2;
 use eframe::glow;
 use eframe::glow::HasContext;
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
-use crate::editor::editing::note_editing::GhostNote;
 use crate::app::rendering::{
     buffers::*,
     shaders::*
@@ -27,7 +22,6 @@ use crate::midi::events::note::Note;
 use crate::set_attribute;
 
 const NOTE_BUFFER_SIZE: usize = 8192;
-// const NOTE_BORDER_DARKNESS: f32 = 0.5;
 
 // Piano Roll Background
 pub type BarStart = f32;
@@ -65,8 +59,8 @@ pub struct KeyboardMeta {
 impl KeyboardMeta {
     pub fn get_meta(&self) -> u32 {
         let mut meta = (self.key as u32) & 0x7F;
-        if self.is_black { meta |= (1 << 31); }
-        if self.pressed { meta |= (1 << 30); }
+        if self.is_black { meta |= 1 << 31; }
+        if self.pressed { meta |= 1 << 30; }
         meta |= (self.color_idx as u32) << 7;
         meta
     }
@@ -132,6 +126,10 @@ pub struct PianoRollRenderer {
     // pub selected: HashSet<usize>,
     selected: Arc<RwLock<SharedSelectedNotes>>,
     render_active: bool,
+
+    last_view_offset: f32,
+    last_zoom: f32,
+    started_playing: bool
 }
 
 impl PianoRollRenderer {
@@ -297,23 +295,29 @@ impl PianoRollRenderer {
             key_ids,
             key_metas: keyboard_metas,
             selected: shared_selected_notes.clone(),
-            render_active: false
+            render_active: false,
+
+            last_view_offset: 0.0,
+            last_zoom: 0.0,
+            started_playing: false
         }
     }
 
     fn get_time(&self) -> f32 {
         let nav = self.navigation.lock().unwrap();
-
-        /*let nav_ticks = {
-            let playback_manager = self.playback_manager.lock().unwrap();
-            if playback_manager.playing {
-                playback_manager.get_playback_ticks() as f32
-            } else {
-                nav.tick_pos_smoothed
+        let view_settings = self.view_settings.lock().unwrap();
+        if view_settings.pr_autoscroll {
+            {
+                let playback_manager = self.playback_manager.lock().unwrap();
+                if playback_manager.playing {
+                    playback_manager.get_playback_ticks() as f32
+                } else {
+                    nav.tick_pos_smoothed
+                }
             }
-        };*/
-
-        nav.tick_pos_smoothed
+        } else {
+            nav.tick_pos_smoothed
+        }
     }
 
     fn is_black(key: usize) -> bool {
@@ -339,9 +343,9 @@ impl Renderer for PianoRollRenderer {
                 nav.curr_track
             };
 
-            let (is_playing, playback_pos) = {
+            let (is_playing, playback_pos, view_offset) = {
                 let playback_manager = self.playback_manager.lock().unwrap();
-                /*let mut view_offset = self.last_view_offset;
+                let mut view_offset = self.last_view_offset;
                 if playback_manager.playing && !self.started_playing {
                     let nav = self.navigation.lock().unwrap();
                     view_offset = nav.tick_pos_smoothed - playback_manager.playback_start_pos as f32;
@@ -359,11 +363,15 @@ impl Renderer for PianoRollRenderer {
                     view_offset
                 };
                 
-                (playback_manager.playing, view_offset)*/
-                (playback_manager.playing, playback_manager.get_playback_ticks() as f32)
+                let autoscroll = {
+                    let view_settings = self.view_settings.lock().unwrap();
+                    view_settings.pr_autoscroll
+                };
+
+                (playback_manager.playing, playback_manager.get_playback_ticks() as f32, if autoscroll { view_offset } else { 0.0 })
             };
 
-            let tick_pos_offs = tick_pos;
+            let tick_pos_offs = tick_pos + view_offset;
 
             // RENDER BARS
             {
@@ -680,25 +688,24 @@ impl Renderer for PianoRollRenderer {
                                             && is_playing;
                 
 
-                                        self.notes_render[note_id] = RenderPianoRollNote {
-                                            0: [(note.start as f32 - tick_pos_offs) / zoom_ticks,
-                                                (note.length as f32) / zoom_ticks,
-                                                (note_bottom),
-                                                (note_top)],
-                                            1: {
-                                                let mut note_meta = color_index as u32;
-                                                note_meta |= (note.velocity() as u32) << 4;
-                                                if note_playing {
-                                                    note_meta |= 1 << 12;
-                                                }
+                                        self.notes_render[note_id].0 = 
+                                            [(note.start as f32 - tick_pos_offs) / zoom_ticks,
+                                            (note.length as f32) / zoom_ticks,
+                                            (note_bottom),
+                                            (note_top)];
+                                        self.notes_render[note_id].1 = {
+                                            let mut note_meta = color_index as u32;
+                                            note_meta |= (note.velocity() as u32) << 4;
+                                            if note_playing {
+                                                note_meta |= 1 << 12;
+                                            }
 
-                                                if sel_idx < sel_ids.len() && note_idx == sel_ids[sel_idx] {
-                                                    note_meta |= 1 << 13;
-                                                    sel_idx += 1;
-                                                }
+                                            if sel_idx < sel_ids.len() && note_idx == sel_ids[sel_idx] {
+                                                note_meta |= 1 << 13;
+                                                sel_idx += 1;
+                                            }
 
-                                                note_meta
-                                            },
+                                            note_meta
                                         };
                                     }
 
@@ -751,21 +758,16 @@ impl Renderer for PianoRollRenderer {
 
                             let trk_chan = ((nav_curr_track as usize) << 4) | (note.channel() as usize);
 
-                            self.notes_render[note_id] = RenderPianoRollNote {
-                                0: [(note.start as f32 - tick_pos) / zoom_ticks,
-                                    (note.length as f32) / zoom_ticks,
-                                    (note_bottom),
-                                    (note_top)],
-                                1: {
-                                    let mut note_meta = note_colors.get_index(trk_chan) as u32;
-                                    note_meta |= (note.velocity() as u32) << 4;
-                                    note_meta
-                                    // self.note_colors.get_and_mix(trk_chan, &WHITE, 1.0 - (note.velocity() as f32 / 128.0))
-                                },
-                                /* 2: {
-                                    self.note_colors.get_and_mix(trk_chan, &BLACK, NOTE_BORDER_DARKNESS)
-                                } */
+                            self.notes_render[note_id].0 = [(note.start as f32 - tick_pos) / zoom_ticks,
+                                (note.length as f32) / zoom_ticks,
+                                (note_bottom),
+                                (note_top)];
+                            self.notes_render[note_id].1 = {
+                                let mut note_meta = note_colors.get_index(trk_chan) as u32;
+                                note_meta |= (note.velocity() as u32) << 4;
+                                note_meta
                             };
+
                             note_id += 1;
                             if note_id >= NOTE_BUFFER_SIZE {
                                 self.pr_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);

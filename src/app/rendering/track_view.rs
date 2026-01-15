@@ -1,14 +1,11 @@
 use crate::app::shared::NoteColors;
+use crate::app::view_settings::ViewSettings;
+use crate::audio::event_playback::PlaybackManager;
 use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::navigation::{PianoRollNavigation, TrackViewNavigation};
-use crate::editor::project::project_data::ProjectData;
 use crate::editor::project::project_manager::ProjectManager;
-use crate::midi::events::note::Note;
 use crate::midi::midi_track::MIDITrack;
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 use eframe::egui::Vec2;
 use eframe::glow;
@@ -63,6 +60,8 @@ const QUAD_INDICES: [u32; 6] = [
 pub struct TrackViewRenderer {
     pub navigation: Arc<Mutex<TrackViewNavigation>>,
     pr_nav: Arc<Mutex<PianoRollNavigation>>,
+    view_settings: Arc<Mutex<ViewSettings>>,
+    playback_manager: Arc<Mutex<PlaybackManager>>,
     pub bar_cacher: Arc<Mutex<BarCacher>>,
     pub window_size: Vec2<>,
     pub ppq: u16,
@@ -92,15 +91,21 @@ pub struct TrackViewRenderer {
     last_time: f32,
 
     selected: Arc<RwLock<SharedSelectedNotes>>,
-    render_active: bool
+    render_active: bool,
+
+    last_view_offset: f32,
+    last_zoom: f32,
+    started_playing: bool
 }
 
 impl TrackViewRenderer {
     pub unsafe fn new(
         project_manager: &Arc<RwLock<ProjectManager>>,
+        view_settings: &Arc<Mutex<ViewSettings>>,
         nav: &Arc<Mutex<TrackViewNavigation>>,
         pr_nav: &Arc<Mutex<PianoRollNavigation>>,
         gl: &Arc<glow::Context>,
+        playback_manager: &Arc<Mutex<PlaybackManager>>,
         bar_cacher: &Arc<Mutex<BarCacher>>,
         colors: &Arc<Mutex<NoteColors>>,
         shared_selected_notes: &Arc<RwLock<SharedSelectedNotes>>
@@ -191,6 +196,8 @@ impl TrackViewRenderer {
         };
 
         Self {
+            view_settings: view_settings.clone(),
+            playback_manager: playback_manager.clone(),
             navigation: nav.clone(),
             pr_nav: pr_nav.clone(),
             window_size: Vec2::new(0.0, 0.0),
@@ -219,13 +226,29 @@ impl TrackViewRenderer {
             first_render_note,
             selected: shared_selected_notes.clone(),
             render_active: false,
-            last_time: 0.0
+            last_time: 0.0,
+
+            last_view_offset: 0.0,
+            last_zoom: 0.0,
+            started_playing: false
         }
     }
 
     fn get_time(&self) -> f32 {
         let nav = self.navigation.lock().unwrap();
-        nav.tick_pos_smoothed
+        let view_settings = self.view_settings.lock().unwrap();
+        if view_settings.pr_autoscroll {
+            {
+                let playback_manager = self.playback_manager.lock().unwrap();
+                if playback_manager.playing {
+                    playback_manager.get_playback_ticks() as f32
+                } else {
+                    nav.tick_pos_smoothed
+                }
+            }
+        } else {
+            nav.tick_pos_smoothed
+        }
     }
 }
 
@@ -239,6 +262,36 @@ impl Renderer for TrackViewRenderer {
                 let nav = self.navigation.lock().unwrap();
                 (nav.zoom_ticks_smoothed, nav.track_pos_smoothed, nav.zoom_tracks_smoothed)
             };
+
+            let (is_playing, view_offset) = {
+                let playback_manager = self.playback_manager.lock().unwrap();
+                let mut view_offset = self.last_view_offset;
+                if playback_manager.playing && !self.started_playing {
+                    let nav = self.navigation.lock().unwrap();
+                    view_offset = nav.tick_pos_smoothed - playback_manager.playback_start_pos as f32;
+                    self.last_view_offset = view_offset;
+                    self.last_zoom = zoom_ticks;
+                    self.started_playing = true;
+                } else if !playback_manager.playing {
+                    self.started_playing = false;
+                    self.last_view_offset = 0.0;
+                }
+
+                view_offset = if self.last_zoom > 0.0 {
+                    view_offset * (zoom_ticks / self.last_zoom)
+                } else {
+                    view_offset
+                };
+
+                let autoscroll = {
+                    let view_settings = self.view_settings.lock().unwrap();
+                    view_settings.pr_autoscroll
+                };
+                
+                (playback_manager.playing, if autoscroll { view_offset } else { 0.0 })
+            };
+
+            let tick_pos_offs = tick_pos + view_offset;
 
             // RENDER BARS
             {
@@ -272,7 +325,7 @@ impl Renderer for TrackViewRenderer {
                         self.tv_program.set_int("currTrack", nav.curr_track as i32);
                     }
 
-                    while curr_bar_tick <= zoom_ticks + tick_pos {
+                    while curr_bar_tick <= zoom_ticks + tick_pos_offs {
                         // TODO: proper bar position calculation because of signature change events
                         let (bar_tick, bar_length) = {
                             let mut bar_cacher = self.bar_cacher.lock().unwrap();
@@ -280,14 +333,14 @@ impl Renderer for TrackViewRenderer {
                             interval
                         };
 
-                        if ((bar_tick + bar_length) as f32) < tick_pos{
+                        if ((bar_tick + bar_length) as f32) < tick_pos_offs {
                             curr_bar_tick += bar_length as f32;
                             bar_num += 1;
                             continue;
                         }
                         
                         self.bars_render[bar_id] = RenderTrackViewBar {
-                            0: ((curr_bar_tick - tick_pos) / zoom_ticks),
+                            0: ((curr_bar_tick - tick_pos_offs) / zoom_ticks),
                             1: ((bar_length as f32) / zoom_ticks),
                             2: {
                                 let curr_track = (curr_track as u32) & 0xFFFF;
@@ -365,10 +418,10 @@ impl Renderer for TrackViewRenderer {
                     }
 
                     let mut n_off = self.first_render_note[curr_track as usize];
-                    if self.last_time > tick_pos {
+                    if self.last_time > tick_pos_offs {
                         if n_off == 0 {
                             for note in &notes[0..notes.len()] {
-                                if note.end() as f32 > tick_pos { break; }
+                                if note.end() as f32 > tick_pos_offs { break; }
                                 n_off += 1;
                             }
                         } else {
@@ -379,21 +432,21 @@ impl Renderer for TrackViewRenderer {
                             }
 
                             for note in notes[0..n_off].iter().rev() {
-                                if (note.end() as f32) <= tick_pos { break; }
+                                if (note.end() as f32) <= tick_pos_offs { break; }
                                 n_off -= 1;
                             }
                         }
                         self.first_render_note[curr_track as usize] = n_off;
-                    } else if self.last_time < tick_pos {
+                    } else if self.last_time < tick_pos_offs {
                         for note in &notes[n_off..notes.len()] {
-                            if note.end() as f32 > tick_pos { break; }
+                            if note.end() as f32 > tick_pos_offs { break; }
                             n_off += 1;
                         }
                         self.first_render_note[curr_track as usize] = n_off;
                     }
 
                     // TEST: Binary search instead of linear search
-                    let note_end = n_off + notes[n_off..].partition_point(|note| note.start() as f32 <= tick_pos + zoom_ticks);
+                    let note_end = n_off + notes[n_off..].partition_point(|note| note.start() as f32 <= tick_pos_offs + zoom_ticks);
 
                     // selected ids
                     let sel_ids = shared_sel_notes 
@@ -413,7 +466,7 @@ impl Renderer for TrackViewRenderer {
                             let trk_chan = ((curr_track as usize) << 4) | (note.channel() as usize);
                             
                             self.notes_render[note_id] = RenderTrackViewNote {
-                                0: [(note.start as f32 - tick_pos),
+                                0: [(note.start as f32 - tick_pos_offs),
                                     (note.length as f32),
                                     note_bottom,
                                     note_top],
@@ -453,7 +506,7 @@ impl Renderer for TrackViewRenderer {
                 self.gl.use_program(None);
             }
 
-            self.last_time = tick_pos;
+            self.last_time = tick_pos_offs;
         }
     }
 

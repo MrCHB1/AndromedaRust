@@ -78,18 +78,20 @@ pub struct ViewSettings {
     pub pr_curr_track: NumericField<u16>,
     pub pr_dataview_state: VS_PianoRoll_DataViewState,
     pub pr_dataview_size: f32,
+    pub pr_autoscroll: bool,
 
-    pub show_meta_events: bool
+    pub show_meta_events: bool,
 }
 
 impl Default for ViewSettings {
     fn default() -> Self {
         Self {
-            pr_dataview_size: 0.25,
+            pr_dataview_size: 200.0,
             pr_curr_track: NumericField::new(0, Some(0), Some(u16::MAX)),
             pr_onion_coloring: VS_PianoRoll_OnionColoring::PartialColor,
             pr_onion_state: Default::default(),
             pr_dataview_state: Default::default(),
+            pr_autoscroll: true,
 
             show_meta_events: false
         }

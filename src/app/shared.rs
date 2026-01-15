@@ -44,7 +44,7 @@ impl ToString for NoteColorIndexing {
         match self {
             NoteColorIndexing::Channel => "Channel",
             NoteColorIndexing::Track => "Track",
-            NoteColorIndexing::ChannelTrack => "Channel & Track"
+            NoteColorIndexing::ChannelTrack => "Track & Channel"
         }.to_string()
     }
 }
