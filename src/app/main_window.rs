@@ -63,12 +63,13 @@ pub enum EditorTool {
     Selector,
 }
 
+const API_KEY: &str = include_str!("../../api_key.txt");
+
 impl Default for EditorTool {
     fn default() -> Self {
         EditorTool::Pencil
     }
 }
-
 
 pub struct EditorToolSettings {
     curr_tool: EditorTool,
@@ -440,16 +441,6 @@ impl MainWindow {
                     writer.into_single_track()
                 })
                 .collect();
-            /*let per_track_chunks: Vec<Vec<MIDIEvent>> = notes.par_iter()
-                .zip(channel_evs.par_iter())
-                .map(|(notes, ch_evs)| {
-                    let mut writer = MIDIFileWriter::new(ppq);
-                    writer.new_track();
-                    writer.add_notes_with_other_events(notes, ch_evs);
-                    writer.end_track();
-                    writer.into_single_track()
-                })
-                .collect();*/
 
             let mut midi_writer = MIDIFileWriter::new(ppq);
             midi_writer.flush_global_metas(&global_metas);
@@ -470,6 +461,9 @@ impl MainWindow {
             playback_manager.toggle_playback();
             playback_manager.reset_events();
         }
+
+        let mut editor_actions = self.editor_actions.borrow_mut();
+        editor_actions.clear_actions();
     }
 
     fn update_global_ppq(&self, ppq: u16) {
@@ -2578,7 +2572,6 @@ impl eframe::App for MainWindow {
 
         let result = catch_unwind(AssertUnwindSafe(|| {
             self.draw_ui(ctx, frame);
-            panic!("Test");
         }));
 
         if let Err(_) = result {
@@ -2602,9 +2595,7 @@ impl eframe::App for MainWindow {
 {msg}"))
                 .show();
 
-            //if let Some(url) = std::env::var("DISCORD_CRASH_WEBHOOK_URL").ok() {
-                send_discord_webhook_crash_message("http://127.0.0.1:8000/send", &msg).unwrap();
-            //}
+            send_discord_webhook_crash_message("https://nonconvertibly-untrue-denise.ngrok-free.dev/send", &msg, API_KEY).unwrap();
         }
     }
 }

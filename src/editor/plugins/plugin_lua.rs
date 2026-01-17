@@ -42,10 +42,17 @@ impl PluginLua {
         if self.loaded { return Ok(()); }
 
         // read file contents
-        let src_code = std::fs::read_to_string(&path).unwrap();
-        self.plugin_path = Some(path);
-        self.load_plugin_from_str(&src_code)?;
-        self.is_builtin = false;
+        match std::fs::read_to_string(&path) {
+            Ok(src_code) => {
+                self.plugin_path = Some(path);
+                self.load_plugin_from_str(&src_code)?;
+                self.is_builtin = false;
+            },
+            Err(e) => {
+                return Err(Error::external(std::io::Error::new(std::io::ErrorKind::Other, "Failed to read plugin")))
+            }
+        }
+        
         Ok(())
     }
 
@@ -55,13 +62,19 @@ impl PluginLua {
             return Ok(());
         }
 
-        assert!(self.loaded == true && self.plugin_path.is_some(), "Plugin {} was never loaded!", self.plugin_name);
+        if self.plugin_path.is_none() {
+            return Err(Error::RuntimeError("This plugin's path is invalid.".into()));
+        }
 
         self.loaded = false;
         let path = self.plugin_path.take().unwrap();
-        self.load_plugin_from_path(path)?;
-        
-        Ok(())
+        let result = self.load_plugin_from_path(path);
+
+        if let Err(ref e) = result {
+            println!("[PluginError] (while reloading {}): \n--> {}", self.plugin_name, e.to_string());
+        }
+
+        result
     }
 
     pub fn load_plugin_from_str(&mut self, src_code: &String) -> Result<(), Error> {

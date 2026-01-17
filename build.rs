@@ -61,4 +61,9 @@ fn main() {
     fs::create_dir_all(&out).unwrap();
 
     copy_dir(COPY_DIR, &out, &ignore_paths);
+
+    // embed API Key into .exe
+    if let Ok(client_api_key) = env::var("API_KEY") {
+        println!("cargo:rustc-env=EMBEDDED_CLIENT_KEY={}", client_api_key);
+    }
 }

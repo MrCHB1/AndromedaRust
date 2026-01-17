@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 use std::fs::File;
-use std::io::{Read, Result, Seek, Write};
+use std::io::{BufWriter, Read, Result, Seek, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::editor::util::MIDITick;
@@ -292,7 +292,7 @@ pub struct MIDIEvent {
 }
 
 impl MIDIEvent {
-    pub fn get_vlq(&self) -> Vec<u8> {
+    /*pub fn get_vlq(&self) -> Vec<u8> {
         let mut delta = self.delta;
         let mut res = Vec::new();
         res.push((delta & 0x7F) as u8);
@@ -305,6 +305,47 @@ impl MIDIEvent {
         
         res.reverse();
         return res;
+    }*/
+
+    pub fn write_to<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+        self.write_delta_to(w)?;
+        w.write_all(&self.data)?;
+        Ok(())
+    }
+
+    pub fn write_delta_to<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+        let mut delta = self.delta;
+
+        let mut buf: [u8; 5] = [0; 5];
+        let mut i: usize = 0;
+        buf[0] = (delta & 0x7F) as u8;
+        delta >>= 7;
+
+        while delta > 0 {
+            i += 1;
+
+            buf[i] = ((delta & 0x7F) as u8) | 0x80;
+            delta >>= 7;
+        }
+
+        for idx in (0..=i).rev() {
+            w.write_all(&[buf[idx]])?;
+        }
+    
+        Ok(())
+    }
+
+    pub fn vlq_len(&self) -> usize {
+        let mut delta = self.delta;
+        if delta == 0 { return 1; }
+
+        let mut len = 0;
+        while delta > 0 {
+            len += 1;
+            delta >>= 7;
+        }
+
+        len
     }
 }
 
@@ -378,13 +419,6 @@ impl MIDIFileWriter {
         });
     }
 
-    /// Takes ownership of [`other`] and merges its tracks into this writer.
-    /*pub fn merge_from(&mut self, mut other: MIDIFileWriter) {
-        for track in other.tracks.drain(..) {
-            self.append_track(track);
-        }
-    }*/
-    
     pub fn flush_global_metas(&mut self, meta_events: &Vec<MetaEvent>) {
         self.new_track();
         let mut seq: Vec<MIDIEvent> = Vec::new();
@@ -478,40 +512,41 @@ impl MIDIFileWriter {
     }
 
     pub fn write_midi(&self, path: &str) -> Result<()> {
-        let mut file = File::create(path)?;
+        let file = File::create(path)?;
+        let mut out = BufWriter::with_capacity(16 * 1024 * 1024, file);
         
         // header
-        self.write_u32(&mut file, 0x4D546864)?;
+        self.write_u32(&mut out, 0x4D546864)?;
 
         // header length
-        self.write_u32(&mut file, 6)?;
-        self.write_u16(&mut file, 1)?; // format
-        self.write_u16(&mut file, self.track_count)?;
-        self.write_u16(&mut file, self.ppq)?;
+        self.write_u32(&mut out, 6)?;
+        self.write_u16(&mut out, 1)?; // format
+        self.write_u16(&mut out, self.track_count)?;
+        self.write_u16(&mut out, self.ppq)?;
 
         // iterate through tracks
-        let track_bytes: Vec<Vec<u8>> = self.tracks
-            .par_iter()
-            .map(|track| {
-                let mut buf: Vec<u8> = Vec::new();
-                for ev in track {
-                    buf.extend(ev.get_vlq());
-                    buf.extend(&ev.data);
-                }
-                buf
-            })
-            .collect();
+        for track in self.tracks.iter() {
+            let mut track_len: u32 = 0;
 
-        for buf in track_bytes {
-            self.write_u32(&mut file, 0x4D54726B)?;
-            self.write_u32(&mut file, buf.len() as u32)?;
-            file.write_all(&buf)?;
+            for ev in track.iter() {
+                track_len = track_len.checked_add(
+                    (ev.vlq_len() + ev.data.len()) as u32
+                ).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "track length overflow"))?;
+            }
+
+            self.write_u32(&mut out, 0x4D54726B)?;
+            self.write_u32(&mut out, track_len)?;
+
+            for ev in track.iter() {
+                ev.write_to(&mut out)?;
+            }
         }
 
+        out.flush()?;
         Ok(())
     }
 
-    fn write_u32(&self, writer: &mut File, val: u32) -> Result<()> {
+    fn write_u32<W: Write>(&self, writer: &mut W, val: u32) -> Result<()> {
         writer.write(&[
             ((val & 0xFF000000) >> 24) as u8,
             ((val & 0xFF0000) >> 16) as u8,
@@ -521,7 +556,7 @@ impl MIDIFileWriter {
         Ok(())
     }
 
-    fn write_u16(&self, writer: &mut File, val: u16) -> Result<()> {
+    fn write_u16<W: Write>(&self, writer: &mut W, val: u16) -> Result<()> {
         writer.write(&[
             ((val & 0xFF00) >> 8) as u8,
             (val & 0xFF) as u8
