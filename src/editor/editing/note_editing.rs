@@ -1078,12 +1078,16 @@ impl NoteEditing {
     fn take_notes_curr_track(&mut self) -> Vec<Note> {
         let curr_track = self.get_current_track();
         let mut tracks = self.tracks.write().unwrap();
+        if curr_track as usize >= tracks.len() { return Vec::new(); }
+        
         let notes = (*tracks)[curr_track as usize].get_notes_mut();
         std::mem::take(notes)
     }
 
     pub fn take_notes_in_track(&mut self, track: u16) -> Vec<Note> {
         let mut tracks = self.tracks.write().unwrap();
+        if track as usize >= tracks.len() { return Vec::new(); }
+
         let notes = (*tracks)[track as usize].get_notes_mut();
         std::mem::take(notes)
     }

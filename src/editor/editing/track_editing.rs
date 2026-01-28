@@ -321,7 +321,17 @@ impl TrackEditing {
 
     fn select_mouse_move(&mut self) {
         if self.get_flag(TRACK_EDIT_SELECTION_MOVE) {
+            let last_pos = self.mouse_info.last_mouse_click_pos;
+            let (last_tick, last_track) = last_pos;
 
+            let curr_pos = self.mouse_info.mouse_midi_track_pos;
+            let (mut curr_tick, curr_track) = curr_pos;
+            
+            // snap current tick
+            curr_tick = self.snap_tick(curr_tick as SignedMIDITick) as MIDITick;
+
+            let tick_change = curr_tick as SignedMIDITick - last_tick as SignedMIDITick;
+            let track_change = curr_track as i32 - last_track as i32;
         } else {
             self.update_selection_box(self.mouse_info.mouse_midi_track_pos);
         }
@@ -334,6 +344,19 @@ impl TrackEditing {
         // let (min_tick, max_tick, min_track, max_track) = self.get_selection_range();
         if self.get_flag(TRACK_EDIT_SELECTION_MOVE) {
             // apply note movement
+            let last_pos = self.mouse_info.last_mouse_click_pos;
+            let (last_tick, last_track) = last_pos;
+
+            let curr_pos = self.mouse_info.mouse_midi_track_pos;
+            let (mut curr_tick, curr_track) = curr_pos;
+            
+            // snap current tick
+            curr_tick = self.snap_tick(curr_tick as SignedMIDITick) as MIDITick;
+
+            let tick_change = curr_tick as SignedMIDITick - last_tick as SignedMIDITick;
+            let track_change = curr_track as i32 - last_track as i32;
+            
+            self.move_ghost_notes(tick_change, track_change);
             self.apply_ghost_notes();
         } else {
             let shift_down = self.get_flag(TRACK_EDIT_SHIFT_DOWN);
@@ -491,6 +514,13 @@ impl TrackEditing {
     }
 
     // ======== GHOST NOTE STUFF ========
+
+    fn move_ghost_notes(&mut self, tick_change: SignedMIDITick, track_change: i32) {
+        let mut ghost_notes = self.ghost_notes.lock().unwrap();
+        for gn_track in ghost_notes.iter_mut() {
+            gn_track.0 = (gn_track.0 as i32 + track_change) as u16;
+        }
+    }
 
     fn selected_notes_to_ghost_notes(&mut self) {
         let (_, _, min_track, max_track) = self.get_selection_range();
@@ -925,7 +955,7 @@ impl TrackEditing {
         copied_notes.sort_by_key(|(trk, _)| *trk);
 
         let first_track = copied_notes[0].0;
-        let num_tracks = self.get_used_track_count();
+        let mut num_tracks = self.get_used_track_count();
 
         let playhead_tick = {
             let playhead = self.playhead.borrow();
@@ -940,11 +970,14 @@ impl TrackEditing {
             let dest_track = base_track + rel;
             let dest_idx = dest_track as usize;
 
-            if dest_track >= num_tracks {
+            {
                 let project_manager = self.project_manager.write().unwrap();
-                let mut tracks = project_manager.get_tracks().write().unwrap();
-                tracks.push(MIDITrack::default());
-                track_actions.push(EditorAction::AddTrack(dest_track as u16, None, false));
+                while dest_track >= num_tracks {
+                    let mut tracks = project_manager.get_tracks().write().unwrap();
+                    tracks.push(MIDITrack::default());
+                    track_actions.push(EditorAction::AddTrack(dest_track as u16, None, false));
+                    num_tracks += 1;
+                }
             }
 
             let old_notes = {
