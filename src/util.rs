@@ -8,7 +8,7 @@ pub mod system_stats;
 pub mod timer;
 pub mod debugger;
 
-pub fn send_discord_webhook_crash_message(webhook_url: &str, content: &str, api_key: &str) -> Result<(), reqwest::Error> {
+pub fn send_discord_webhook_crash_message(webhook_url: &str, content: &str, api_key: &str, reporter_name: Option<String>, report_details: Option<String>) -> Result<(), reqwest::Error> {
     let client = Client::new();
 
     client
@@ -21,7 +21,17 @@ pub fn send_discord_webhook_crash_message(webhook_url: &str, content: &str, api_
                 "color": 0xFF0000,
                 "fields": [
                     {
-                        "name": "Error Description",
+                        "name": "Reporter name",
+                        "value": if let Some(name) = reporter_name { name } else { "Anonymous".into() },
+                        "inline": false
+                    },
+                    {
+                        "name": "Cause of crash",
+                        "value": if let Some(details) = report_details { details } else { "No further details given.".into() },
+                        "inline": false
+                    },
+                    {
+                        "name": "Crash details",
                         "value": format!("```{}```", content),
                         "inline": false
                     }

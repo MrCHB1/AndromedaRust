@@ -1,7 +1,7 @@
 // abstraction is NEEDED!!
 use crate::{
     LAST_PANIC, app::{
-        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, track_view::TrackViewRenderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog, selection_dialogs::filter_channels::FilterChannelsDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, editor::{
+        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, track_view::TrackViewRenderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, dialogs::{crash_dialog::CrashDialog, filter_channels::FilterChannelsDialog}, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, editor::{
             edit_functions::{EFChopDialog, EFGlueDialog}, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_ERASING, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioEngineType, ESAudioSettings, ESGeneralSettings, ESSettingsWindow, PR_KEYBOARD_WIDTH, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}, util::{debugger::Debugger, send_discord_webhook_crash_message, system_stats::SystemStats, timer::Timer}};
 use crate::editor::editing::{
     meta_editing::{MetaEditing, MetaEventInsertDialog},
@@ -62,8 +62,6 @@ pub enum EditorTool {
     Eraser,
     Selector,
 }
-
-const API_KEY: &str = include_str!("../../api_key.txt");
 
 impl Default for EditorTool {
     fn default() -> Self {
@@ -197,6 +195,7 @@ pub struct MainWindow {
     sys_stats: SystemStats,
     timer: Timer,
     has_crashed: bool,
+    crash_dlg_shown: bool
 }
 
 impl MainWindow {
@@ -393,6 +392,10 @@ impl MainWindow {
         dialog_manager.register_dialog(DIALOG_NAME_FILTER_CHANNELS, Box::new(move || {
             Box::new(FilterChannelsDialog::default())
         }));
+
+        dialog_manager.register_dialog(DIALOG_NAME_CRASH, Box::new(move || {
+            Box::new(CrashDialog::default())
+        }))
     }
 
     fn import_midi_file(&mut self) {
@@ -1785,6 +1788,7 @@ impl MainWindow {
     }
 
     fn draw_ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+
         let any_window_opened = self.is_any_dialog_shown();
 
         // initialize gl if not initialized already
@@ -1931,7 +1935,7 @@ impl MainWindow {
 
         {
             let img_resources = self.image_resources.as_ref().unwrap();
-            self.dialog_drawer.update_dialogs(ctx, img_resources);
+            self.dialog_drawer.draw_all_dialogs(ctx, img_resources);
         }
     }
 
@@ -2570,39 +2574,22 @@ impl MainWindow {
 
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if self.has_crashed {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
-        }
+        if !self.has_crashed {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                self.draw_ui(ctx, frame);
+            }));
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            self.draw_ui(ctx, frame);
-        }));
+            if let Err(_) = result {
+                self.has_crashed = true;
+            }
+        } else {
+            if !self.crash_dlg_shown {
+                self.show_dialog(DIALOG_NAME_CRASH);
+                self.crash_dlg_shown = true;
+            }
 
-        if let Err(_) = result {
-            self.has_crashed = true;
-            
-            // show a window after andromeda unfortunately crashes :(
-            let msg = LAST_PANIC
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap_or_else(|| "Unknown panic".to_string());
-            
-            rfd::MessageDialog::new()
-                .set_buttons(rfd::MessageButtons::Ok)
-                .set_title("Catastrophic Error")
-                .set_description(
-                    format!("A problem has occured and Andromeda needs to shut down. Sorry for the inconvenience. A report will automatically be sent to developers.
-
----------- Details ----------
-
-{msg}"))
-                .show();
-
-            Debugger::log(format!("{}", msg));
-            send_discord_webhook_crash_message("https://nonconvertibly-untrue-denise.ngrok-free.dev/send", &msg, API_KEY).unwrap();
-
+            let img_resources = self.image_resources.as_ref().unwrap();
+            self.dialog_drawer.draw_all_dialogs(ctx, img_resources);
         }
     }
 }

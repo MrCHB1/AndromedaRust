@@ -1,7 +1,7 @@
 use crate::app::{ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::*, names::DIALOG_NAME_EDITOR_INFO}, util::image_loader::ImageResources};
 use eframe::egui;
 
-pub const EDITOR_VERSION: &'static str = "2.5p3";
+pub const EDITOR_VERSION: &'static str = "2.5.1p3";
 pub const EDITOR_STAGE: &'static str = "Beta";
 
 #[derive(Default)]

@@ -14,7 +14,7 @@ impl DialogDrawer {
         self.dialog_manager = manager.clone();
     }
 
-    pub fn update_dialogs(&mut self, ctx: &egui::Context, image_resources: &ImageResources) {
+    pub fn draw_all_dialogs(&mut self, ctx: &egui::Context, image_resources: &ImageResources) {
         let mut dialog_actions = Vec::new();
         
         // drawing dialogs logic
@@ -35,7 +35,7 @@ impl DialogDrawer {
         }
 
         // process dialog actions
-        self.handle_dialog_actions(dialog_actions);
+        self.handle_dialog_actions(ctx, dialog_actions);
     }
 
     fn draw_dialog(&self, dialog: &mut Box<dyn Dialog + 'static>, ctx: &egui::Context, image_resources: &ImageResources) -> (Option<DialogAction>, Option<DialogAction>) {
@@ -87,7 +87,7 @@ impl DialogDrawer {
         action
     }
 
-    fn handle_dialog_actions(&mut self, dialog_actions: Vec<DialogAction>) {
+    fn handle_dialog_actions(&mut self, ctx: &egui::Context, dialog_actions: Vec<DialogAction>) {
         let mut dialog_manager = self.dialog_manager.borrow_mut();
         for action in dialog_actions.into_iter() {
             match action {
@@ -96,6 +96,9 @@ impl DialogDrawer {
                 },
                 DialogAction::Close(dialog_id) => {
                     dialog_manager.close_dialog(&dialog_id);
+                },
+                DialogAction::TerminateApp => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
         }

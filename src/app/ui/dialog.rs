@@ -23,12 +23,14 @@ pub mod names {
     pub const DIALOG_NAME_PLUGIN_DIALOG: &'static str = "LuaPluginDialog";
     pub const DIALOG_NAME_PLUGIN_ERROR_DIALOG: &'static str = "LuaPluginErrorDialog";
     pub const DIALOG_NAME_FILTER_CHANNELS: &'static str = "FilterChannels";
+    pub const DIALOG_NAME_CRASH: &'static str = "CrashDialog";
 }
 
 pub enum DialogAction {
     // dialog_id, args
     Open(&'static str, Vec<Box<dyn Any>>),
-    Close(&'static str)
+    Close(&'static str),
+    TerminateApp
 }
 
 type DlgButtonAction = Box<dyn FnMut(&mut Box<dyn Dialog>) -> MaybeDlgAction + 'static>;
