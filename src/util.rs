@@ -6,6 +6,7 @@ use crate::app::ui::edtior_info::{EDITOR_STAGE, EDITOR_VERSION};
 pub mod expression_parser;
 pub mod system_stats;
 pub mod timer;
+pub mod debugger;
 
 pub fn send_discord_webhook_crash_message(webhook_url: &str, content: &str, api_key: &str) -> Result<(), reqwest::Error> {
     let client = Client::new();

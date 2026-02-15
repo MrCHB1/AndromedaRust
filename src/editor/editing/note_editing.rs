@@ -92,8 +92,8 @@ pub struct NoteEditing {
     toolbar_settings: Rc<RefCell<ToolBarSettings>>,
 
     // for sending to renderers
-    render_manager: Arc<Mutex<RenderManager>>,
-    data_view_renderer: Option<Arc<Mutex<DataViewRenderer>>>,
+    // render_manager: Arc<Mutex<RenderManager>>,
+    // data_view_renderer: Option<Arc<Mutex<DataViewRenderer>>>,
 
     // for temporary note movement idk
     note_old_positions: Vec<(MIDITick, u8)>,
@@ -121,8 +121,6 @@ impl NoteEditing {
         editor_actions: &Rc<RefCell<EditorActions>>,
         toolbar_settings: &Rc<RefCell<ToolBarSettings>>,
 
-        render_manager: &Arc<Mutex<RenderManager>>,
-        data_view_renderer: &Arc<Mutex<DataViewRenderer>>,
         shared_clipboard: &Arc<RwLock<SharedClipboard>>,
         shared_selected_note_ids: &Arc<RwLock<SharedSelectedNotes>>,
     ) -> Self {
@@ -143,8 +141,6 @@ impl NoteEditing {
             note_old_positions: Vec::new(),
             note_old_lengths: Vec::new(),
 
-            render_manager: render_manager.clone(),
-            data_view_renderer: Some(data_view_renderer.clone()),
             latest_note_start: 38400,
             ppq: 960,
             selection_range: (0, 0, 0, 0),
@@ -476,7 +472,7 @@ impl NoteEditing {
         }
 
         if can_show_ghost_notes {
-            self.show_ghost_notes();
+            // self.show_ghost_notes();
         }
     }
 
@@ -492,12 +488,12 @@ impl NoteEditing {
 
     fn pencil_mouse_up(&mut self) {
         if self.get_flag(NOTE_EDIT_IS_EDITING) {
-            self.hide_ghost_notes();
+            // self.hide_ghost_notes();
             self.apply_ghost_place_notes();
             self.disable_flag(NOTE_EDIT_IS_EDITING);
             self.disable_flag(NOTE_EDIT_SYNTH_PLAY);
         } else if self.get_flag(NOTE_EDIT_DRAGGING) {
-            self.hide_ghost_notes();
+            // self.hide_ghost_notes();
 
             let ghost_deltas = self.get_ghost_notes_pos_delta();
             self.apply_ghost_move_notes(ghost_deltas);
@@ -585,7 +581,7 @@ impl NoteEditing {
                 }
             }
 
-            self.show_ghost_notes();
+            // self.show_ghost_notes();
         } else {
             self.init_selection_box(self.mouse_info.mouse_midi_pos);
         }
@@ -606,7 +602,7 @@ impl NoteEditing {
 
     fn select_mouse_up(&mut self) {
         if self.get_flag(NOTE_EDIT_DRAGGING) {
-            self.hide_ghost_notes();
+            // self.hide_ghost_notes();
             let ghost_deltas = self.get_ghost_notes_pos_delta();
             self.apply_ghost_move_notes(ghost_deltas);
             self.disable_flag(NOTE_EDIT_DRAGGING);
@@ -984,34 +980,6 @@ impl NoteEditing {
         }
     }
 
-    fn show_ghost_notes(&mut self) {
-        {
-            let mut render_manager = self.render_manager.lock().unwrap();
-            let curr_renderer = render_manager.get_active_renderer();
-            curr_renderer.lock().unwrap().set_ghost_notes(self.ghost_notes.clone());
-        }
-
-        {
-            let data_view_renderer = self.data_view_renderer.as_ref().unwrap();
-            let mut data_view_renderer = data_view_renderer.lock().unwrap();
-            data_view_renderer.set_ghost_notes(self.ghost_notes.clone());
-        }
-    }
-
-    fn hide_ghost_notes(&mut self) {
-        {
-            let mut render_manager = self.render_manager.lock().unwrap();
-            let curr_renderer = render_manager.get_active_renderer();
-            curr_renderer.lock().unwrap().clear_ghost_notes();
-        }
-
-        {
-            let data_view_renderer = self.data_view_renderer.as_ref().unwrap();
-            let mut data_view_renderer = data_view_renderer.lock().unwrap();
-            data_view_renderer.clear_ghost_notes();
-        }
-    }
-
     fn ghost_notes_into_notes(&mut self) -> Vec<Note> {
         let mut ghost_notes = self.ghost_notes.lock().unwrap();
         std::mem::take(&mut *ghost_notes)
@@ -1071,6 +1039,10 @@ impl NoteEditing {
             };
             delta_pos
         }).collect()
+    }
+
+    pub fn get_ghost_notes(&self) -> Arc<Mutex<Vec<Note>>> {
+        self.ghost_notes.clone()
     }
 
     // ======== NOTE HELPER FUNCTIONS ========
@@ -1463,10 +1435,10 @@ impl NoteEditing {
             / snap_ratio.1 as MIDITick;
     }
 
-    pub fn set_render_selected_notes(&self) {
+    /* pub fn set_render_selected_notes(&self) {
         let mut render_manger = self.render_manager.lock().unwrap();
         render_manger.get_active_renderer().lock().unwrap().set_selected(&self.shared_selected_note_ids);
-    }
+    } */
 
     pub fn get_can_draw_selection_box(&self) -> bool {
         self.draw_select_box

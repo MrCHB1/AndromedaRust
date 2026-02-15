@@ -34,6 +34,10 @@ pub enum EditorAction {
     ChannelChange(Vec<usize>, Vec<i8>, u16),
     NotesMove(Vec<usize>, Vec<(SignedMIDITick, i16)>, u16, bool), // stores change in tick and key. last bool is if we should update selected notes ids
     NotesMoveImmediate(Vec<usize>, Vec<(SignedMIDITick, i16)>, u16), // stores change in tick and key without keeping track of the old note ids. this is unsafe lol
+    NotesMoveMultiTrack(
+        Vec<(u16, Vec<usize>)>, // note ids per track (track, note ids)
+        (SignedMIDITick, i16) // moved by
+    ),
     Select(Vec<usize>, u16), // pretty straightforward
     Deselect(Vec<usize>, u16),
     Duplicate(Vec<usize>, MIDITick, u16, u16), // (note_ids, paste_tick, source track/channel, destination track/channel)
@@ -175,6 +179,9 @@ impl EditorActions {
             },
             EditorAction::NotesMoveImmediate(note_id, midi_pos_delta, note_group) => {
                 EditorAction::NotesMoveImmediate(note_id, midi_pos_delta.iter().map(|delta| (-delta.0, -delta.1)).collect(), note_group)
+            },
+            EditorAction::NotesMoveMultiTrack(note_track_id, midi_pos_delta) => {
+                EditorAction::NotesMoveMultiTrack(note_track_id, (-midi_pos_delta.0, -midi_pos_delta.1))
             },
             EditorAction::Select(note_id, note_group) => {
                 EditorAction::Deselect(note_id, note_group)

@@ -5,6 +5,8 @@ use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
 use crate::editor::navigation::{PianoRollNavigation, TrackViewNavigation};
 use crate::editor::project::project_manager::ProjectManager;
+use crate::editor::util::{SignedMIDITick, SignedMIDITrk, SignedMIDITrkVec};
+use crate::midi::events::note::Note;
 use crate::midi::midi_track::MIDITrack;
 use std::sync::{Arc, Mutex, RwLock};
 use eframe::egui::Vec2;
@@ -84,6 +86,8 @@ pub struct TrackViewRenderer {
     notes_render: Vec<RenderTrackViewNote>,
     all_tracks: Arc<RwLock<Vec<MIDITrack>>>,
     note_colors: Arc<Mutex<NoteColors>>,
+    ghost_notes: Arc<Mutex<Vec<(u16, Vec<Note>)>>>,
+    ghost_notes_render_offset: Arc<RwLock<SignedMIDITrkVec>>,
 
     // per channel per track
     last_note_start: Vec<usize>,
@@ -230,7 +234,9 @@ impl TrackViewRenderer {
 
             last_view_offset: 0.0,
             last_zoom: 0.0,
-            started_playing: false
+            started_playing: false,
+            ghost_notes: Arc::new(Mutex::new(Vec::new())),
+            ghost_notes_render_offset: Arc::new(RwLock::new((0, 0)))
         }
     }
 
@@ -249,6 +255,14 @@ impl TrackViewRenderer {
         } else {
             nav.tick_pos_smoothed
         }
+    }
+
+    pub fn set_ghost_notes(&mut self, ghost_notes: Arc<Mutex<Vec<(u16, Vec<Note>)>>>) {
+        self.ghost_notes = ghost_notes;
+    }
+
+    pub fn set_ghost_note_offset(&mut self, ghost_note_offset: Arc<RwLock<SignedMIDITrkVec>>) {
+        self.ghost_notes_render_offset = ghost_note_offset;
     }
 }
 
@@ -495,6 +509,46 @@ impl Renderer for TrackViewRenderer {
                     }
 
                     curr_track += 1;
+                }
+
+                // render ghost notes (if any)
+                {
+                    let ghost_notes = self.ghost_notes.lock().unwrap();
+                    let ghost_notes_render_offset = self.ghost_notes_render_offset.read().unwrap();
+
+                    for (curr_track, notes) in ghost_notes.iter() {
+                        // TODO: ghost note culling
+
+                        let curr_track = *curr_track as SignedMIDITrk + ghost_notes_render_offset.1;
+                        if curr_track < 0 { continue; }
+                        let curr_track = curr_track as usize;
+
+                        for note in &notes[..] {
+                            {
+                                let note_top =    (zoom_tracks - curr_track as f32 - (1.0 - ((note.key as f32 + 1.0) / 128.0))) + track_pos;
+                                let note_bottom = (zoom_tracks - curr_track as f32 - (1.0 - ((note.key as f32 - 1.0) / 128.0))) + track_pos;
+                                let note_left = (note.start as SignedMIDITick + ghost_notes_render_offset.0) as f32 - tick_pos_offs;
+                                
+                                let trk_chan = ((curr_track as usize) << 4) | (note.channel() as usize);
+                                self.notes_render[note_id] = RenderTrackViewNote {
+                                    0: [note_left, note.length as f32, note_bottom, note_top],
+                                    1: {
+                                        let note_meta = note_colors.get_index(trk_chan) as u32;
+                                        note_meta
+                                    }
+                                };
+
+                                note_id += 1;
+                                
+                                if note_id >= NOTE_BUFFER_SIZE {
+                                    self.tv_notes_ibo.set_data(self.notes_render.as_slice(), glow::DYNAMIC_DRAW);
+                                    self.gl.draw_elements_instanced(
+                                        glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, NOTE_BUFFER_SIZE as i32);
+                                    note_id = 0;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if note_id != 0 {

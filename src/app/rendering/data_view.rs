@@ -9,6 +9,8 @@ use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
 //use crate::editor::note_editing::GhostNote;
 use crate::editor::project::project_manager::ProjectManager;
+use crate::editor::util::get_next_specific_ch_ev_idx;
+use crate::midi::events::channel_event::ChannelEventType;
 use crate::midi::events::note::Note;
 use crate::midi::midi_track::MIDITrack;
 use std::sync::{Arc, Mutex, RwLock};
@@ -469,6 +471,192 @@ impl DataViewRenderer {
         }
     }
 
+    fn draw_channel_event_data(&mut self, tick_pos: f32, zoom_ticks: f32, channel_event_type: ChannelEventType) {
+        let view_settings = self.view_settings.lock().unwrap();
+
+        let nav_curr_track = {
+            let nav = self.navigation.lock().unwrap();
+            nav.curr_track
+        };
+
+        let tracks = self.all_tracks.read().unwrap();
+        if tracks.is_empty() { return; }
+
+        let tracks_to_iter = match view_settings.pr_onion_state {
+            VS_PianoRoll_OnionState::NoOnion => {
+                &tracks[nav_curr_track as usize..nav_curr_track as usize]
+            },
+            VS_PianoRoll_OnionState::ViewAll => {
+                //view_all_tracks = true;
+                &tracks[..]
+            },
+            VS_PianoRoll_OnionState::ViewPrevious => {
+                //view_all_tracks = false;
+                if nav_curr_track == 0 { &tracks[nav_curr_track as usize..nav_curr_track as usize] }
+                else { &tracks[(nav_curr_track - 1) as usize..=(nav_curr_track as usize)] }
+            },
+            VS_PianoRoll_OnionState::ViewNext => {
+                if nav_curr_track == (tracks.len() - 1) as u16 { &tracks[nav_curr_track as usize..nav_curr_track as usize] }
+                else { &tracks[(nav_curr_track) as usize..=(nav_curr_track + 1) as usize] }
+            }
+        };
+
+        let onion_track_color_meta = match view_settings.pr_onion_coloring {
+            VS_PianoRoll_OnionColoring::FullColor => { 0b00 },
+            VS_PianoRoll_OnionColoring::PartialColor => { 0b01 },
+            VS_PianoRoll_OnionColoring::GrayedOut => { 0b10 }
+        };
+
+        {
+            let note_colors = self.note_colors.lock().unwrap();
+
+            let mut handle_id = 0;
+            let mut curr_track = 0;
+
+            let tick_pos_offs = tick_pos + self.view_offset;
+
+            // bind before rendering
+            self.dv_handles_vao.bind();
+            self.dv_handles_ibo.bind();
+            self.dv_handles_vbo.bind();
+            self.dv_handles_ebo.bind();
+
+            // 1. draw all pitch bend handles that is not the current track
+            for track in tracks_to_iter {
+                let ch_evs = track.get_channel_evs();
+                if ch_evs.is_empty() || curr_track == nav_curr_track {
+                    curr_track += 1;
+                    continue;
+                }
+
+                // TODO: Cull pitch bend handles
+                let mut curr_ch_event = match get_next_specific_ch_ev_idx(ch_evs, &channel_event_type, None) {
+                    Some(idx) => idx,
+                    None => {
+                        curr_track += 1;
+                        continue;
+                    }
+                };
+
+                while let Some(next_ch_event) = get_next_specific_ch_ev_idx(ch_evs, &channel_event_type, Some(curr_ch_event + 1)) {
+                    let curr_ev = &ch_evs[curr_ch_event];
+                    let next_ev = &ch_evs[next_ch_event];
+
+                    let trk_chan = ((curr_track as usize) << 4) | (curr_ev.channel as usize);
+
+                    let evt_duration = next_ev.tick - curr_ev.tick;
+
+                    let (value, default_val) = match curr_ev.event_type {
+                        ChannelEventType::PitchBend(lsb, msb) => {
+                            let value = ((msb as u16) << 7) | (lsb as u16);
+                            let value_norm = ((value as i16 - 8192) as f32) / 8192.0;
+                            (value_norm * 0.5 + 0.5, 0.5)
+                        },
+                        _ => {
+                            (0.5, 0.0)
+                        }
+                    };
+
+                    self.dv_handles_render[handle_id] = RenderDataViewHandle {
+                        0: [(curr_ev.tick as f32 - tick_pos_offs) / zoom_ticks,
+                            (evt_duration as f32) / zoom_ticks,
+                            default_val,
+                            value],
+                        1: {
+                            note_colors.get_index(trk_chan) as u32 | (onion_track_color_meta << 14) | (127u32 << 4)
+                        }
+                    };
+
+                    handle_id += 1;
+
+                    if handle_id >= HANDLE_BUFFER_SIZE {
+                        self.dv_handles_ibo.set_data(self.dv_handles_render.as_slice(), glow::DYNAMIC_DRAW);
+
+                        unsafe {
+                            self.gl.use_program(Some(self.dv_handles_program.program));
+                            self.gl.draw_elements_instanced(
+                                glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, HANDLE_BUFFER_SIZE as i32
+                            );
+                        }
+
+                        handle_id = 0;
+                    }
+                    
+                    curr_ch_event = next_ch_event;
+                }
+
+                curr_track += 1;
+            }
+
+            // 2. draw current track on top
+            let top_track = &tracks[nav_curr_track as usize];
+            let ch_evs = top_track.get_channel_evs();
+            
+            if !ch_evs.is_empty() {
+                // TODO: Cull pitch bend handles
+                if let Some(mut curr_ch_event) = get_next_specific_ch_ev_idx(ch_evs, &channel_event_type, None) {
+                    while let Some(next_ch_event) = get_next_specific_ch_ev_idx(ch_evs, &channel_event_type, Some(curr_ch_event + 1)) {
+                        let curr_ev = &ch_evs[curr_ch_event];
+                        let next_ev = &ch_evs[next_ch_event];
+
+                        let trk_chan = ((curr_track as usize) << 4) | (curr_ev.channel as usize);
+
+                        let evt_duration = next_ev.tick - curr_ev.tick;
+
+                        let (value, default_val) = match curr_ev.event_type {
+                            ChannelEventType::PitchBend(lsb, msb) => {
+                                let value = ((msb as u16) << 7) | (lsb as u16);
+                                let value_norm = ((value as i16 - 8192) as f32) / 8192.0;
+                                (value_norm * 0.5 + 0.5, 0.5)
+                            },
+                            _ => {
+                                (0.5, 0.0)
+                            }
+                        };
+
+                        self.dv_handles_render[handle_id] = RenderDataViewHandle {
+                            0: [(curr_ev.tick as f32 - tick_pos_offs) / zoom_ticks,
+                                (evt_duration as f32) / zoom_ticks,
+                                default_val,
+                                value],
+                            1: {
+                                note_colors.get_index(trk_chan) as u32 | (onion_track_color_meta << 14) | (127u32 << 4)
+                            }
+                        };
+
+                        handle_id += 1;
+
+                        if handle_id >= HANDLE_BUFFER_SIZE {
+                            self.dv_handles_ibo.set_data(self.dv_handles_render.as_slice(), glow::DYNAMIC_DRAW);
+
+                            unsafe {
+                                self.gl.use_program(Some(self.dv_handles_program.program));
+                                self.gl.draw_elements_instanced(
+                                    glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, HANDLE_BUFFER_SIZE as i32
+                                );
+                            }
+
+                            handle_id = 0;
+                        }
+                        
+                        curr_ch_event = next_ch_event;
+                    }
+                }
+            }
+
+            if handle_id != 0 {
+                self.dv_handles_ibo.set_data(self.dv_handles_render.as_slice(), glow::DYNAMIC_DRAW);
+
+                unsafe {
+                    self.gl.use_program(Some(self.dv_handles_program.program));
+                    self.gl.draw_elements_instanced(
+                        glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, handle_id as i32
+                    );
+                }
+            }
+        }
+    }
+
     pub fn set_ghost_notes(&mut self, notes: Arc<Mutex<Vec<Note>>>) {
         self.ghost_notes = Some(notes);
     }
@@ -610,6 +798,9 @@ impl Renderer for DataViewRenderer {
                     match curr_data_view {
                         VS_PianoRoll_DataViewState::NoteVelocities => {
                             self.draw_note_velocities(tick_pos, zoom_ticks);
+                        },
+                        VS_PianoRoll_DataViewState::PitchBend => {
+                            self.draw_channel_event_data(tick_pos, zoom_ticks, ChannelEventType::PitchBend(0, 0));
                         },
                         _ => {}
                     }

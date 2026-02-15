@@ -1,8 +1,8 @@
 // abstraction is NEEDED!!
 use crate::{
     LAST_PANIC, app::{
-        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog, selection_dialogs::filter_channels::FilterChannelsDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, editor::{
-            edit_functions::{EFChopDialog, EFGlueDialog}, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioEngineType, ESAudioSettings, ESGeneralSettings, ESSettingsWindow, PR_KEYBOARD_WIDTH, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}, util::{send_discord_webhook_crash_message, system_stats::SystemStats, timer::Timer}};
+        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, track_view::TrackViewRenderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog, selection_dialogs::filter_channels::FilterChannelsDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, editor::{
+            edit_functions::{EFChopDialog, EFGlueDialog}, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_ERASING, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioEngineType, ESAudioSettings, ESGeneralSettings, ESSettingsWindow, PR_KEYBOARD_WIDTH, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}, util::{debugger::Debugger, send_discord_webhook_crash_message, system_stats::SystemStats, timer::Timer}};
 use crate::editor::editing::{
     meta_editing::{MetaEditing, MetaEventInsertDialog},
     note_editing::{NoteEditing, note_edit_flags::*},
@@ -232,9 +232,10 @@ impl MainWindow {
         self.init_navigation();
         self.init_view_settings();
         self.init_colors();
-        self.init_render_manager();
+        // self.init_render_manager();
 
         self.init_note_editing();
+        self.init_render_manager();
 
         let mut plugin_loader = PluginLoader::new(&PLUGIN_PATH);
         plugin_loader.load_all_plugins().unwrap();
@@ -544,6 +545,9 @@ impl MainWindow {
         let gl = self.gl.as_ref().unwrap();
 
         if let Some(playback_manager) = self.playback_manager.as_ref() {
+            let note_editing = &self.note_editing;
+            let track_editing = &self.track_editing;
+
             render_manager.init_renderers(
                 self.project_manager.clone(), 
                 Some(gl.clone()), 
@@ -554,7 +558,10 @@ impl MainWindow {
                 self.bar_cacher.clone(), 
                 &self.note_colors, 
             &self.note_culler,
-                &self.shared_selected_notes
+                &self.shared_selected_notes,
+
+                note_editing,
+                track_editing
             );
 
             self.data_view_renderer = Some(Arc::new(Mutex::new(unsafe {
@@ -573,6 +580,7 @@ impl MainWindow {
         }
 
         render_manager.switch_renderer(RenderType::PianoRoll);
+
         self.render_manager = Some(Arc::new(Mutex::new(render_manager)));
     }
 
@@ -589,7 +597,6 @@ impl MainWindow {
 
             let nav = self.nav.as_ref().unwrap();
             let editor_tool = &self.editor_tool;
-            let render_manager = self.render_manager.as_ref().unwrap();
             // self.note_editing = Arc::new(Mutex::new(NoteEditing::new(notes, nav, editor_tool, render_manager, self.data_view_renderer.as_ref().unwrap(), &self.editor_actions, &self.toolbar_settings)));
             let note_editing = NoteEditing::new(
                 tracks,
@@ -597,8 +604,6 @@ impl MainWindow {
                 editor_tool,
                 &self.editor_actions,
                 &self.toolbar_settings,
-                render_manager,
-                self.data_view_renderer.as_ref().unwrap(),
                 &self.shared_clipboard,
                 &self.shared_selected_notes
             );
@@ -1664,7 +1669,7 @@ impl MainWindow {
                 let track_editing = self.track_editing.lock().unwrap();
 
                 let (tl, br) = track_editing.get_selection_range_ui(ui);
-                (track_editing.get_can_draw_selection_box() || track_editing.has_selection, false, track_editing.has_selection, (tl, br))
+                (track_editing.get_can_draw_selection_box() || track_editing.has_selection, track_editing.get_flag(TRACK_EDIT_ERASING), track_editing.has_selection, (tl, br))
             }
         };
 
@@ -2595,7 +2600,9 @@ impl eframe::App for MainWindow {
 {msg}"))
                 .show();
 
+            Debugger::log(format!("{}", msg));
             send_discord_webhook_crash_message("https://nonconvertibly-untrue-denise.ngrok-free.dev/send", &msg, API_KEY).unwrap();
+
         }
     }
 }

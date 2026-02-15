@@ -55,7 +55,6 @@ impl EditFunctions {
                 *notes = merged;
 
                 editor_actions.register_action(EditorAction::Bulk(vec![
-                    // EditorAction::NotesMove(old_ids, new_ids, changed_positions, curr_track, true),
                     EditorAction::LengthChange(note_ids, length_change, curr_track),
                     EditorAction::NotesMove(new_ids, pos_change, curr_track, true),
                 ]));
@@ -104,11 +103,14 @@ impl EditFunctions {
                 let old_notes = std::mem::take(notes);
                 let (merged, chopped_ids) = merge_notes_and_return_ids(old_notes, new_notes);
                 *notes = merged;
+
                 // finally, register the function for undo/redoing
-                editor_actions.register_action(EditorAction::Bulk(vec![
-                    EditorAction::PlaceNotes(chopped_ids, None, curr_track),
-                    EditorAction::LengthChange(note_ids, changed_lengths, curr_track),
-                ]));
+                if !chopped_ids.is_empty() && !note_ids.is_empty() && !changed_lengths.is_empty() {
+                    editor_actions.register_action(EditorAction::Bulk(vec![
+                        EditorAction::PlaceNotes(chopped_ids, None, curr_track),
+                        EditorAction::LengthChange(note_ids, changed_lengths, curr_track),
+                    ]));
+                }
             },
             EditFunction::Glue(note_ids, glue_threshold, separate_channels) => {
                 if note_ids.is_empty() { return; }
@@ -183,10 +185,12 @@ impl EditFunctions {
                 let (merged, new_ids) = merge_notes_and_return_ids(remaining_notes, kept_notes);
                 *notes = merged;
 
-                editor_actions.register_action(EditorAction::Bulk(vec![
-                    EditorAction::DeleteNotes(removed_original_ids, Some(removed_notes), curr_track),
-                    EditorAction::LengthChange(new_ids, kept_length_changes, curr_track),
-                ]));
+                if !removed_notes.is_empty() {
+                    editor_actions.register_action(EditorAction::Bulk(vec![
+                        EditorAction::DeleteNotes(removed_original_ids, Some(removed_notes), curr_track),
+                        EditorAction::LengthChange(new_ids, kept_length_changes, curr_track),
+                    ]));
+                }
             },
             EditFunction::SliceAtTick(note_ids, slice_tick) => {
                 let mut changed_lengths = Vec::with_capacity(sel_note_ids.len());
@@ -224,10 +228,12 @@ impl EditFunctions {
                 let (new_notes, new_ids) = merge_notes_and_return_ids(old_notes, new_notes);
                 *notes = new_notes;
 
-                editor_actions.register_action(EditorAction::Bulk(vec![
-                    EditorAction::PlaceNotes(new_ids, None, curr_track),
-                    EditorAction::LengthChange(affected_ids, changed_lengths, curr_track)
-                ]));
+                if !changed_lengths.is_empty() {
+                    editor_actions.register_action(EditorAction::Bulk(vec![
+                        EditorAction::PlaceNotes(new_ids, None, curr_track),
+                        EditorAction::LengthChange(affected_ids, changed_lengths, curr_track)
+                    ]));
+                }
             },
             EditFunction::FadeNotes(fade_out) => {
                 let (min_tick, max_tick) = get_min_max_ticks_in_selection(notes, &sel_note_ids).unwrap();
@@ -281,11 +287,13 @@ impl EditFunctions {
 
                 println!("Removed {} notes.", removed_indices.len());
 
-                editor_actions.register_action(EditorAction::DeleteNotes(
-                    removed_indices, 
-                    Some(removed_notes), 
-                    curr_track
-                ));
+                if !removed_notes.is_empty() {
+                    editor_actions.register_action(EditorAction::DeleteNotes(
+                        removed_indices, 
+                        Some(removed_notes), 
+                        curr_track
+                    ));
+                }
             }
         }
     }

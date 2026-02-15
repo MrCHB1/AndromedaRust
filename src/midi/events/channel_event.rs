@@ -1,7 +1,7 @@
 #![warn(unused)]
 use crate::editor::util::MIDITick;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ChannelEventType {
     NoteOff(u8),
     NoteOn(u8, u8),

@@ -5,8 +5,7 @@ use eframe::egui::{self, Key, Ui};
 
 use crate::{
     app::{
-        main_window::{EditorTool, EditorToolSettings},
-        view_settings::ViewSettings
+        main_window::{EditorTool, EditorToolSettings}, rendering::RenderManager, view_settings::ViewSettings
     }, 
     editor::{
         actions::{EditorAction, EditorActions},
@@ -25,13 +24,9 @@ use crate::{
             TrackViewNavigation
         },
         playhead::Playhead,
-        project::{
-            project_manager::ProjectManager
-        }, 
+        project::project_manager::ProjectManager, 
         util::{
-            MIDITick,
-            SignedMIDITick,
-            get_notes_in_range
+            MIDITick, MIDITrk, SignedMIDITick, SignedMIDITrk, SignedMIDITrkVec, get_notes_in_range
         }
     },
     midi::{
@@ -40,7 +35,7 @@ use crate::{
             note::Note
         },
         midi_track::MIDITrack
-    }
+    }, util::debugger::Debugger
 };
 
 pub mod track_flags {
@@ -49,6 +44,7 @@ pub mod track_flags {
     pub const TRACK_EDIT_MOUSE_DOWN_ON_UI: u16 = 0x2;
     pub const TRACK_EDIT_SELECTION_MOVE: u16 = 0x4;
     pub const TRACK_EDIT_ANY_DIALOG_OPEN: u16 = 0x8;
+    pub const TRACK_EDIT_ERASING: u16 = 0x10;
 
     pub const TRACK_EDIT_SHIFT_DOWN: u16 = 0x100;
 }
@@ -85,12 +81,13 @@ pub struct TrackEditing {
     pub has_selection: bool,
 
     ghost_notes: Arc<Mutex<Vec<(u16, Vec<Note>)>>>,
+    ghost_notes_render_offset: Arc<RwLock<SignedMIDITrkVec>>,
 
     pub ppq: u16,
 
     // notes clipboard
     shared_clipboard: Arc<RwLock<SharedClipboard>>,
-    playhead: Rc<RefCell<Playhead>>
+    playhead: Rc<RefCell<Playhead>>,
 }
 
 impl TrackEditing {
@@ -124,6 +121,7 @@ impl TrackEditing {
             selection_range: (0, 0, 0, 0),
 
             ghost_notes: Arc::new(Mutex::new(Vec::new())),
+            ghost_notes_render_offset: Arc::new(RwLock::new((0, 0))),
 
             draw_select_box: false,
             has_selection: false,
@@ -205,7 +203,7 @@ impl TrackEditing {
                 self.select_mouse_down();
             },
             EditorTool::Eraser => {
-
+                self.eraser_mouse_down();
             }
         }
     }
@@ -233,7 +231,7 @@ impl TrackEditing {
                 self.select_mouse_move();
             },
             EditorTool::Eraser => {
-
+                self.eraser_mouse_move();
             }
         }
     }
@@ -259,7 +257,7 @@ impl TrackEditing {
                 self.select_mouse_up();
             },
             EditorTool::Eraser => {
-
+                self.eraser_mouse_up();
             }
         }
     }
@@ -313,7 +311,6 @@ impl TrackEditing {
             self.selected_notes_to_ghost_notes();
 
             self.mouse_info.last_mouse_click_pos = self.get_mouse_midi_pos_snapped();
-            println!("{:?}", self.mouse_info.last_mouse_click_pos);
         }
 
         self.set_flag(TRACK_EDIT_SELECTION_MOVE, mouse_over_selection);
@@ -331,7 +328,9 @@ impl TrackEditing {
             curr_tick = self.snap_tick(curr_tick as SignedMIDITick) as MIDITick;
 
             let tick_change = curr_tick as SignedMIDITick - last_tick as SignedMIDITick;
-            let track_change = curr_track as i32 - last_track as i32;
+            let track_change = curr_track as SignedMIDITrk - last_track as SignedMIDITrk;
+
+            self.offset_render_ghost_notes((tick_change, track_change));
         } else {
             self.update_selection_box(self.mouse_info.mouse_midi_track_pos);
         }
@@ -354,10 +353,36 @@ impl TrackEditing {
             curr_tick = self.snap_tick(curr_tick as SignedMIDITick) as MIDITick;
 
             let tick_change = curr_tick as SignedMIDITick - last_tick as SignedMIDITick;
-            let track_change = curr_track as i32 - last_track as i32;
+            let track_change = curr_track as SignedMIDITrk - last_track as SignedMIDITrk;
             
+            // move ghost notes
             self.move_ghost_notes(tick_change, track_change);
-            self.apply_ghost_notes();
+            
+            let new_ids = self.apply_ghost_notes();
+            self.reset_ghost_note_offset();
+
+            // update selected notes
+            {
+                let ids = new_ids.clone();
+                let mut shared_selected = self.shared_selected_note_ids.write().unwrap();
+                shared_selected.clear_selected();
+                // shared_selected.set_selected_in_track(ids, track);
+                for (track, ids) in ids.into_iter() {
+                    shared_selected.set_selected_in_track(ids, track);
+                }
+            }
+
+            // update selection range
+            self.selection_range = 
+                (
+                    (self.selection_range.0 as SignedMIDITick + tick_change) as MIDITick,
+                    (self.selection_range.1 as SignedMIDITick + tick_change) as MIDITick,
+                    (self.selection_range.2 as SignedMIDITrk + track_change) as MIDITrk,
+                    (self.selection_range.3 as SignedMIDITrk + track_change) as MIDITrk
+                );
+
+            let mut editor_actions = self.editor_actions.borrow_mut();
+            editor_actions.register_action(EditorAction::NotesMoveMultiTrack(new_ids, (tick_change, track_change)));
         } else {
             let shift_down = self.get_flag(TRACK_EDIT_SHIFT_DOWN);
             // select notes
@@ -387,6 +412,41 @@ impl TrackEditing {
                 // no notes were selected at all, existing selection cleared already
                 println!("Selected no notes in track view.");
             }
+        }
+    }
+
+    fn eraser_mouse_down(&mut self) {
+        self.enable_flag(TRACK_EDIT_ERASING);
+        self.init_selection_box(self.mouse_info.mouse_midi_track_pos);
+        self.deselect_all();
+    }
+
+    fn eraser_mouse_move(&mut self) {
+        self.update_selection_box(self.mouse_info.mouse_midi_track_pos);
+    }
+
+    fn eraser_mouse_up(&mut self) {
+        self.disable_flag(TRACK_EDIT_ERASING);
+        self.draw_select_box = false;
+
+        let region = self.get_selection_range();
+
+        if let Some(selected_ids_with_track) = self.get_note_ids_in_region(region) {
+            let mut deleted_ids = Vec::new();
+            let mut deleted_notes = Vec::new();
+            let mut affected_tracks = Vec::new();
+
+            for (track, ids) in selected_ids_with_track {
+                let (removed_notes, retained_notes) = self.take_some_notes_in_track(track, &ids).unwrap();
+                self.set_notes_in_track(track, retained_notes);
+
+                deleted_ids.push(ids);
+                deleted_notes.push(removed_notes);
+                affected_tracks.push(track);
+            }
+
+            let mut editor_actions = self.editor_actions.borrow_mut();
+            editor_actions.register_action(EditorAction::DeleteNotesMultiTrack(deleted_ids, Some(deleted_notes), affected_tracks));
         }
     }
 
@@ -514,59 +574,58 @@ impl TrackEditing {
     }
 
     // ======== GHOST NOTE STUFF ========
+    pub fn get_ghost_notes(&self) -> Arc<Mutex<Vec<(u16, Vec<Note>)>>> {
+        self.ghost_notes.clone()
+    }
 
-    fn move_ghost_notes(&mut self, tick_change: SignedMIDITick, track_change: i32) {
+    fn offset_render_ghost_notes(&self, offset: SignedMIDITrkVec) {
+        let mut gn_offs = self.ghost_notes_render_offset.write().unwrap();
+        *gn_offs = offset;
+    }
+
+    pub fn get_ghost_note_offset(&self) -> Arc<RwLock<SignedMIDITrkVec>> {
+        self.ghost_notes_render_offset.clone()
+    }
+
+    fn reset_ghost_note_offset(&self) {
+        let mut gn_offs = self.ghost_notes_render_offset.write().unwrap();
+        *gn_offs = (0, 0);
+    }
+
+    fn move_ghost_notes(&mut self, tick_change: SignedMIDITick, track_change: i16) {
         let mut ghost_notes = self.ghost_notes.lock().unwrap();
         for gn_track in ghost_notes.iter_mut() {
-            gn_track.0 = (gn_track.0 as i32 + track_change) as u16;
+            gn_track.0 = (gn_track.0 as i16 + track_change) as u16;
+            for gn_note in gn_track.1.iter_mut() {
+                *(gn_note.start_mut()) = (gn_note.start() as SignedMIDITick + tick_change) as MIDITick;
+            }
         }
     }
 
     fn selected_notes_to_ghost_notes(&mut self) {
         let (_, _, min_track, max_track) = self.get_selection_range();
 
-        let mut old_notes = {
-            let project_manager = self.project_manager.read().unwrap();
-            let mut tracks = project_manager.get_tracks().write().unwrap();
+        let mut ghost_notes = Vec::new();
+
+        for trk in min_track..max_track {
+            if !self.track_exists(trk) { break; }
             
-            let mut notes = Vec::with_capacity((max_track - min_track) as usize);
-            for trk in min_track..max_track {
-                if trk >= tracks.len() as u16 { break; }
+            // take selection from track, effectively clearing its selection
+            let selected_ids = {
+                let mut selected = self.shared_selected_note_ids.write().unwrap();
+                selected.take_selected_from_track(trk)
+            };
 
-                let notes_ = std::mem::take((*tracks)[trk as usize].get_notes_mut());
-                notes.push((trk, notes_));
-            }
+            // extract
+            let (extracted, old_notes) = self.take_some_notes_in_track(trk, &selected_ids).unwrap();
+            self.set_notes_in_track(trk, old_notes);
 
-            notes
-        };
-
-        let tmp_ghosts= {
-            let mut tmp_ghosts = Vec::new();
-
-            for (trk, notes) in old_notes.drain(..) {
-                let (tg, new_notes) = {
-                    let selected = self.shared_selected_note_ids.read().unwrap();
-                    if let Some(selected) = selected.get_selected_ids_in_track(trk) {
-                        extract(notes, selected)
-                    } else {
-                        (Vec::new(), notes)
-                    }
-                };
-                
-                tmp_ghosts.push((trk, tg));
-                self.set_notes_in_track(trk, new_notes);
-            }
-
-            tmp_ghosts
-        };
-
-        {
-            let mut shared_selected = self.shared_selected_note_ids.write().unwrap();
-            shared_selected.clear_selected();
+            // add to ghost notes table
+            ghost_notes.push((trk, extracted));
         }
 
-        let mut ghost_notes = self.ghost_notes.lock().unwrap();
-        *ghost_notes = tmp_ghosts;
+        let mut gnotes = self.ghost_notes.lock().unwrap();
+        *gnotes = ghost_notes;
     }
 
     fn apply_ghost_notes(&mut self) -> Vec<(u16, Vec<usize>)> {
@@ -575,33 +634,27 @@ impl TrackEditing {
             std::mem::take(&mut *ghost_notes)
         };
 
-        let mut tracks = {
-            let project_manager = self.project_manager.read().unwrap();
-            let mut tracks = project_manager.get_tracks().write().unwrap();
-            std::mem::take(&mut *tracks)
-        };
+        let mut track_ids = Vec::with_capacity(ghost_notes.len());
 
-        let mut trk_ids = Vec::with_capacity(ghost_notes.len());
+        for (track, notes) in ghost_notes.drain(..) {
+            if let Some(track_) = self.take_notes_in_track(track) {
+                let (merged, ids) = merge_notes_and_return_ids(track_, notes);
+                self.set_notes_in_track(track, merged);
 
-        for (trk, notes) in ghost_notes.drain(..) {
-            let track = (*tracks)[trk as usize].get_notes_mut();
-            let old_notes = std::mem::take(track);
-            let (merged, ids) = merge_notes_and_return_ids(old_notes, notes);
-
-            *track = merged;
-            
-            {
-                let mut selected = self.shared_selected_note_ids.write().unwrap();
-                selected.set_selected_in_track(ids.clone(), trk);
+                track_ids.push((track, ids));
+            } else {
+                // track does not exist, so make it exist
+                while !self.track_exists(track) {
+                    self.append_empty_track();
+                }
+                
+                let ids: Vec<usize> = (0..notes.len()).collect();
+                self.set_notes_in_track(track, notes);
+                track_ids.push((track, ids));
             }
-
-            trk_ids.push((trk, ids));
         }
 
-        let project_manager = self.project_manager.read().unwrap();
-        (*(project_manager.get_tracks().write().unwrap())) = tracks;
-        
-        trk_ids
+        track_ids
     }
 
     // ======== HELPER FUNCTIONS ========
@@ -617,6 +670,30 @@ impl TrackEditing {
         nav.curr_track
     }
 
+    fn track_exists(&self, track: u16) -> bool {
+        track < self.get_used_track_count()
+    }
+
+    /// Takes notes from [`track`] and returns it, leaving behind a track without notes. Returns [`None`] if the track does not exist
+    fn take_notes_in_track(&mut self, track: u16) -> Option<Vec<Note>> {
+        if track >= self.get_used_track_count() { return None; }
+
+        let project_manager = self.project_manager.read().unwrap();
+        let mut tracks = project_manager.get_tracks().write().unwrap();
+        let taken_notes = std::mem::take((*tracks)[track as usize].get_notes_mut());
+
+        Some(taken_notes)
+    }
+
+    /// Takes some notes from [`track`] and returns 1. the extracted notes, and 2. the original array with the extracted notes removed.
+    fn take_some_notes_in_track(&mut self, track: u16, ids: &[usize]) -> Option<(Vec<Note>, Vec<Note>)> {
+        if track >= self.get_used_track_count() { return None; }
+        
+        let taken_notes = self.take_notes_in_track(track).unwrap();
+        let (extracted, new_taken) = extract(taken_notes, ids);
+        return Some((extracted, new_taken))
+    }
+
     fn set_notes_in_track(&mut self, track: u16, notes_: Vec<Note>) {
         let project_manager = self.project_manager.read().unwrap();
         let mut tracks = project_manager.get_tracks().write().unwrap();
@@ -628,16 +705,7 @@ impl TrackEditing {
         let project_manager = self.project_manager.read().unwrap();
         
         let mut track_ = project_manager.get_tracks().write().unwrap();
-        /*let (mut notes_, mut ch_evs_) = (
-            let mut track = 
-            
-            // project_manager.get_notes().write().unwrap(),
-            // project_manager.get_channel_evs().write().unwrap()
-        );*/
-
         track_.insert(track as usize, MIDITrack::new(notes, ch_evs, Vec::new()));
-        // notes_.insert(track as usize, notes);
-        // ch_evs_.insert(track as usize, ch_evs);
     }
 
     fn insert_track_at(&mut self, track_idx: u16, track: MIDITrack) {
@@ -911,24 +979,19 @@ impl TrackEditing {
         };
 
         if active_tracks.is_empty() { return; }
-
         self.prepare_clipboard();
 
         let mut actions = Vec::new();
-
         for track in active_tracks {
             let (ids, cut_notes, retained_notes) = {
-                let mut selected = self.shared_selected_note_ids.write().unwrap();
-                let selected = selected.take_selected_from_track(track);
-                if selected.is_empty() { continue; }
-
-                let old_notes = {
-                    let project_manager = self.project_manager.read().unwrap();
-                    let mut tracks = project_manager.get_tracks().write().unwrap();
-                    let notes = std::mem::take((*tracks)[track as usize].get_notes_mut());
-                    notes
+                let selected = {
+                    let mut s = self.shared_selected_note_ids.write().unwrap();
+                    s.take_selected_from_track(track)
                 };
 
+                if selected.is_empty() { continue; }
+
+                let old_notes = self.take_notes_in_track(track).unwrap();
                 let (cut_notes, retained_notes) = extract(old_notes, &selected);
                 
                 let mut shared_clipboard = self.shared_clipboard.write().unwrap();
@@ -980,12 +1043,7 @@ impl TrackEditing {
                 }
             }
 
-            let old_notes = {
-                let project_manager = self.project_manager.write().unwrap();
-                let mut tracks = project_manager.get_tracks().write().unwrap();
-                let notes = std::mem::take((*tracks)[dest_idx as usize].get_notes_mut());
-                notes
-            };
+            let old_notes = self.take_notes_in_track(dest_idx as MIDITrk).unwrap();
 
             let notes_vec = notes_vec.into_iter().map(|n| {
                 let mut note = n;
@@ -1045,26 +1103,46 @@ impl TrackEditing {
                 let recovered_notes = removed_notes.take().unwrap();
 
                 for (recovered_notes, track) in recovered_notes.into_iter().zip(tracks) {
-                    let old_notes = {
-                        let project_manager = self.project_manager.read().unwrap();
-                        let mut tracks_ = project_manager.get_tracks().write().unwrap();
-
-                        std::mem::take((*tracks_)[*track as usize].get_notes_mut())
-                    };
+                    let old_notes = self.take_notes_in_track(*track).unwrap();
                     let merged = merge_notes(old_notes, recovered_notes);
                     self.set_notes_in_track(*track, merged);
                 }
+            },
+            EditorAction::NotesMoveMultiTrack(note_ids, pos_change) => {
+                let mut new_note_ids = Vec::new();
+
+                for track_note_ids in note_ids.iter() {
+                    let track = track_note_ids.0;
+                    let note_ids = &track_note_ids.1;
+                    
+                    // extract notes to move and the original note array
+                    let (mut to_move, old_notes) = self.take_some_notes_in_track(track, note_ids).unwrap();
+                    self.set_notes_in_track(track, old_notes);
+
+                    let new_track = (track as SignedMIDITrk + pos_change.1) as MIDITrk;
+
+                    // move notes by the tick
+                    for note in to_move.iter_mut() {
+                        *(note.start_mut()) = (note.start() as SignedMIDITick + pos_change.0) as MIDITick
+                    }
+
+                    // merge moved notes into new track
+                    let (merged, new_ids) = {
+                        let old_notes = self.take_notes_in_track(new_track).unwrap();
+                        merge_notes_and_return_ids(old_notes, to_move)
+                    };
+                    
+                    self.set_notes_in_track(new_track, merged);
+                    new_note_ids.push((new_track, new_ids));
+                }
+
+                *note_ids = new_note_ids;
             },
             EditorAction::DeleteNotesMultiTrack(note_ids, notes_deleted, tracks) => {
                 let mut notes_deleted_ = Vec::new();
 
                 for (note_ids, track) in note_ids.into_iter().zip(tracks) {
-                    let old_notes = {
-                        let project_manager = self.project_manager.read().unwrap();
-                        let mut tracks_ = project_manager.get_tracks().write().unwrap();
-
-                        std::mem::take((*tracks_)[*track as usize].get_notes_mut())
-                    };
+                    let old_notes = self.take_notes_in_track(*track).unwrap();
                     
                     let mut shared_selected = self.shared_selected_note_ids.write().unwrap();
                         let old_sel_ids = shared_selected.take_selected_from_track(*track);

@@ -1,7 +1,8 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
+use as_any::Downcast;
 use eframe::egui::Vec2;
 use eframe::glow;
-use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{editing::SharedSelectedNotes, midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project::project_manager::{self, ProjectManager}}, midi::events::note::Note};
+use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{editing::{SharedSelectedNotes, note_editing::NoteEditing, track_editing::TrackEditing}, midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project::project_manager::{self, ProjectManager}}, midi::events::note::Note};
 use crate::editor::project::project_data::ProjectData;
 
 pub mod buffers;
@@ -54,7 +55,10 @@ impl RenderManager {
         bar_cacher: Arc<Mutex<BarCacher>>,
         colors: &Arc<Mutex<NoteColors>>,
         note_cull_helper: &Arc<Mutex<NoteCullHelper>>,
-        shared_selected_notes: &Arc<RwLock<SharedSelectedNotes>>
+        shared_selected_notes: &Arc<RwLock<SharedSelectedNotes>>,
+
+        note_editing: &Arc<Mutex<NoteEditing>>,
+        track_editing: &Arc<Mutex<TrackEditing>>,
     ) {
         // initialize piano roll renderer
         {
@@ -63,7 +67,7 @@ impl RenderManager {
             //let project_data = project_data.lock().unwrap();
 
             println!("init piano roll renderer");
-            let piano_roll_renderer = Arc::new(Mutex::new(unsafe {
+            let mut piano_roll_renderer = unsafe {
                 PianoRollRenderer::new(
                     &project_manager,
                     &view_settings,
@@ -75,10 +79,10 @@ impl RenderManager {
                     note_cull_helper,
                     shared_selected_notes,
                 )
-            }));
+            };
 
             println!("init track view renderer");
-            let track_view_renderer = Arc::new(Mutex::new(unsafe {
+            let mut track_view_renderer = unsafe {
                 TrackViewRenderer::new(
                     &project_manager,
                     &view_settings,
@@ -90,7 +94,22 @@ impl RenderManager {
                     colors,
                     shared_selected_notes
                 )
-            }));
+            };
+
+            // share data between editing and rendering
+            {
+                let track_editing = track_editing.lock().unwrap();
+                let note_editing = note_editing.lock().unwrap();
+
+                track_view_renderer.set_ghost_notes(track_editing.get_ghost_notes());
+                track_view_renderer.set_ghost_note_offset(track_editing.get_ghost_note_offset());
+
+                piano_roll_renderer.set_ghost_notes(note_editing.get_ghost_notes());
+                piano_roll_renderer.set_selected(note_editing.get_shared_selected_ids());
+            }
+
+            let piano_roll_renderer = Arc::new(Mutex::new(piano_roll_renderer));
+            let track_view_renderer = Arc::new(Mutex::new(track_view_renderer));
 
             self.renderers.push(piano_roll_renderer);
             self.renderers.push(track_view_renderer);
@@ -134,13 +153,13 @@ impl RenderManager {
         &self.render_type
     }
 
-    fn get_renderer(&mut self, render_type: RenderType) -> &mut Arc<std::sync::Mutex<(dyn Renderer + Send + Sync + 'static)>> {
+    pub fn get_renderer(&mut self, render_type: RenderType) -> Arc<std::sync::Mutex<(dyn Renderer + Send + Sync)>> {
         match render_type {
             RenderType::PianoRoll => {
-                &mut self.renderers[0]
+                self.renderers[0].clone()
             },
             RenderType::TrackView => {
-                &mut self.renderers[1]
+                self.renderers[1].clone()
             }
         }
     }

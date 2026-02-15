@@ -10,3 +10,4 @@ pub mod plugins;
 pub mod editing;
 pub mod tempo_map;
 pub mod project;
+pub mod selection_box;

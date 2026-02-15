@@ -1,12 +1,20 @@
 #![warn(unused)]
 use eframe::egui::Ui;
 
-use crate::{editor::{navigation::{PianoRollNavigation, TrackViewNavigation}, settings::editor_settings::PR_KEYBOARD_WIDTH}, midi::events::{meta_event::{MetaEvent, MetaEventType}, note::Note}};
+use crate::{editor::{navigation::{PianoRollNavigation, TrackViewNavigation}, settings::editor_settings::PR_KEYBOARD_WIDTH}, midi::events::{channel_event::{ChannelEvent, ChannelEventType}, meta_event::{MetaEvent, MetaEventType}, note::Note}};
 use std::{cmp::Ordering, collections::{HashMap}, path::PathBuf, sync::{Arc, Mutex}};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 
 pub type MIDITick = u32;
 pub type SignedMIDITick = i32;
+pub type MIDITrk = u16;
+pub type SignedMIDITrk = i16;
+pub type MIDIKey = u8;
+pub type SignedMIDIKey = i8;
+pub type MIDITrkVec = (MIDITick, MIDITrk);
+pub type SignedMIDITrkVec = (SignedMIDITick, SignedMIDITrk);
+pub type MIDIVec = (MIDITick, MIDIKey);
+pub type SignedMIDIVec = (SignedMIDITick, SignedMIDIKey);
 
 pub trait AtomicMIDITick: Copy + Send + Sync + 'static {
     type Atomic: Send + Sync;
@@ -480,4 +488,18 @@ pub fn tempo_as_bytes(tempo: f32) -> [u8; 3] {
 pub fn bytes_as_tempo(bytes: &[u8]) -> f32 {
     let bytes_conv = ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | (bytes[2] as u32);
     return 60000000.0 / (bytes_conv as f32);
+}
+
+/// Gets the next occurence of the specified channel event.
+pub fn get_next_specific_ch_ev_idx(ch_evs: &[ChannelEvent], ev_type: &ChannelEventType, start_idx: Option<usize>) -> Option<usize> {
+    let start = start_idx.unwrap_or(0);
+    if start >= ch_evs.len() { return None; }
+    let mut search_idx = start;
+    
+    for ch_ev in &ch_evs[start..] {
+        if std::mem::discriminant(&ch_ev.event_type) == std::mem::discriminant(ev_type) { return Some(search_idx); }
+        search_idx += 1;
+    }
+
+    None
 }
