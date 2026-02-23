@@ -34,7 +34,7 @@ impl Default for ESGeneralSettings {
             import_reassign_channels: false,
             import_reassign_channel_10_as_11: false,
             import_max_ppq_override: false,
-            import_max_ppq_override_value: NumericField::new(960, Some(96), Some(7680)),
+            import_max_ppq_override_value: NumericField::new(960, Some(1), Some(0x7FFF)),
             import_remove_overlaps: false,
 
             export_discard_empty_tracks: true

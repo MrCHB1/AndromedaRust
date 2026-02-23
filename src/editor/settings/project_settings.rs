@@ -3,17 +3,21 @@ use eframe::egui::{self, RichText};
 use crate::{app::ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::{DIALOG_NO_COLLAPSABLE, DIALOG_NO_RESIZABLE}, names::DIALOG_NAME_PROJECT_SETTINGS}, editor::{midi_bar_cacher::BarCacher, project::{project_data::ProjectData, project_manager::ProjectManager}}};
 use core::f32;
 use std::sync::{Arc, RwLock, Mutex};
+use crate::app::custom_widgets::{NumberField, NumericField};
 
 pub struct ProjectSettings {
     pub project_manager: Arc<RwLock<ProjectManager>>,
     is_showing: bool,
+
+    custom_ppq_field: NumericField<u16>,
 }
 
 impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
             project_manager: Default::default(),
-            is_showing: false
+            is_showing: false,
+            custom_ppq_field: NumericField::new(960, Some(1), Some(0x7FFF))
         }
     }
 }
@@ -22,7 +26,8 @@ impl ProjectSettings {
     pub fn new(project_data: &Arc<RwLock<ProjectManager>>) -> Self {
         Self { 
             project_manager: project_data.clone(),
-            is_showing: false
+            is_showing: false,
+            custom_ppq_field: NumericField::new(project_data.read().unwrap().project_data.ppq, Some(1), Some(0x7FFF))
         }
     }
 }
@@ -147,8 +152,15 @@ impl Dialog for ProjectSettings {
                                 
                                 if new_value != old_value {
                                     project_manager.change_ppq(new_value);
+                                    self.custom_ppq_field.set_value(new_value);
                                 }
                             });
+
+                        if self.custom_ppq_field.show("Or custom value", ui, None).lost_focus() {
+                            if ppq != self.custom_ppq_field.value() {
+                                project_manager.change_ppq(self.custom_ppq_field.value());
+                            }
+                        }
                     });
 
                     ui.horizontal(|ui| {
