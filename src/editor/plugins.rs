@@ -5,6 +5,7 @@ pub mod plugin_error_dialog;
 
 use std::path::Path;
 use crate::editor::plugins::plugin_lua::PluginLua;
+use crate::util::debugger::Debugger;
 use std::fs::{self, DirEntry, FileType};
 use std::io::Result;
 
@@ -104,7 +105,7 @@ impl PluginLoader {
                 Ok(())
             },
             Err(lua_err) => {
-                println!("[PluginError] (in {}): \n--> {}", plugin_file_name, lua_err.to_string());
+                Debugger::log_error(format!("[PluginError] (in {}): \n--> {}", plugin_file_name, lua_err.to_string()));
                 Ok(())
             }
         }
@@ -118,7 +119,7 @@ impl PluginLoader {
                 Ok(())
             },
             Err(lua_err) => {
-                println!("[PluginError] (in {}): \n--> {}", plugin_name, lua_err.to_string());
+                Debugger::log_error(format!("[PluginError] (in {}): \n--> {}", plugin_name, lua_err.to_string()));
                 Ok(())
             }
         }

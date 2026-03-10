@@ -1,7 +1,8 @@
+use num_traits::Num;
 use reqwest::blocking::Client;
 use serde_json::json;
 
-use crate::app::ui::edtior_info::{EDITOR_STAGE, EDITOR_VERSION};
+use crate::{EDITOR_STAGE, EDITOR_VERSION};
 
 pub mod expression_parser;
 pub mod system_stats;
@@ -42,4 +43,9 @@ pub fn send_discord_webhook_crash_message(webhook_url: &str, content: &str, api_
         .error_for_status()?;
 
     Ok(())
+}
+
+pub fn remap_range<T>(val: T, a_min: T, a_max: T, b_min: T, b_max: T) -> T
+    where T: Num + Copy {
+    (val - a_min) / (a_max - a_min)
 }

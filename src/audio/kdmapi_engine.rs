@@ -2,6 +2,7 @@ pub mod kdmapi {
     use kdmapi_rs::KDMAPI as KDMAPILib;
     use kdmapi_rs::KDMAPIStream;
     use crate::audio::midi_audio_engine::MIDIAudioEngine;
+    use crate::util::debugger::Debugger;
 
     pub struct KDMAPI {
         stream: Option<KDMAPIStream>,
@@ -11,10 +12,10 @@ pub mod kdmapi {
         pub fn new() -> Self {
             match KDMAPILib.as_ref() {
                 Ok(_) => {
-                    println!("KDMAPI loaded!");
+                    Debugger::log("KDMAPI loaded!");
                 }
                 Err(e) => {
-                    println!("[WARNING] KDMAPI needs to be installed in order to use it: {}", e);
+                    Debugger::log_error(format!("KDMAPI needs to be installed in order to use it. Details: {}", e));
                 }
             }
 
@@ -33,12 +34,12 @@ pub mod kdmapi {
                             self.stream = Some(stream);
                         }
                         Err(e) => {
-                            println!("Failed to start KDMAPI streaming: {}", e);
+                            Debugger::log_error(format!("Failed to start KDMAPI streaming! Details: {}", e));
                         }
                     }
                 }
                 Err(e) => {
-                    println!("KDMAPI not found or installed: {}", e);
+                    Debugger::log_error(format!("KDMAPI not found or installed! Details: {}", e));
                 }
             }
         }
@@ -50,7 +51,7 @@ pub mod kdmapi {
 
     impl Drop for KDMAPI {
         fn drop(&mut self) {
-            println!("Closing KDMAPI...");
+            Debugger::log("Closing KDMAPI...");
             self.close();
         }
     }
@@ -66,7 +67,7 @@ pub mod kdmapi {
 
         fn send_event(&mut self, raw_event: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             if self.stream.is_none() {
-                println!("[WARNING] KDMAPI stream was never initialized. Initializing automatically...");
+                Debugger::log_warning("KDMAPI stream was never initialized. Initializing automatically...");
                 self.init_audio();
             }
 
@@ -76,7 +77,7 @@ pub mod kdmapi {
                     ((raw_event[2] as u32) << 16);
                 stream.send_direct_data(ev);
             } else {
-                println!("KDMAPI stream not available...");
+                Debugger::log_error("KDMAPI Stream is not available.");
             }
 
             Ok(())

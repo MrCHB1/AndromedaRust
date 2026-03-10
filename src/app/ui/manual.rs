@@ -15,7 +15,6 @@ impl Default for EditorManualSection {
 
 #[derive(Default)]
 pub struct EditorManualDialog {
-    showing: bool,
     manual_section: EditorManualSection,
 }
 

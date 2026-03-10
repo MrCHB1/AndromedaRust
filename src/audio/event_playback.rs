@@ -208,7 +208,7 @@ impl PlaybackManager {
         if new_size > 1000000 { new_size = 1000000; }
         if new_size < 100 { new_size = 100; }
         (self.tx, self.rx) = bounded(new_size);
-        println!("New pool size: {}", new_size);
+        // println!("New pool size: {}", new_size);
     }
 
     pub fn start_play_at_mouse(&mut self, key: u8, channel: u8, velocity: u8) {
@@ -477,7 +477,7 @@ impl PlaybackManager {
                                     }
                                 }
 
-                                println!("Events sent: {}", evs_sent);
+                                // println!("Events sent: {}", evs_sent);
                             },
                             Err(_) => break,
                         }

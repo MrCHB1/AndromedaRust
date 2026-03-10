@@ -8,6 +8,8 @@ use eframe::glow::HasContext;
 
 use std::sync::Arc;
 
+use crate::util::debugger::Debugger;
+
 pub struct ShaderProgram {
     pub program: NativeProgram,
     gl: Arc<glow::Context>
@@ -47,7 +49,7 @@ impl ShaderProgram {
             gl.link_program(program);
             assert!(gl.get_program_link_status(program), "Program link error\n{}", gl.get_program_info_log(program));
 
-            println!("Program linked. \n{}", gl.get_program_info_log(program));
+            Debugger::log("Program linked.");
             gl.delete_shader(vert);
             gl.delete_shader(frag);
             

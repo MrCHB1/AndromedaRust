@@ -1,0 +1,145 @@
+[03/10/2026 @ 14:56:17] IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 14:56:17] IN(1): 01. Ethernet MIDI
+[03/10/2026 @ 14:56:17] OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 14:56:17] OUT(1): LoopBe Internal MIDI
+[03/10/2026 @ 14:56:17] OUT(2): 01. Ethernet MIDI
+[03/10/2026 @ 14:56:17] Connected to IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 14:56:17] Connected to OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 14:56:17] KDMAPI loaded!
+[03/10/2026 @ 14:56:18] Prerendered audio is not yet implemented, using KDMAPI instead
+[03/10/2026 @ 14:56:18] Initializing piano roll renderer
+[03/10/2026 @ 14:56:18] Program linked.
+[03/10/2026 @ 14:56:18] Program linked.
+[03/10/2026 @ 14:56:18] Program linked.
+[03/10/2026 @ 14:56:18] Initializing track view renderer
+[03/10/2026 @ 14:56:18] Program linked.
+[03/10/2026 @ 14:56:18] Program linked.
+[03/10/2026 @ 14:56:18] Program linked.
+[03/10/2026 @ 14:56:18] Program linked.
+[03/10/2026 @ 14:56:22] Closing KDMAPI...
+[03/10/2026 @ 14:57:28] ***** APPLICATION STARTED *****
+[03/10/2026 @ 14:57:28] IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 14:57:28] IN(1): 01. Ethernet MIDI
+[03/10/2026 @ 14:57:28] OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 14:57:28] OUT(1): LoopBe Internal MIDI
+[03/10/2026 @ 14:57:28] OUT(2): 01. Ethernet MIDI
+[03/10/2026 @ 14:57:28] Connected to IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 14:57:28] Connected to OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 14:57:28] KDMAPI loaded!
+[03/10/2026 @ 14:57:29] Prerendered audio is not yet implemented, using KDMAPI instead
+[03/10/2026 @ 14:57:29] Initializing piano roll renderer
+[03/10/2026 @ 14:57:29] Program linked.
+[03/10/2026 @ 14:57:29] Program linked.
+[03/10/2026 @ 14:57:29] Program linked.
+[03/10/2026 @ 14:57:29] Initializing track view renderer
+[03/10/2026 @ 14:57:29] Program linked.
+[03/10/2026 @ 14:57:29] Program linked.
+[03/10/2026 @ 14:57:29] Program linked.
+[03/10/2026 @ 14:57:29] Program linked.
+[03/10/2026 @ 14:58:39] Starting Import of "tau2.5.9.mid"
+[03/10/2026 @ 14:58:39] Imported MIDI in 0.0588089s
+[03/10/2026 @ 14:58:48] Starting Import of "Do You Hear The Melody.mid"
+[03/10/2026 @ 14:58:48] Imported MIDI in 0.129561s
+[03/10/2026 @ 15:02:19] Starting Import of "12 Days of Christmas - Black MIDI by MBMS & HDSQ.mid"
+[03/10/2026 @ 15:02:19] Imported MIDI in 0.36704138s
+[03/10/2026 @ 15:03:09] Closing KDMAPI...
+[03/10/2026 @ 15:08:16] ***** APPLICATION STARTED *****
+[03/10/2026 @ 15:08:17] IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 15:08:17] IN(1): 01. Ethernet MIDI
+[03/10/2026 @ 15:08:17] OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:08:17] OUT(1): LoopBe Internal MIDI
+[03/10/2026 @ 15:08:17] OUT(2): 01. Ethernet MIDI
+[03/10/2026 @ 15:08:17] Connected to IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 15:08:17] Connected to OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:08:17] KDMAPI loaded!
+[03/10/2026 @ 15:08:17] Prerendered audio is not yet implemented, using KDMAPI instead
+[03/10/2026 @ 15:08:17] Initializing piano roll renderer
+[03/10/2026 @ 15:08:17] Program linked.
+[03/10/2026 @ 15:08:17] Program linked.
+[03/10/2026 @ 15:08:17] Program linked.
+[03/10/2026 @ 15:08:17] Initializing track view renderer
+[03/10/2026 @ 15:08:17] Program linked.
+[03/10/2026 @ 15:08:17] Program linked.
+[03/10/2026 @ 15:08:17] Program linked.
+[03/10/2026 @ 15:08:17] Program linked.
+[03/10/2026 @ 15:08:17] Oh no! Andromeda has crashed :(
+[03/10/2026 @ 15:08:35] Details of crash: Panic at src\app\main_window.rs:2697:9
+THIS IS A TEST. PLEASES REMOVE ME :3
+[03/10/2026 @ 15:08:40] Cause of crash (according to user): im only testing lmfao
+[03/10/2026 @ 15:08:40] Closing Andromeda...
+[03/10/2026 @ 15:08:40] Closing KDMAPI...
+[03/10/2026 @ 15:09:54] ***** APPLICATION STARTED *****
+[03/10/2026 @ 15:09:55] IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 15:09:55] IN(1): 01. Ethernet MIDI
+[03/10/2026 @ 15:09:55] OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:09:55] OUT(1): LoopBe Internal MIDI
+[03/10/2026 @ 15:09:55] OUT(2): 01. Ethernet MIDI
+[03/10/2026 @ 15:09:55] Connected to IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 15:09:55] Connected to OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:09:55] KDMAPI loaded!
+[03/10/2026 @ 15:09:55] Prerendered audio is not yet implemented, using KDMAPI instead
+[03/10/2026 @ 15:09:55] Initializing piano roll renderer
+[03/10/2026 @ 15:09:55] Program linked.
+[03/10/2026 @ 15:09:55] Program linked.
+[03/10/2026 @ 15:09:55] Program linked.
+[03/10/2026 @ 15:09:55] Initializing track view renderer
+[03/10/2026 @ 15:09:55] Program linked.
+[03/10/2026 @ 15:09:55] Program linked.
+[03/10/2026 @ 15:09:55] Program linked.
+[03/10/2026 @ 15:09:55] Program linked.
+[03/10/2026 @ 15:09:55] Oh no! Andromeda has crashed :(
+[03/10/2026 @ 15:09:57] Details of crash: Panic at src\app\main_window.rs:2697:9
+THIS IS A TEST. PLEASES REMOVE ME :3
+[03/10/2026 @ 15:09:58] Cause of crash (according to user): 
+[03/10/2026 @ 15:09:58] Closing Andromeda...
+[03/10/2026 @ 15:09:58] Closing KDMAPI...
+[03/10/2026 @ 15:19:16] ***** APPLICATION STARTED *****
+[03/10/2026 @ 15:19:17] IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 15:19:17] IN(1): 01. Ethernet MIDI
+[03/10/2026 @ 15:19:17] OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:19:17] OUT(1): LoopBe Internal MIDI
+[03/10/2026 @ 15:19:17] OUT(2): 01. Ethernet MIDI
+[03/10/2026 @ 15:19:17] Connected to IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 15:19:17] Connected to OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:19:17] KDMAPI loaded!
+[03/10/2026 @ 15:19:17] Prerendered audio is not yet implemented, using KDMAPI instead
+[03/10/2026 @ 15:19:17] Initializing piano roll renderer
+[03/10/2026 @ 15:19:17] Program linked.
+[03/10/2026 @ 15:19:17] Program linked.
+[03/10/2026 @ 15:19:17] Program linked.
+[03/10/2026 @ 15:19:17] Initializing track view renderer
+[03/10/2026 @ 15:19:17] Program linked.
+[03/10/2026 @ 15:19:17] Program linked.
+[03/10/2026 @ 15:19:17] Program linked.
+[03/10/2026 @ 15:19:17] Program linked.
+[03/10/2026 @ 15:19:36] Starting Import of "[Black MIDI] My Love Compressed.mid"
+[03/10/2026 @ 15:19:36] Imported MIDI in 0.2318902s
+[03/10/2026 @ 15:21:41] Starting Import of "tau2.5.9.mid"
+[03/10/2026 @ 15:21:41] Imported MIDI in 0.0559054s
+[03/10/2026 @ 15:22:16] Closing KDMAPI...
+[03/10/2026 @ 15:22:37] ***** APPLICATION STARTED *****
+[03/10/2026 @ 15:22:37] IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 15:22:37] IN(1): 01. Ethernet MIDI
+[03/10/2026 @ 15:22:37] OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:22:37] OUT(1): LoopBe Internal MIDI
+[03/10/2026 @ 15:22:37] OUT(2): 01. Ethernet MIDI
+[03/10/2026 @ 15:22:37] OUT(3): OmniMIDI
+[03/10/2026 @ 15:22:37] Connected to IN(0): LoopBe Internal MIDI
+[03/10/2026 @ 15:22:37] Connected to OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:22:37] KDMAPI loaded!
+[03/10/2026 @ 15:22:38] Prerendered audio is not yet implemented, using KDMAPI instead
+[03/10/2026 @ 15:22:38] Initializing piano roll renderer
+[03/10/2026 @ 15:22:38] Program linked.
+[03/10/2026 @ 15:22:38] Program linked.
+[03/10/2026 @ 15:22:38] Program linked.
+[03/10/2026 @ 15:22:38] Initializing track view renderer
+[03/10/2026 @ 15:22:38] Program linked.
+[03/10/2026 @ 15:22:38] Program linked.
+[03/10/2026 @ 15:22:38] Program linked.
+[03/10/2026 @ 15:22:38] Program linked.
+[03/10/2026 @ 15:22:48] Starting Import of "tau2.5.9.mid"
+[03/10/2026 @ 15:22:48] Imported MIDI in 0.058056097s
+[03/10/2026 @ 15:24:26] Connected to OUT(0): Microsoft GS Wavetable Synth
+[03/10/2026 @ 15:27:49] Using 61 tracks
+[03/10/2026 @ 15:27:50] Using 61 tracks
+[03/10/2026 @ 15:28:05] Closing KDMAPI...

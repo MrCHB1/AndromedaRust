@@ -1,8 +1,8 @@
 // abstraction is NEEDED!!
 use crate::{
     LAST_PANIC, app::{
-        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, track_view::TrackViewRenderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, dialogs::{crash_dialog::CrashDialog, filter_channels::FilterChannelsDialog}, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, editor::{
-            edit_functions::{EFChopDialog, EFGlueDialog}, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_ERASING, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioEngineType, ESAudioSettings, ESGeneralSettings, ESSettingsWindow, PR_KEYBOARD_WIDTH, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, midi_file::MIDIEvent}, util::{debugger::Debugger, send_discord_webhook_crash_message, system_stats::SystemStats, timer::Timer}};
+        custom_widgets::{NumberField, NumericField}, rendering::{RenderManager, RenderType, Renderer, data_view::DataViewRenderer, note_cull_helper::NoteCullHelper, track_view::TrackViewRenderer}, shared::{NoteColorIndexing, NoteColors}, ui::{dialog::{Dialog, names::*}, dialog_drawer::DialogDrawer, dialog_manager::DialogManager, dialogs::{crash_dialog::CrashDialog, filter_channels::FilterChannelsDialog, simple_dialog::SimpleDialog}, edtior_info::EditorInfo, main_menu_bar::{MainMenuBar, MenuItem}, manual::EditorManualDialog}, util::image_loader::ImageResources, view_settings::{VS_PianoRoll_DataViewState, VS_PianoRoll_OnionColoring, VS_PianoRoll_OnionState}}, audio::{event_playback::PlaybackManager, kdmapi_engine::kdmapi::KDMAPI, midi_audio_engine::MIDIAudioEngine, midi_devices::MIDIDevices, track_mixer::TrackMixer}, editor::{
+            edit_functions::{EFChopDialog, EFGlueDialog}, editing::{SharedClipboard, SharedSelectedNotes, data_editing::{DataEditing, data_edit_flags::{DATA_EDIT_ANY_DIALOG_OPEN, DATA_EDIT_DRAW_EDIT_LINE, DATA_EDIT_MOUSE_OVER_UI}}, note_editing::note_edit_flags::NOTE_EDIT_MOUSE_OVER_UI, track_editing::track_flags::{TRACK_EDIT_ANY_DIALOG_OPEN, TRACK_EDIT_ERASING, TRACK_EDIT_MOUSE_OVER_UI}}, midi_bar_cacher::BarCacher, navigation::{GLOBAL_ZOOM_FACTOR, TrackViewNavigation}, playhead::Playhead, plugins::{PluginLoader, plugin_andromeda_obj::AndromedaObj, plugin_dialog::PluginDialog, plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}, project::{project_data, project_manager::ProjectManager}, settings::{editor_settings::{ESAudioEngineType, ESAudioSettings, ESGeneralSettings, ESSettingsWindow, PR_KEYBOARD_WIDTH, Settings}, project_settings::ProjectSettings}, util::{MIDITick, get_mouse_midi_pos, path_rel_to_abs}}, midi::{events::{meta_event::{MetaEvent, MetaEventType}, note}, io::MIDIParseStatus, midi_file::MIDIEvent}, util::{debugger::Debugger, send_discord_webhook_crash_message, system_stats::SystemStats, timer::Timer}};
 use crate::editor::editing::{
     meta_editing::{MetaEditing, MetaEventInsertDialog},
     note_editing::{NoteEditing, note_edit_flags::*},
@@ -34,7 +34,7 @@ use crate::{
 };
 use eframe::glow;
 use std::{
-    cell::RefCell, collections::HashMap, fs, panic::{AssertUnwindSafe, catch_unwind}, path::{Path, PathBuf}, rc::Rc, sync::{Arc, LazyLock, Mutex, RwLock}, time::Instant
+    any::Any, cell::RefCell, collections::HashMap, fs, panic::{AssertUnwindSafe, catch_unwind}, path::{Path, PathBuf}, rc::Rc, sync::{Arc, LazyLock, Mutex, RwLock}, time::Instant
 };
 
 pub static PLUGIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| path_rel_to_abs("./assets/plugins".into()));
@@ -190,6 +190,7 @@ pub struct MainWindow {
     context_menu_shown: bool,
 
     // ==== OTHER ====
+    app_scale: f32,
     last_playhead_frac: f32,
     last_is_playing: bool,
     sys_stats: SystemStats,
@@ -277,7 +278,7 @@ impl MainWindow {
                     self.midi_devices.as_ref().unwrap().clone()
                 },
                 &ESAudioEngineType::Prerendered => {
-                    println!("[WARNING] Prerendered audio is not yet implemented, using KDMAPI instead");
+                    Debugger::log_warning("Prerendered audio is not yet implemented, using KDMAPI instead");
                     self.kdmapi.as_ref().unwrap().clone()
                 }
             },
@@ -327,6 +328,7 @@ impl MainWindow {
         self.dialog_drawer.init(&self.dialog_manager);
         let mut dialog_manager = self.dialog_manager.borrow_mut();
         
+        dialog_manager.register_dialog(DIALOG_NAME_SIMPLE, Box::new(|| { Box::new(SimpleDialog::default()) }));
         dialog_manager.register_dialog(DIALOG_NAME_EDITOR_MANUAL, Box::new(|| { Box::new(EditorManualDialog::default()) }));
         
         // ewww spaghetti code... i have no other way of doing this though
@@ -399,30 +401,35 @@ impl MainWindow {
     }
 
     fn import_midi_file(&mut self) {
+        let mut import_result = MIDIParseStatus::ParseOK;
+
         {
             // let mut project_data = self.project_data.try_borrow_mut().unwrap();
             let midi_fd = rfd::FileDialog::new().add_filter("MIDI Files", &["mid", "midi"]);
+            
             if let Some(file) = midi_fd.pick_file() {
                 let import_timer = Instant::now();
                 
+                Debugger::log(format!("Starting Import of {:?}", file.file_name().unwrap()));
                 let start = import_timer.elapsed().as_secs_f32();
                 let mut project_manager = self.project_manager.write().unwrap();
-                project_manager.import_from_midi_file(String::from(file.to_str().unwrap()));
+                import_result = project_manager.import_from_midi_file(String::from(file.to_str().unwrap()));
                 let end = import_timer.elapsed().as_secs_f32();
-
-                println!("Imported MIDI in {}s", end - start);
+                Debugger::log(format!("Imported MIDI in {}s", end - start));
                 
-                let ppq = project_manager.get_ppq();
-                self.update_global_ppq(ppq);
+                // let ppq = project_manager.get_ppq();
+                // self.update_global_ppq(ppq);
             }
         }
 
-        self.on_midi_loaded();
+        self.on_midi_loaded(import_result);
     }
 
     fn export_midi_file(&mut self) {
         let midi_fd = rfd::FileDialog::new().add_filter("MIDI Files", &["mid"]);
         if let Some(file) = midi_fd.save_file() {
+            Debugger::log(format!("Starting export of {:?}", file.file_name().unwrap()));
+            
             let export_timer = Instant::now();
             let start = export_timer.elapsed().as_secs_f32();
 
@@ -454,20 +461,39 @@ impl MainWindow {
 
             midi_writer.write_midi(file.to_str().unwrap()).unwrap();
             let end = export_timer.elapsed().as_secs_f32();
-            println!("Exported MIDI in {}s", end - start);
+
+            Debugger::log(format!("Exported MIDI in {}s", end - start));
         }
     }
 
-    fn on_midi_loaded(&mut self) {
-        let mut playback_manager = self.playback_manager.as_mut().unwrap().lock().unwrap();
-        
-        if playback_manager.playing {
-            playback_manager.toggle_playback();
-            playback_manager.reset_events();
-        }
+    fn on_midi_loaded(&mut self, import_status: MIDIParseStatus) {
+        match import_status {
+            MIDIParseStatus::ParseOK => {
+                {
+                    let project_manager = self.project_manager.read().unwrap();
+                    let ppq = project_manager.get_ppq();
+                    self.update_global_ppq(ppq);
+                }
 
-        let mut editor_actions = self.editor_actions.borrow_mut();
-        editor_actions.clear_actions();
+                {
+                    let mut playback_manager = self.playback_manager.as_mut().unwrap().lock().unwrap();
+                
+                    if playback_manager.playing {
+                        playback_manager.toggle_playback();
+                        playback_manager.reset_events();
+                    }
+
+                    let mut editor_actions = self.editor_actions.borrow_mut();
+                    editor_actions.clear_actions();
+                }
+            },
+            MIDIParseStatus::ParseError => {
+                self.show_dialog_with_args(DIALOG_NAME_SIMPLE, vec![Box::new("MIDI failed to import".to_string()), Box::new("The MIDI did not load correctly.".to_string()), Box::new("MIDILoadError".to_string()), Box::new(false)]);
+            },
+            _ => {
+
+            }
+        }
     }
 
     fn update_global_ppq(&self, ppq: u16) {
@@ -677,6 +703,37 @@ impl MainWindow {
             ("Project settings...".into(), MenuItem::MenuButton(Some(Box::new(|mw| { mw.show_dialog("ProjectSettings"); }))))
         ]);
         menu_bar.add_menu("Tools", vec![
+            ("Composing".into(), MenuItem::SubMenu(vec![
+                ("Transpose up".into(), MenuItem::MenuButtonEnabled(
+                    Some(Box::new(|mw| { mw.apply_function(EditFunction::Transpose(1)); })),
+                    Box::new(|mw| {
+                        let shared_selected = mw.shared_selected_notes.read().unwrap();
+                        shared_selected.is_any_note_selected()
+                    }) 
+                )),
+                ("Transpose down".into(), MenuItem::MenuButtonEnabled(
+                    Some(Box::new(|mw| { mw.apply_function(EditFunction::Transpose(-1)); })),
+                    Box::new(|mw| {
+                        let shared_selected = mw.shared_selected_notes.read().unwrap();
+                        shared_selected.is_any_note_selected()
+                    }) 
+                )),
+                ("".into(), MenuItem::Separator),
+                ("+1 Octave".into(), MenuItem::MenuButtonEnabled(
+                    Some(Box::new(|mw| { mw.apply_function(EditFunction::Transpose(12)); })),
+                    Box::new(|mw| {
+                        let shared_selected = mw.shared_selected_notes.read().unwrap();
+                        shared_selected.is_any_note_selected()
+                    }) 
+                )),
+                ("-1 Octave".into(), MenuItem::MenuButtonEnabled(
+                    Some(Box::new(|mw| { mw.apply_function(EditFunction::Transpose(-12)); })),
+                    Box::new(|mw| {
+                        let shared_selected = mw.shared_selected_notes.read().unwrap();
+                        shared_selected.is_any_note_selected()
+                    }) 
+                ))
+            ])),
             ("Editing".into(), MenuItem::SubMenu(vec![
                 ("Stretch selection...".into(), MenuItem::MenuButtonEnabled(
                     Some(Box::new(|mw| { mw.apply_function(EditFunction::Stretch(Vec::new(), 0.0)); })),
@@ -813,38 +870,12 @@ impl MainWindow {
         };
 
         if !is_empty {
-            self.show_override_popup = true;
-            self.override_popup_msg =
-                "Are you sure you want to start a new project?";
-            self.override_popup_func =
-                Some(Box::new(|main_window, _: &egui::Context| {
-                    {
-                        let mut project_manager = main_window.project_manager.write().unwrap();
-                        println!("Clearning notes...");
-                        project_manager.new_empty_project();
-                    }
-
-                    {
-                        println!("Removing action history...");
-                        let mut editor_actions = main_window.editor_actions.try_borrow_mut().unwrap();
-                        editor_actions.clear_actions();
-                    }
-
-                    {
-                        let mut playhead = main_window.playhead.try_borrow_mut().unwrap();
-                        playhead.set_start(0);
-
-                        if let Some(nav) = main_window.nav.as_mut() {
-                            let mut nav = nav.lock().unwrap();
-                            nav.tick_pos = 0.0;
-                        }
-                    }
-                }));
+            self.show_dialog_with_args(DIALOG_NAME_SIMPLE, vec![Box::new("Confirmation".to_string()), Box::new("Are you sure you want to start a new project?".to_string()), Box::new("NewProjectConfirmation".to_string())]);
         }
     }
 
     fn save_project(&mut self) {
-        let mut project_manager = self.project_manager.write().unwrap();
+        let project_manager = self.project_manager.write().unwrap();
         project_manager.save_project();
     }
     
@@ -862,7 +893,7 @@ impl MainWindow {
             let mut meta_editing = self.meta_editing.lock().unwrap();
             let mut track_editing = self.track_editing.lock().unwrap();
             note_editing.apply_action(action);
-            meta_editing.apply_action(&action);
+            meta_editing.apply_action(action);
             track_editing.apply_action(action);
         }
     }
@@ -881,7 +912,7 @@ impl MainWindow {
             let mut meta_editing = self.meta_editing.lock().unwrap();
             let mut track_editing = self.track_editing.lock().unwrap();
             note_editing.apply_action(action);
-            meta_editing.apply_action(&action);
+            meta_editing.apply_action(action);
             track_editing.apply_action(action);
         }
     }
@@ -1020,8 +1051,8 @@ impl MainWindow {
             EditFunction::RemoveOverlaps => {
                 let note_editing = self.note_editing.lock().unwrap();
                 let tracks = note_editing.get_tracks();
+                
                 let mut tracks = tracks.write().unwrap();
-
                 let curr_track = self.get_current_track().unwrap();
                 let notes = tracks[curr_track as usize].get_notes_mut();
 
@@ -1037,6 +1068,26 @@ impl MainWindow {
                     curr_track, 
                     &mut editor_actions
                 );
+            },
+            EditFunction::Transpose(transpose_amount) => {
+                let note_editing = self.note_editing.lock().unwrap();
+                let curr_track = self.get_current_track().unwrap();
+
+                let mut sel_notes = note_editing.get_shared_selected_ids().write().unwrap();
+                let sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+
+                note_editing.with_notes_mut(curr_track as usize, |notes| {
+                    let mut editor_functions = self.editor_functions.borrow_mut();
+                    let mut editor_actions = self.editor_actions.borrow_mut();
+                    
+                    editor_functions.apply_function(
+                        notes, 
+                        sel_notes, 
+                        EditFunction::Transpose(transpose_amount), 
+                        curr_track, 
+                        &mut editor_actions
+                    );
+                });
             }
             _ => {}
         }
@@ -1078,8 +1129,7 @@ impl MainWindow {
         };
 
         if let Err(lua_error) = run_result {
-            println!("error");
-            // err_dialog.init_dialog(&plugin, lua_error.to_string());
+            Debugger::log_error("Lua plugin failed to run!");
             let mut dialog_manager = self.dialog_manager.borrow_mut();
             let plugin_name = plugin.borrow().plugin_name.clone();
             dialog_manager.open_dialog(Box::new(PluginErrorDialog::new()), vec![
@@ -1087,26 +1137,25 @@ impl MainWindow {
                 Box::new(lua_error.to_string())
             ]);
         }
-
-        /*if let Err(lua_error) = run_result {
-            println!("error");
-            let err_dialog: &mut PluginErrorDialog = self.get_dialog_mut("PluginErrorDialog");
-            err_dialog.init_dialog(&plugin, lua_error.to_string());
-            self.show_dialog("PluginErrorDialog");
-        }*/
     }
 
-    fn reload_plugins(&mut self) {
+    /*fn reload_plugins(&mut self) {
         let plugins = self.plugin_loader.as_ref().unwrap();
         for plugin in plugins.gen_plugins.iter() {
 
         }
-    }
+    }*/
 
     pub fn show_dialog(&mut self, name: &'static str) {
         let mut dialog_manager = self.dialog_manager.borrow_mut();
         dialog_manager.close_all_dialogs();
         dialog_manager.open_dialog_by_name(name, Vec::new());
+    }
+
+    pub fn show_dialog_with_args(&mut self, name: &'static str, args: Vec<Box<dyn Any>>) {
+        let mut dialog_manager = self.dialog_manager.borrow_mut();
+        dialog_manager.close_all_dialogs();
+        dialog_manager.open_dialog_by_name(name, args);
     }
 
     /*pub fn get_dialog_mut<D: Dialog>(&mut self, name: &'static str) -> &mut D {
@@ -1500,6 +1549,26 @@ impl MainWindow {
         }
     }
 
+    fn get_view_tick_range_with_playback(&self) -> (MIDITick, MIDITick) {
+        let playback_manager = self.playback_manager.as_ref().unwrap();
+        let playback_manager = playback_manager.lock().unwrap();
+
+        let is_playing = playback_manager.playing;
+        let autoscroll = {
+            let view_settings = self.view_settings.as_ref().unwrap().lock().unwrap();
+            view_settings.pr_autoscroll
+        };
+        let playback_ticks = playback_manager.get_playback_ticks();
+        let playback_start_pos = playback_manager.playback_start_pos;
+
+        let (min, max) = self.get_view_tick_range();
+        if is_playing && autoscroll {
+            (playback_ticks.saturating_sub(playback_start_pos) + min, playback_ticks.saturating_sub(playback_start_pos) + max)
+        } else {
+            (min, max)
+        }
+    }
+
     fn get_playhead_pos(&self, to_window: bool) -> f32 {
         let mut playhead_line_pos = {
             let playhead = self.playhead.try_borrow().unwrap();
@@ -1598,6 +1667,7 @@ impl MainWindow {
 
         let available_size = ui.available_size();
         let (rect, _response) = ui.allocate_exact_size(available_size, egui::Sense::hover());
+        let app_scale = self.app_scale;
     
         self.handle_main_inputs(ctx, ui, mouse_over_ui, any_window_opened);
         self.handle_cursor_icon(ctx, ui);
@@ -1627,6 +1697,7 @@ impl MainWindow {
                         let mut render = renderer.lock().unwrap();
                         let mut rnd = render.get_active_renderer().lock().unwrap();
                         (*rnd).window_size(Vec2 { x: vp.width_px as f32, y: vp.height_px as f32 });
+                        (*rnd).app_scale(app_scale);
                         (*rnd).draw();
                     }
                     gl.disable(glow::SCISSOR_TEST);
@@ -1714,62 +1785,34 @@ impl MainWindow {
     }
 
     fn draw_playhead_line(&mut self, rect: Rect, ui: &mut Ui) {
-        
-        let mut playhead_pos = {
-            let autoscroll = {
-                let view_settings = self.view_settings.as_ref().unwrap().lock().unwrap();
-                view_settings.pr_autoscroll
-            };
+        let (min_tick, max_tick) = self.get_view_tick_range_with_playback();
 
-            let playhead_pos = {
-                if autoscroll {
-                    let playhead = self.playhead.borrow();
-                    
-                    playhead.start_tick as f32 - if self.is_on_track_view() {
-                        let nav = self.track_view_nav.as_ref().unwrap().lock().unwrap();
-                        nav.tick_pos_smoothed
-                    } else {
-                        let nav = self.nav.as_ref().unwrap().lock().unwrap();
-                        nav.tick_pos_smoothed
-                    }
+        let zoom_ticks = (max_tick - min_tick) as f32;
 
-                } else {
-                    self.get_playhead_pos(true)
-                }
-            };
+        let playhead_pos = {
+            let playback_manager = self.playback_manager.as_ref().unwrap().lock().unwrap();
 
-            let (min_tick, max_tick) = self.get_view_tick_range();
-            let is_playing = self.is_playing();
-
-            let mut playhead_pos = playhead_pos / (max_tick as f32 - min_tick as f32);
-
-            if is_playing && autoscroll {
-                if is_playing != self.last_is_playing {
-                    self.last_playhead_frac = playhead_pos;
-                } else {
-                    playhead_pos = self.last_playhead_frac;
-                }
+            if playback_manager.playing {
+                playback_manager.get_playback_ticks()
+            } else {
+                let playhead = self.playhead.borrow();
+                playhead.start_tick
             }
-
-            self.last_is_playing = self.is_playing();
-            playhead_pos
         };
 
-        // playhead line
-        if playhead_pos > 0.0 && playhead_pos < 1.0 {
-            let keyboard_width = PR_KEYBOARD_WIDTH / rect.width();
-            if !self.is_on_track_view() { playhead_pos = playhead_pos * (1.0 - keyboard_width) + keyboard_width; }
-            playhead_pos = playhead_pos * rect.width() + rect.left();
-            ui.painter().add(
-                Shape::line_segment(
-                    [
-                        Pos2 { x: playhead_pos, y: rect.min.y },
-                        Pos2 { x: playhead_pos, y: rect.max.y }
-                    ],
-                    Stroke::new(1.0, Color32::WHITE)
-                )
-            );
-        }
+        // remap rangeskb_width
+        let kb_width = self.get_keyboard_width();
+
+        let ui_pos = ((playhead_pos.saturating_sub(min_tick) as f32) / zoom_ticks) * (rect.width() - kb_width) + rect.left() + kb_width;
+        ui.painter().add(
+            Shape::line_segment(
+                [
+                    Pos2 { x: ui_pos, y: rect.min.y },
+                    Pos2 { x: ui_pos, y: rect.max.y }
+                ],
+                Stroke::new(1.0, Color32::WHITE)
+            )
+        );
     }
 
     fn is_playing(&self) -> bool {
@@ -1782,10 +1825,21 @@ impl MainWindow {
         render_manager.get_render_type() == &RenderType::TrackView
     }
 
-    fn allocate_for_keyboard(&self, ui: &mut Ui) {
-        if self.is_on_track_view() { return; }
+    /// Allocates space for keyboard and returns the width of the space.
+    fn allocate_for_keyboard(&self, ui: &mut Ui) -> f32 {
+        if self.is_on_track_view() { return 0.0; }
+        let keyboard_width = self.get_keyboard_width();
         ui.allocate_exact_size([PR_KEYBOARD_WIDTH, 1.0].into(), egui::Sense::hover());
+        PR_KEYBOARD_WIDTH
     }
+
+    fn get_keyboard_width(&self) -> f32 {
+        if self.is_on_track_view() { 0.0 } else { PR_KEYBOARD_WIDTH }
+    }
+
+    // fn get_scaled_keyboard_width(&self) -> f32 {
+    //     self.get_keyboard_width() * 
+    // }
 
     fn draw_ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
 
@@ -1862,14 +1916,7 @@ impl MainWindow {
 
                 if dataview_state != VS_PianoRoll_DataViewState::Hidden && !self.is_on_track_view() {
                     egui::TopBottomPanel::bottom("data_viewer")
-                        // .resizable(true)
-                        // .default_height(_dataview_size)
                         .show(ctx, |ui| {
-                            // if let Some(view_settings) = self.view_settings.as_mut() {
-                            //     let mut vs = view_settings.lock().unwrap();
-                            //     vs.pr_dataview_size = ui.min_rect().height();
-                            // };
-                            
                             ui.horizontal(|ui| {
                                 self.allocate_for_keyboard(ui);
 
@@ -1900,6 +1947,7 @@ impl MainWindow {
                     });
                 }
             }
+            self.draw_bar_numbers(ctx);
 
             // piano roll / track view rendering
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -1908,7 +1956,7 @@ impl MainWindow {
             });
         });
 
-        if self.show_override_popup {
+        /*if self.show_override_popup {
             self.show_note_properties_popup = false;
             egui::Window::new(RichText::new("Confirmation").size(10.0))
                 .collapsible(false)
@@ -1931,7 +1979,7 @@ impl MainWindow {
                     });
                     self.mouse_over_ui |= ui.ui_contains_pointer();
                 });
-        }
+        }*/
 
         {
             let img_resources = self.image_resources.as_ref().unwrap();
@@ -2028,7 +2076,7 @@ impl MainWindow {
                         });
                     vs.pr_curr_track.show("Curr. Track", ui, Some(50.0));
                     if vs.pr_curr_track.changed() {
-                        println!("Track changed");
+                        Debugger::log("Track changed");
                         tracks_need_update = true;
                         track_to_change_to = vs.pr_curr_track.value();
                     }
@@ -2146,6 +2194,48 @@ impl MainWindow {
         });
     }
 
+    fn draw_bar_numbers(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("bar_numbers").show_separator_line(false).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let (min_tick, max_tick) = self.get_view_tick_range_with_playback();
+                let zoom_ticks = (max_tick - min_tick) as f32;
+
+                let space_alloc = self.allocate_for_keyboard(ui);
+
+                let painter = ui.painter();
+                let rect = ui.max_rect();
+                
+                let mut bar_num = 0;
+                let mut curr_bar_tick = 0;
+
+                let mut bar_cacher = self.bar_cacher.lock().unwrap();
+
+                while curr_bar_tick < max_tick {
+                    let (bar_tick, bar_length) = bar_cacher.get_bar_interval(bar_num);
+                    if (bar_tick + bar_length) < min_tick {
+                        curr_bar_tick += bar_length;
+                        bar_num += 1;
+                        continue;
+                    }
+
+                    let ui_pos = ((curr_bar_tick.saturating_sub(min_tick) as f32) / zoom_ticks) * ui.available_width() + space_alloc;
+                    let ui_pos = rect.min + egui::vec2(ui_pos, 0.0);
+                    painter.text(
+                        ui_pos,
+                        egui::Align2::LEFT_TOP,
+                        bar_num + 1,
+                        egui::FontId::proportional(16.0),
+                        egui::Color32::GRAY
+                    );
+
+                    curr_bar_tick += bar_length;
+                    bar_num += 1;
+                }
+            });
+            self.mouse_over_ui |= ui.ui_contains_pointer();
+        });
+    }
+
     fn draw_playhead_ui(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("Playhead").show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
@@ -2183,7 +2273,6 @@ impl MainWindow {
 
                     let playhead_time = playhead_time.rounded_div(min_snap_length) * min_snap_length;
                     self.set_playhead_pos(playhead_time);
-                    println!("{}", playhead_time);
                 }
             });
             self.mouse_over_ui |= ui.ui_contains_pointer();
@@ -2575,8 +2664,46 @@ impl MainWindow {
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if !self.has_crashed {
+            self.app_scale = ctx.pixels_per_point();
             let result = catch_unwind(AssertUnwindSafe(|| {
                 self.draw_ui(ctx, frame);
+
+                let mut dialog_manager = self.dialog_manager.borrow_mut();
+                if let Some(dlg) = dialog_manager.take_last_closed_dialog().as_mut() {
+                    if let Some(dlg) = dlg.as_mut().downcast_mut::<SimpleDialog>() {
+                        if !dlg.ok_clicked { return; }
+
+                        let dialog_id = dlg.id.as_str();
+                        match dialog_id {
+                            "NewProjectConfirmation" => {
+                                {
+                                    let mut project_manager = self.project_manager.write().unwrap();
+                                    Debugger::log("Clearning notes...");
+                                    project_manager.new_empty_project();
+                                }
+
+                                {
+                                    Debugger::log("Removing action history...");
+                                    let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
+                                    editor_actions.clear_actions();
+                                }
+
+                                {
+                                    let mut playhead = self.playhead.try_borrow_mut().unwrap();
+                                    playhead.set_start(0);
+
+                                    if let Some(nav) = self.nav.as_mut() {
+                                        let mut nav = nav.lock().unwrap();
+                                        nav.tick_pos = 0.0;
+                                    }
+                                }
+                            },
+                            _ => {
+                                Debugger::log_warning(format!("Don't know what to do with Simple Dialog {}", dialog_id));
+                            }
+                        }
+                    }
+                }
             }));
 
             if let Err(_) = result {
@@ -2584,6 +2711,7 @@ impl eframe::App for MainWindow {
             }
         } else {
             if !self.crash_dlg_shown {
+                Debugger::log_error("Oh no! Andromeda has crashed :(");
                 self.show_dialog(DIALOG_NAME_CRASH);
                 self.crash_dlg_shown = true;
             }

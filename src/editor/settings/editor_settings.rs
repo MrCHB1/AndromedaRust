@@ -73,7 +73,7 @@ impl ESAudioSettings {
 impl Default for ESAudioSettings {
     fn default() -> Self {
         Self {
-            md_engine: ESAudioEngineType::KDMAPI,
+            md_engine: ESAudioEngineType::Prerendered,
             md_port_in: 0,
             md_port_out: 0,
             md_event_pool_size: NumericField::new(4096, Some(100), Some(262144))

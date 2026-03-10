@@ -1,6 +1,6 @@
 use std::{any::Any, collections::{HashMap, VecDeque, hash_map::ValuesMut}};
 
-use crate::app::ui::dialog::{Dialog, DialogAction};
+use crate::{app::ui::dialog::{Dialog, DialogAction}, util::debugger::Debugger};
 
 pub type DialogFactory = Box<dyn Fn() -> Box<dyn Dialog + 'static>>;
 pub type MaybeDlgAction = Option<DialogAction>;
@@ -25,6 +25,7 @@ pub struct DialogManager {
     
     dlg_open_results: VecDeque<DialogOpenResult<String>>,
     dlg_close_results: VecDeque<DialogCloseResult<String>>,
+    last_closed_dialog: Option<Box<dyn Dialog>>,
 
     /// A counter for how many dialogs are open at the same time
     opened_dialog_counter: usize
@@ -38,6 +39,7 @@ impl DialogManager {
 
             dlg_open_results: VecDeque::new(),
             dlg_close_results: VecDeque::new(),
+            last_closed_dialog: None,
 
             opened_dialog_counter: 0
         }
@@ -61,7 +63,8 @@ impl DialogManager {
         let dlg_id = dlg.get_dialog_name();
 
         if self.opened_dialogs.contains_key(dlg_id) {
-            println!("[WARNING] Dialog with ID {} is already open, will close old Dialog", dlg_id);
+            Debugger::log_warning(format!("[WARNING] Dialog with ID {} is already open, will close old Dialog", dlg_id));
+
             self.close_dialog(dlg_id);
         }
 
@@ -87,9 +90,10 @@ impl DialogManager {
         let dialog = self.opened_dialogs.get_mut(dlg_id).unwrap();
         match (*dialog).cleanup_dialog() {
             Ok(_) => {
-                self.opened_dialogs.remove(dlg_id);
+                let dlg = self.opened_dialogs.remove(dlg_id).unwrap();
                 self.opened_dialog_counter -= 1;
                 self.push_close_ok(dlg_id);
+                self.last_closed_dialog = Some(dlg);
             },
             Err(msg) => {
                 self.push_close_err(dlg_id, msg);
@@ -97,6 +101,10 @@ impl DialogManager {
         }
     }
 
+    pub fn take_last_closed_dialog(&mut self) -> Option<Box<dyn Dialog>> {
+        self.last_closed_dialog.take()
+    }
+    
     pub fn get_opened_dialogs(&mut self) -> ValuesMut<&'static str, Box<dyn Dialog>> {
         self.opened_dialogs.values_mut()
     }

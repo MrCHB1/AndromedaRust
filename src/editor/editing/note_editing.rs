@@ -17,33 +17,19 @@ use crate::{
             EditorActions
         },
         editing::{
-            SharedClipboard,
-            SharedSelectedNotes,
-            note_editing::note_sequence_funcs::{
-                extract,
-                extract_and_remap_ids,
-                merge_notes,
-                merge_notes_and_return_ids,
-                move_all_notes_by,
-                move_each_note_by,
-                remove_note
+            SelectionOp, SharedClipboard, SharedSelectedNotes, note_editing::note_sequence_funcs::{
+                exclude, extract, extract_and_remap_ids, merge_notes, merge_notes_and_return_ids, merge_unique, move_all_notes_by, move_each_note_by, remove_note
             }
         },
         navigation::PianoRollNavigation,
         settings::editor_settings::PR_KEYBOARD_WIDTH,
         util::{
-            MIDITick,
-            SignedMIDITick,
-            find_note_at,
-            get_absolute_max_tick_from_ids,
-            get_mouse_midi_pos,
-            get_notes_in_range
+            MIDIKey, MIDITick, SignedMIDIKey, SignedMIDITick, find_note_at, get_absolute_max_tick_from_ids, get_mouse_midi_pos, get_notes_in_range
         }
     },
     midi::{
-        events::note::Note,
-        midi_track::MIDITrack
-    }
+        MIDI_KEY_MAX, MIDI_KEY_MAX_SIGNED, MIDI_KEY_MIN, MIDI_KEY_MIN_SIGNED, events::note::Note, midi_track::MIDITrack
+    }, util::debugger::Debugger
 };
 
 use eframe::egui::{self, Context, CursorIcon, Key, Ui};
@@ -64,6 +50,7 @@ pub mod note_edit_flags {
     pub const NOTE_EDIT_IS_EDITING: u16 = 0x80;
     pub const NOTE_EDIT_ERASING: u16 = 0x100;
     pub const NOTE_EDIT_SYNTH_PLAY: u16 = 0x200;
+    pub const NOTE_EDIT_SHIFT_DOWN: u16 = 0x400;
 }
 
 pub mod note_sequence_funcs;
@@ -168,12 +155,10 @@ impl NoteEditing {
 
         let curr_track = self.get_current_track();
 
-        let mouse_note_hover_idx = {
-            let tracks = self.tracks.read().unwrap();
-            let notes = (*tracks)[curr_track as usize].get_notes();
+        let mouse_note_hover_idx = self.with_notes(curr_track as usize, |notes| {
             if notes.is_empty() { None }
             else { find_note_at(notes, mouse_midi_pos.0, mouse_midi_pos.1) }
-        };
+        });
 
         self.mouse_info.is_at_note_end = if let Some(idx) = mouse_note_hover_idx {
             self.enable_flag(NOTE_EDIT_MOUSE_OVER_NOTE);
@@ -181,25 +166,26 @@ impl NoteEditing {
             let rect = ui.min_rect();
 
             let nav = self.nav.lock().unwrap();
-            let tracks = self.tracks.read().unwrap();
-            let notes = (*tracks)[curr_track as usize].get_notes();
-            let note = &notes[idx];
+            self.with_notes(curr_track as usize, |notes| {
+                let note = &notes[idx];
 
-            let note_screen_width =
-                (note.length() as f32 / nav.zoom_ticks_smoothed) * rect.width();
-            let dist_to_end = 
-                (note.end() as f32 - mouse_midi_pos.0 as f32) / nav.zoom_ticks_smoothed * rect.width();
+                let note_screen_width =
+                    (note.length() as f32 / nav.zoom_ticks_smoothed) * rect.width();
+                let dist_to_end = 
+                    (note.end() as f32 - mouse_midi_pos.0 as f32) / nav.zoom_ticks_smoothed * rect.width();
 
-            if note_screen_width > MIN_DRAGGABLE_WIDTH {
-                dist_to_end >= 0.0 && dist_to_end < END_REGION
-            } else {
-                false
-            }
+                if note_screen_width > MIN_DRAGGABLE_WIDTH {
+                    dist_to_end >= 0.0 && dist_to_end < END_REGION
+                } else {
+                    false
+                }
+            })
         } else {
             false
         };
         
         self.mouse_info.note_hover_idx = mouse_note_hover_idx;
+        self.set_flag(NOTE_EDIT_SHIFT_DOWN, ui.input(|i| i.modifiers.shift));
     }
 
     // ======== MOUSE EVENT FUNCTIONS ========
@@ -309,24 +295,24 @@ impl NoteEditing {
         let curr_track = self.get_current_track();
         if !self.get_flag(NOTE_EDIT_ANY_DIALOG_OPEN | NOTE_EDIT_MOUSE_OVER_UI) {
             if ui.input(|i| i.events.iter().any(|ev| matches!(ev, egui::Event::Copy))) {
-                println!("Copied");
+                Debugger::log("Copied");
                 self.copy_notes(curr_track);
             }
 
             if ui.input(|i| i.events.iter().any(|ev| matches!(ev, egui::Event::Cut))) {
-                println!("Cut");
+                Debugger::log("Cut");
                 self.cut_selected_notes(curr_track);
             }
 
             if ui.input(|i| i.events.iter().any(|ev| matches!(ev, egui::Event::Paste(_)))) {
-                println!("Pasted");
+                Debugger::log("Pasted");
                 self.paste_notes(curr_track);
             }
 
             if ui.input(|i| i.key_pressed(Key::D) && i.modifiers.command) {
-                println!("Duplicating...");
+                Debugger::log("Duplicating...");
                 self.duplicate_selected_notes();
-                println!("Done");
+                Debugger::log("Done");
             }
 
             if ui.input(|i| i.key_pressed(Key::Delete)) {
@@ -357,7 +343,7 @@ impl NoteEditing {
         }
     }
 
-    fn get_clicked_note_idx(&mut self) -> Option<usize> {
+    fn get_clicked_note_idx(&self) -> Option<usize> {
         self.mouse_info.last_clicked_note_idx
     }
 
@@ -369,13 +355,11 @@ impl NoteEditing {
         // we are over a note
         if let Some(clicked_idx) = self.get_clicked_note_idx() {
             let curr_track = self.get_current_track();
-            {
-                let tracks = self.tracks.read().unwrap();
-                let notes = (*tracks)[curr_track as usize].get_notes();
-                let note = &notes[clicked_idx];
 
+            self.with_notes(curr_track as usize, |notes| {
+                let note = &notes[clicked_idx];
                 self.update_toolbar_settings_from_note(note);
-            }
+            });
 
             self.disable_flag(NOTE_EDIT_LENGTH_CHANGE | NOTE_EDIT_DRAGGING | NOTE_EDIT_MULTIEDIT);
             
@@ -396,21 +380,10 @@ impl NoteEditing {
                 }
             };
 
-            // self.disable_flag(NOTE_EDIT_DRAGGING);
-            // self.disable_flag(flag);
-
-            // let is_multi = self.get_flag(NOTE_EDIT_MULTIEDIT);
-
             if self.mouse_info.is_at_note_end {
                 self.enable_flag(NOTE_EDIT_LENGTH_CHANGE);
 
                 let sel_lengths = {
-                    /*let selected_ids = self.selected_note_ids.lock().unwrap();
-                    let ids = if is_multi {
-                        &*selected_ids
-                    } else {
-                        &vec![clicked_idx]
-                    };*/
                     let shared_sel_ids = self.shared_selected_note_ids.read().unwrap();
                     let ids = if is_multi {
                         shared_sel_ids.get_selected_ids_in_track(curr_track).unwrap()
@@ -426,13 +399,6 @@ impl NoteEditing {
                 self.enable_flag(NOTE_EDIT_DRAGGING);
 
                 let sel_positions = {
-                    /*let selected_ids = self.selected_note_ids.lock().unwrap();
-                    let ids = if is_multi {
-                        &*selected_ids
-                    } else {
-                        &vec![clicked_idx]
-                    };*/
-
                     let shared_sel_ids = self.shared_selected_note_ids.read().unwrap();
                     let ids = if is_multi {
                         shared_sel_ids.get_selected_ids_in_track(curr_track).unwrap()
@@ -503,6 +469,10 @@ impl NoteEditing {
         } else if self.get_flag(NOTE_EDIT_LENGTH_CHANGE) {
             self.apply_note_length_change();
             self.disable_flag(NOTE_EDIT_LENGTH_CHANGE);
+
+            if !self.get_flag(NOTE_EDIT_MULTIEDIT) {
+                self.update_toolbar_settings_from_clicked_note();
+            }
         }
     }
 
@@ -609,18 +579,25 @@ impl NoteEditing {
         } else if self.get_flag(NOTE_EDIT_LENGTH_CHANGE) {
             self.apply_note_length_change();
             self.disable_flag(NOTE_EDIT_LENGTH_CHANGE);
+
+            if !self.get_flag(NOTE_EDIT_MULTIEDIT) {
+                // update ghost note
+                self.update_toolbar_settings_from_clicked_note();
+            }
         } else {
             self.draw_select_box = false;
 
             let (min_tick, max_tick, min_key, max_key) = self.get_selection_range();
             let curr_track = self.get_current_track();
 
-            let tracks = self.tracks.read().unwrap();
-            let notes = (*tracks)[curr_track as usize].get_notes();
+            let selected = self.with_notes(curr_track as usize, |notes| {
+                get_notes_in_range(notes, min_tick, max_tick, min_key, max_key, true)
+            });
 
-            let selected = get_notes_in_range(notes, min_tick, max_tick, min_key, max_key, true);
-
-            {
+            self.select_notes(curr_track, selected, 
+                if self.get_flag(NOTE_EDIT_SHIFT_DOWN) { SelectionOp::AppendSelection } else { SelectionOp::NewSelection }
+            );
+            /*{
                 // let mut sel = self.selected_note_ids.lock().unwrap();
                 let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
                 
@@ -634,7 +611,7 @@ impl NoteEditing {
                 }
 
                 *sel = selected;
-            }
+            }*/
 
             // self.update_render_selected_notes();
         }
@@ -741,6 +718,61 @@ impl NoteEditing {
         }
 
         // self.update_render_selected_notes();
+    }
+
+    fn select_notes(&mut self, track: u16, ids: Vec<usize>, selection_op: SelectionOp) {
+        let mut selected_ids = self.shared_selected_note_ids.write().unwrap();
+
+        match selection_op {
+            SelectionOp::NewSelection => {
+                let mut has_selection: bool = false;
+
+                // clear active selection and return what was previously active
+                let old_selected_ids = selected_ids.take_selected_from_track(track);
+                let had_old_selection = !old_selected_ids.is_empty();
+
+                // select new notes
+                // if ids is empty, it's effectively just a deselection.
+                if !ids.is_empty() {
+                    selected_ids.set_selected_in_track(ids.clone(), track);
+                    has_selection = true;
+                }
+
+                let mut actions = Vec::with_capacity(2);
+                if had_old_selection { actions.push(EditorAction::Deselect(old_selected_ids, track)); }
+                if has_selection { actions.push(EditorAction::Select(ids, track)); }
+
+                {
+                    let mut editor_actions = self.editor_actions.borrow_mut();
+                    editor_actions.register_action(EditorAction::Bulk(actions));
+                }
+            },
+            SelectionOp::AppendSelection => {
+                if !ids.is_empty() {
+                    // clear active selection and return what was previously active
+                    let old_selected_ids = selected_ids.get_selected_ids_in_track(track);
+
+                    // if any note was selected before
+                    if let Some(old_ids) = old_selected_ids {
+                        // get ids of notes that will be added to selection
+                        let added_sel_ids = exclude(ids.clone(), old_ids);
+
+                        if !added_sel_ids.is_empty() {
+                            // add notes to selection
+                            let old_ids = selected_ids.take_selected_from_track(track);
+                            let new_ids = merge_unique(old_ids, added_sel_ids.clone());
+                            selected_ids.set_selected_in_track(new_ids, track);
+                        
+                            let mut editor_actions = self.editor_actions.borrow_mut();
+                            editor_actions.register_action(EditorAction::Select(added_sel_ids, track));
+                        }
+                    }
+                }
+            },
+            SelectionOp::RemoveFromSelection => {
+
+            }
+        }
     }
 
     // ======== ERASER TOOL STUFF ========
@@ -1065,9 +1097,9 @@ impl NoteEditing {
     }
 
     pub fn set_notes_in_track(&mut self, track: u16, notes_: Vec<Note>) {
-        let mut tracks = self.tracks.write().unwrap();
-        let notes = (*tracks)[track as usize].get_notes_mut();
-        *notes = notes_;
+        self.with_notes_mut(track as usize, |notes| {
+            *notes = notes_;
+        });
     }
 
     pub fn duplicate_selected_notes(&mut self) {
@@ -1101,12 +1133,7 @@ impl NoteEditing {
         let moved = move_all_notes_by(copied_notes, (max_tick as SignedMIDITick - min_tick as SignedMIDITick, 0));
 
         let (merged, dupe_ids) = merge_notes_and_return_ids(old_notes, moved);
-        
-        {
-            let mut tracks = self.tracks.write().unwrap();
-            let notes = (*tracks)[track as usize].get_notes_mut();
-            *notes = merged
-        }
+        self.set_notes_in_track(track, merged);
 
         let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
         editor_actions.register_action(EditorAction::PlaceNotes(dupe_ids.clone(), None, track));
@@ -1115,22 +1142,21 @@ impl NoteEditing {
     }
 
     pub fn clone_notes(&self, track: u16, ids: &[usize]) -> Vec<Note> {
-        let mut tracks = self.tracks.write().unwrap();
-        let notes = (*tracks)[track as usize].get_notes_mut();
+        self.with_notes(track as usize, |notes| {
+            let copied = ids.iter().map(|&id| { 
+                let note = &notes[id];
+                note.clone()
+            }).collect();
 
-        let copied = ids.iter().map(|&id| { 
-            let note = &notes[id];
-            note.clone()
-        }).collect();
-
-        copied
+            copied
+        })
     }
 
     pub fn copy_notes(&mut self, track: u16) {
         // let selected = self.selected_note_ids.lock().unwrap();
         let selected = self.shared_selected_note_ids.read().unwrap();
         let selected = selected.get_selected_ids_in_track(track).unwrap();
-        if selected.is_empty() { println!("Nothing copied."); return; }
+        if selected.is_empty() { Debugger::log_warning("Nothing copied."); return; }
         let copied_notes = self.clone_notes(track, selected);
         
         let mut shared_clipboard = self.shared_clipboard.write().unwrap();
@@ -1298,51 +1324,88 @@ impl NoteEditing {
                 *delta_pos = notes_dt;
             },
             EditorAction::ChannelChange(note_ids, delta_channel, track) => {
-                let mut tracks = self.tracks.write().unwrap();
-                let notes = (*tracks)[*track as usize].get_notes_mut();
+                self.with_notes_mut(*track as usize, |notes| {
+                    for (i, &id) in note_ids.iter().enumerate() {
+                        let note = &mut notes[id];
+                        let dt_channel = &mut delta_channel[i];
+                        let mut new_channel = note.channel() as i8 + *dt_channel;
+                        if new_channel < 0 {
+                            new_channel = 0;
+                        }
+                        if new_channel > 15 {
+                            new_channel = 15;
+                        }
 
-                for (i, &id) in note_ids.iter().enumerate() {
-                    let note = &mut notes[id];
-                    let dt_channel = &mut delta_channel[i];
-                    let mut new_channel = note.channel() as i8 + *dt_channel;
-                    if new_channel < 0 {
-                        new_channel = 0;
+                        *dt_channel = new_channel - note.channel() as i8;
+                        *(notes[id].channel_mut()) = new_channel as u8;
                     }
-                    if new_channel > 15 {
-                        new_channel = 15;
-                    }
-
-                    *dt_channel = new_channel - note.channel() as i8;
-                    *(notes[id].channel_mut()) = new_channel as u8;
-                }
+                });
             },
             EditorAction::LengthChange(note_ids, delta_length, track) => {
-                let mut tracks = self.tracks.write().unwrap();
-                let notes = (*tracks)[*track as usize].get_notes_mut();
+                assert_eq!(note_ids.len(), delta_length.len(), "Expected length of note_ids to be equal to the length of delta_length. {} != {}", note_ids.len(), delta_length.len());
 
-                for (i, &id) in note_ids.iter().enumerate() {
-                    let note = &mut notes[id];
-                    let dt_length = &mut delta_length[i];
-                    let mut new_length = (note.length() as SignedMIDITick).saturating_add(*dt_length);
-                    if new_length < 1 { new_length = 1; }
+                self.with_notes_mut(*track as usize, |notes| {
+                    for (i, &id) in note_ids.iter().enumerate() {
+                        let note = &mut notes[id];
+                        let dt_length = &mut delta_length[i];
+                        let mut new_length = (note.length() as SignedMIDITick).saturating_add(*dt_length);
+                        if new_length < 1 { new_length = 1; }
 
-                    *dt_length = new_length - note.length() as SignedMIDITick;
-                    *(notes[id].length_mut()) = new_length as MIDITick;
-                }
+                        *dt_length = new_length - note.length() as SignedMIDITick;
+                        note.set_length(new_length as MIDITick);
+                    }
+                });
             },
             EditorAction::VelocityChange(note_ids, delta_velocity, track) => {
-                let mut tracks = self.tracks.write().unwrap();
-                let notes = (*tracks)[*track as usize].get_notes_mut();
+                assert_eq!(note_ids.len(), delta_velocity.len(), "Expected length of note_ids to be equal to the length of delta_velocity. {} != {}", note_ids.len(), delta_velocity.len());
 
-                for (i, &id) in note_ids.iter().enumerate() {
-                    let note = &mut notes[id];
-                    let dt_velocity = &mut delta_velocity[i];
-                    let mut new_velocity = (note.velocity() as i8).saturating_add(*dt_velocity);
-                    if new_velocity < 1 { new_velocity = 1; }
+                self.with_notes_mut(*track as usize, |notes| {
+                    for (i, &id) in note_ids.iter().enumerate() {
+                        let note = &mut notes[id];
+                        let dt_velocity = &mut delta_velocity[i];
+                        let mut new_velocity = (note.velocity() as i8).saturating_add(*dt_velocity);
+                        if new_velocity < 1 { new_velocity = 1; }
 
-                    *dt_velocity = new_velocity - note.velocity() as i8;
-                    *(notes[id].velocity_mut()) = new_velocity as u8;
+                        *dt_velocity = new_velocity - note.velocity() as i8;
+                        note.set_velocity(new_velocity as u8);
+                    }
+                });
+            },
+            EditorAction::KeyChange(note_ids, delta_key, track) => {
+                assert_eq!(note_ids.len(), delta_key.len(), "Expected length of note_ids to be equal to the length of delta_key. {} != {}", note_ids.len(), delta_key.len());
+
+                self.with_notes_mut(*track as usize, |notes| {
+                    for (i, &id) in note_ids.iter().enumerate() {
+                        let note = &mut notes[id];
+                        let dt_key = &mut delta_key[i];
+                        let mut new_key = (note.key() as SignedMIDIKey).saturating_add(*dt_key);
+                        if new_key < 0 { new_key = 0; }
+
+                        *dt_key = new_key - note.key() as SignedMIDIKey;
+                        note.set_key(new_key as MIDIKey);
+                    }
+                });
+            },
+            EditorAction::Select(note_ids, track) => {
+                let mut selected_ids = self.shared_selected_note_ids.write().unwrap();
+                
+                let old_selection = selected_ids.take_selected_from_track(*track);
+
+                // if no old selection then use ol' reliable
+                if old_selection.is_empty() {
+                    selected_ids.set_selected_in_track(note_ids.clone(), *track);
+                } else {
+                    let new_selection = merge_unique(old_selection, note_ids.clone());
+                    selected_ids.set_selected_in_track(new_selection, *track);
                 }
+            },
+            EditorAction::Deselect(note_ids, track) => {
+                let mut selected_ids = self.shared_selected_note_ids.write().unwrap();
+                
+                let old_selection = selected_ids.take_selected_from_track(*track);
+                let new_selection = exclude(old_selection, note_ids);
+                
+                selected_ids.set_selected_in_track(new_selection, *track);
             }
             /*EditorAction::Select(note_ids, track) => {
 
@@ -1393,6 +1456,17 @@ impl NoteEditing {
         tbs.note_gate.set_value(note.length());
         tbs.note_velocity.set_value(note.velocity());
         tbs.note_channel.set_value(note.channel() + 1);
+    }
+
+    pub fn update_toolbar_settings_from_clicked_note(&self) {
+        let curr_track = self.get_current_track();
+        if let Some(clicked_idx) = self.get_clicked_note_idx() {
+            let tracks = self.tracks.read().unwrap();
+            let notes = (*tracks)[curr_track as usize].get_notes();
+            let note = &notes[clicked_idx];
+
+            self.update_toolbar_settings_from_note(note);
+        }
     }
 
     fn update_latest_note_start(&mut self) {
@@ -1526,6 +1600,20 @@ impl NoteEditing {
                 ctx.set_cursor_icon(CursorIcon::Crosshair);
             }
         }
+    }
+
+    pub fn with_notes<F, R>(&self, track: usize, f: F) -> R
+        where F: FnOnce(&Vec<Note>) -> R,
+    {
+        let tracks = self.tracks.read().unwrap();
+        f(tracks[track].get_notes())
+    }
+
+    pub fn with_notes_mut<F, R>(&self, track: usize, f: F) -> R 
+        where F: FnOnce(&mut Vec<Note>) -> R,
+    {
+        let mut tracks = self.tracks.write().unwrap();
+        f(tracks[track].get_notes_mut())
     }
 
     /*pub fn has_notes_in_clipboard(&self) -> bool {

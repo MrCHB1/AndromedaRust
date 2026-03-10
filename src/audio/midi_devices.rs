@@ -1,6 +1,6 @@
 use midir::{MidiInputPort, MidiInputConnection, MidiOutputConnection, MidiOutputPort};
 
-use crate::audio::midi_audio_engine::MIDIAudioEngine;
+use crate::{audio::midi_audio_engine::MIDIAudioEngine, util::debugger::Debugger};
 
 pub struct MIDIDevices {
     midi_in_ports: Vec<MidiInputPort>,
@@ -37,13 +37,13 @@ impl MIDIDevices {
         for (i, port) in in_ports.iter().enumerate() {
             s.midi_in_port_names.push(midi_in.port_name(port)?);
             s.midi_in_ports.push(port.clone());
-            println!("IN({}): {}", i, s.midi_in_port_names[i]);
+            Debugger::log(format!("IN({}): {}", i, s.midi_in_port_names[i]));
         }
 
         for (i, port) in out_ports.iter().enumerate() {
             s.midi_out_port_names.push(midi_out.port_name(port)?);
             s.midi_out_ports.push(port.clone());
-            println!("OUT({}): {}", i, s.midi_out_port_names[i]);
+            Debugger::log(format!("OUT({}): {}", i, s.midi_out_port_names[i]));
         }
 
         s.connect_in_port(0)?;
@@ -57,7 +57,7 @@ impl MIDIDevices {
         self.curr_midi_out_port = None;
 
         if self.midi_out_ports.len() == 0 {
-            println!("No MIDI outputs to connect to.");
+            Debugger::log_warning("No MIDI outputs to connect to.");
             return Ok(());
         }
 
@@ -67,7 +67,7 @@ impl MIDIDevices {
 
         let midi_out = midir::MidiOutput::new("andromeda out")?;
         let conn_out = midi_out.connect(&self.midi_out_ports[idx], "Andromeda out")?;
-        println!("Connected to OUT({}): {}", idx, self.midi_out_port_names[idx]);
+        Debugger::log(format!("Connected to OUT({}): {}", idx, self.midi_out_port_names[idx]));
 
         self.out_connection = Some(conn_out);
         self.curr_midi_out_port = Some(idx);
@@ -76,7 +76,7 @@ impl MIDIDevices {
 
     pub fn connect_in_port(&mut self, idx: usize) -> Result<(), Box<dyn std::error::Error>> {
         if self.midi_in_ports.len() == 0 {
-            println!("No MIDI inputs to connect to.");
+            Debugger::log_warning("No MIDI inputs to connect to.");
             return Ok(());
         }
 
@@ -91,11 +91,11 @@ impl MIDIDevices {
             &self.midi_in_ports[idx],
             "Andromeda in",
             move |stamp, message, _| {
-                println!("At {}ms: {:?}", stamp, message);
+                Debugger::log(format!("At {}ms: {:?}", stamp, message));
             },
             (),
         )?;
-        println!("Connected to IN({}): {}", idx, self.midi_in_port_names[idx]);
+        Debugger::log(format!("Connected to IN({}): {}", idx, self.midi_in_port_names[idx]));
 
         self.in_connection = Some(conn_in);
         self.curr_midi_in_port = Some(idx);
@@ -125,8 +125,8 @@ impl MIDIAudioEngine for MIDIDevices {
         // no out port yet..? maybe try looking for the first available one
         if self.curr_midi_out_port.is_none() {
             match self.connect_in_port(0) {
-                Ok(()) => { println!("Successfully connected to the first MIDI-Out port. "); }
-                Err(e) => { println!("Something went wrong when trying to connect to MIDI out. {}", e.to_string()); return; }
+                Ok(()) => { Debugger::log("Successfully connected to the first MIDI-Out port. "); }
+                Err(e) => { Debugger::log_error(format!("Something went wrong when trying to connect to MIDI out. Details: {}", e.to_string())); return; }
             }
         }
 

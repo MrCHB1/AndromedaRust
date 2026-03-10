@@ -107,7 +107,7 @@ pub fn bin_search_notes_exact(notes: &Vec<Note>, tick: MIDITick) -> usize {
         num_steps += 1;
     }
 
-    println!("Searched in {num_steps} steps.");
+    // println!("Searched in {num_steps} steps.");
     low
 }
 

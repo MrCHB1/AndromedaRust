@@ -3,7 +3,7 @@
 
 use std::collections::{VecDeque};
 
-use crate::{editor::util::{MIDITick, SignedMIDITick}, midi::{events::{channel_event::ChannelEvent, note::Note}, midi_track::MIDITrack}};
+use crate::{editor::util::{MIDITick, SignedMIDIKey, SignedMIDITick}, midi::{events::{channel_event::ChannelEvent, meta_event::MetaEvent, note::Note}, midi_track::MIDITrack}, util::debugger::Debugger};
 
 #[derive(Clone)]
 pub enum EditorAction {
@@ -32,6 +32,7 @@ pub enum EditorAction {
     LengthChange(Vec<usize>, Vec<SignedMIDITick>, u16), // this action stores the change in length of notes.
     VelocityChange(Vec<usize>, Vec<i8>, u16),
     ChannelChange(Vec<usize>, Vec<i8>, u16),
+    KeyChange(Vec<usize>, Vec<SignedMIDIKey>, u16),
     NotesMove(Vec<usize>, Vec<(SignedMIDITick, i16)>, u16, bool), // stores change in tick and key. last bool is if we should update selected notes ids
     NotesMoveImmediate(Vec<usize>, Vec<(SignedMIDITick, i16)>, u16), // stores change in tick and key without keeping track of the old note ids. this is unsafe lol
     NotesMoveMultiTrack(
@@ -41,8 +42,14 @@ pub enum EditorAction {
     Select(Vec<usize>, u16), // pretty straightforward
     Deselect(Vec<usize>, u16),
     Duplicate(Vec<usize>, MIDITick, u16, u16), // (note_ids, paste_tick, source track/channel, destination track/channel)
-    AddMeta(Vec<usize>),
-    DeleteMeta(Vec<usize>),
+    AddMeta(
+        Vec<usize>,
+        Option<Vec<MetaEvent>>
+    ),
+    DeleteMeta(
+        Vec<usize>,
+        Option<Vec<MetaEvent>>
+    ),
     AddTrack(
         u16, // index of the track that got added
         Option<VecDeque<MIDITrack>>, // only used for undoing/redoing
@@ -108,7 +115,7 @@ impl EditorActions {
 
     // this will basically "invert" the actions, starting from the latest action (front of VecDeque)
     pub fn undo_action(&mut self) -> Option<&mut EditorAction> {
-        if !self.get_can_undo() { println!("Nothing to undo"); return None; }
+        if !self.get_can_undo() { Debugger::log("Nothing to undo"); return None; }
 
         // increment the number of undo's
         self.undo_depth += 1;
@@ -126,7 +133,7 @@ impl EditorActions {
     // like undo, this will "invert" the actions, but starting from the undo_depth'th last index
     pub fn redo_action(&mut self) -> Option<&mut EditorAction> {
         //if self.undo_depth == 0 { println!("Nothing to redo"); return None; }
-        if !self.get_can_redo() { println!("Nothing to redo"); return None; }
+        if !self.get_can_redo() { Debugger::log("Nothing to redo"); return None; }
 
         let lastmost_redo_index = self.actions.len() - self.undo_depth as usize;
         let mut action_to_redo = self.actions.remove(lastmost_redo_index).unwrap();
@@ -174,6 +181,9 @@ impl EditorActions {
             EditorAction::VelocityChange(note_id, velocity_delta, note_group) => {
                 EditorAction::VelocityChange(note_id, velocity_delta.iter().map(|l| -l).collect(), note_group)
             },
+            EditorAction::KeyChange(note_id, key_delta, note_group) => {
+                EditorAction::KeyChange(note_id, key_delta.iter().map(|l| -l).collect(), note_group)
+            },
             EditorAction::NotesMove(note_id, midi_pos_delta, note_group, update_selected_ids) => {
                 EditorAction::NotesMove(note_id, midi_pos_delta.iter().map(|delta| (-delta.0, -delta.1)).collect(), note_group, update_selected_ids)
             },
@@ -192,11 +202,11 @@ impl EditorActions {
             EditorAction::Duplicate(note_id, _, _, note_group) => { // clever hack >:3
                 EditorAction::DeleteNotes(note_id, None, note_group)
             },
-            EditorAction::AddMeta(meta_ids) => {
-                EditorAction::DeleteMeta(meta_ids)
+            EditorAction::AddMeta(meta_ids, deleted_metas) => {
+                EditorAction::DeleteMeta(meta_ids, deleted_metas)
             },
-            EditorAction::DeleteMeta(meta_ids) => {
-                EditorAction::AddMeta(meta_ids)
+            EditorAction::DeleteMeta(meta_ids, deleted_metas) => {
+                EditorAction::AddMeta(meta_ids, deleted_metas)
             },
             EditorAction::AddTrack(track, deleted_tracks, last_track) => {
                 EditorAction::RemoveTrack(track, deleted_tracks, last_track)

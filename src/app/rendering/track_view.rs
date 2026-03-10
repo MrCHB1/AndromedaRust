@@ -21,7 +21,7 @@ use crate::app::rendering::{
 use crate::set_attribute;
 
 const NOTE_BUFFER_SIZE: usize = 32768;
-const BAR_BUFFER_SIZE: usize = 32;
+const BAR_BUFFER_SIZE: usize = 64;
 
 // track view background
 pub type BarStart = f32;
@@ -277,7 +277,7 @@ impl Renderer for TrackViewRenderer {
                 (nav.zoom_ticks_smoothed, nav.track_pos_smoothed, nav.zoom_tracks_smoothed)
             };
 
-            let (is_playing, view_offset) = {
+            let (_, view_offset) = {
                 let playback_manager = self.playback_manager.lock().unwrap();
                 let mut view_offset = self.last_view_offset;
                 if playback_manager.playing && !self.started_playing {

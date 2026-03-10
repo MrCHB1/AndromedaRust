@@ -8,6 +8,12 @@ pub mod track_editing;
 pub mod lua_note_editing;
 pub mod data_editing;
 
+pub enum SelectionOp {
+    NewSelection,
+    AppendSelection,
+    RemoveFromSelection
+}
+
 /// Contains information about what notes were copied
 #[derive(Default)]
 pub struct SharedClipboard {
@@ -107,7 +113,8 @@ impl SharedSelectedNotes {
     }
 
     pub fn take_selected_from_track(&mut self, track: u16) -> Vec<usize> {
-        std::mem::take(&mut self.selected_notes_hash.entry(track).or_default())
+        self.selected_notes_hash.remove(&track).unwrap_or_default()
+        // std::mem::take(&mut self.selected_notes_hash.entry(track).or_default())
     }
 
     pub fn take_selected_from_all(&mut self) -> Vec<(u16, Vec<usize>)> {

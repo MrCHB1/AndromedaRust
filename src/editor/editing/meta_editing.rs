@@ -1,23 +1,18 @@
+pub mod meta_sequence_funcs;
+
 use eframe::egui;
 
 use crate::{
     app::{
         custom_widgets::{NumberField, NumericField},
         ui::dialog::{
-            flags::*,
-            names::DIALOG_NAME_INSERT_META,
-            Dialog,
-            DialogAction,
-            DialogActionButtons,
+            Dialog, DialogAction, DialogActionButtons, flags::*, names::DIALOG_NAME_INSERT_META
         },
     },
     editor::{
-        actions::{EditorAction, EditorActions},
-        midi_bar_cacher::BarCacher,
-        tempo_map::TempoMap,
-        util::{tempo_as_bytes, MIDITick},
+        actions::{EditorAction, EditorActions}, editing::{meta_editing::meta_sequence_funcs::merge_metas, note_editing::note_sequence_funcs::{extract, extract_and_remap_ids}}, midi_bar_cacher::BarCacher, tempo_map::TempoMap, util::{MIDITick, tempo_as_bytes}
     },
-    midi::events::meta_event::{MetaEvent, MetaEventType},
+    midi::events::meta_event::{MetaEvent, MetaEventType}, util::debugger::Debugger,
 };
 
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::{Arc, Mutex, RwLock}};
@@ -76,7 +71,7 @@ impl MetaEditing {
 
         let meta_ev_type = meta_event.event_type;
         
-        {
+        /*{
             let mut metas = self.global_metas.try_write().unwrap();
             let insert_idx = match metas.binary_search_by_key(&tick, |meta| meta.tick) {
                 Ok(ins) | Err(ins) => ins
@@ -99,6 +94,40 @@ impl MetaEditing {
                 let mut editor_actions = self.editor_actions.try_borrow_mut().unwrap();
                 editor_actions.register_action(EditorAction::AddMeta(vec![insert_idx]));
             }
+        }*/
+
+        {
+            let mut metas = self.global_metas.write().unwrap();
+            
+            let insert_idx = match metas.binary_search_by_key(&tick, |meta| meta.tick) {
+                    Ok(ins) | Err(ins) => ins
+                };
+
+            let replace_meta = if insert_idx < metas.len() {
+                meta_event.tick == metas[insert_idx].tick && meta_event.event_type == metas[insert_idx].event_type
+            } else {
+                false
+            };
+
+            if replace_meta {
+                // extract old meta
+                // let old_meta = metas.remove(insert_idx);
+                // metas.insert(insert_idx, meta_event);
+                let old_meta = std::mem::replace(&mut metas[insert_idx], meta_event);
+
+                let mut editor_actions = self.editor_actions.borrow_mut();
+                editor_actions.register_action(EditorAction::Bulk(vec![
+                    EditorAction::DeleteMeta(vec![insert_idx], Some(vec![old_meta])),
+                    EditorAction::AddMeta(vec![insert_idx], None)
+                ]));
+
+                Debugger::log("Meta event replaced");
+            } else {
+                metas.insert(insert_idx, meta_event);
+
+                let mut editor_actions = self.editor_actions.borrow_mut();
+                editor_actions.register_action(EditorAction::AddMeta(vec![insert_idx], None));
+            }
         }
 
         if meta_ev_type == MetaEventType::Tempo {
@@ -109,16 +138,26 @@ impl MetaEditing {
         self.regenerate_bars();
     }
 
-    pub fn apply_action(&mut self, action: &EditorAction) {
+    pub fn take_metas(&mut self) -> Vec<MetaEvent> {
+        let mut metas = self.global_metas.write().unwrap();
+        std::mem::take(&mut *metas)
+    }
+
+    pub fn set_metas(&mut self, metas: Vec<MetaEvent>) {
+        let mut metas_ = self.global_metas.write().unwrap();
+        *metas_ = metas;
+    }
+
+    pub fn apply_action(&mut self, action: &mut EditorAction) {
         match action {
-            EditorAction::AddMeta(meta_ids) => {
-                // pop last deleted meta from deleted metas deque
+            EditorAction::AddMeta(_, deleted_metas) => {
+                assert!(deleted_metas.is_some(), "[ADD METAS] Something has gone wrong while undoing meta deletion.");
                 {
-                    let mut metas = self.global_metas.write().unwrap();
-                    for id in meta_ids.iter() {
-                        let meta = self.tmp_del_metas.pop_back().unwrap();
-                        metas.insert(*id, meta);
-                    }
+                    let recovered_metas = deleted_metas.take().unwrap();
+                    let old_metas = self.take_metas();
+
+                    let merged = merge_metas(old_metas, recovered_metas);
+                    self.set_metas(merged);
                 }
 
                 {
@@ -128,21 +167,19 @@ impl MetaEditing {
 
                 self.regenerate_bars();
             },
-            EditorAction::DeleteMeta(meta_ids) => {
+            EditorAction::DeleteMeta(meta_ids, deleted_metas) => {
                 {
-                    let mut metas = self.global_metas.write().unwrap();
-                    
-                    // remove meta, then push last
-                    // iterate in reverse, prevent index invalidation
-                    for id in meta_ids.iter().rev() {
-                        let meta = metas.remove(*id);
-                        self.tmp_del_metas.push_back(meta);
-                    }
+                    let old_metas = self.take_metas();
 
-                    {
-                        let mut tempo_map = self.tempo_map.write().unwrap();
-                        tempo_map.rebuild_tempo_map();
-                    }
+                    let (deleted, new_metas) = extract(old_metas, &meta_ids);
+                    self.set_metas(new_metas);
+
+                    *deleted_metas = Some(deleted);
+                }
+
+                {
+                    let mut tempo_map = self.tempo_map.write().unwrap();
+                    tempo_map.rebuild_tempo_map();
                 }
 
                 self.regenerate_bars();
@@ -206,8 +243,8 @@ impl Dialog for MetaEventInsertDialog {
 
     fn get_action_buttons(&self) -> Option<crate::app::ui::dialog::DialogActionButtons> {
         Some(
-            DialogActionButtons::Ok(Box::new(
-                |dlg| {
+            DialogActionButtons::OkCancel(
+                Box::new(|dlg| {
                     let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
 
                     let mut data = Vec::new();
@@ -230,70 +267,19 @@ impl Dialog for MetaEventInsertDialog {
 
                     let dlg_name = dlg.get_dialog_name();
                     Some(DialogAction::Close(dlg_name))
-                }
-            ))
+                }),
+                Box::new(|dlg| {
+                    let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
+                    let dlg_name = dlg.get_dialog_name();
+                    Some(DialogAction::Close(dlg_name))
+                })
+            )
         )
     }
 
     fn get_flags(&self) -> u16 {
         DIALOG_NO_COLLAPSABLE | DIALOG_NO_RESIZABLE
     }
-    /*fn show(&mut self) -> () {
-        self.is_showing = true;
-    }
-
-    fn close(&mut self) -> () {
-        self.fields.clear();
-        self.is_showing = false;
-    }
-
-    fn is_showing(&self) -> bool {
-        self.is_showing
-    }
-
-    fn draw(&mut self, ctx: &egui::Context, _image_resources: &crate::app::util::image_loader::ImageResources) -> () {
-        if !self.is_showing { return; }
-
-        egui::Window::new(RichText::new(format!("Insert {}", self.dialog_type.to_string())).size(15.0))
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.vertical(|ui| {
-                    for (label, field) in self.fields.iter_mut() {
-                        field.show(label, ui, None);
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("Insert").clicked() {
-                            let mut data = Vec::new();
-
-                            match self.dialog_type {
-                                MetaEventType::TimeSignature => {
-                                    data = vec![self.fields[0].1.as_u8(), self.fields[1].1.as_u8()];
-                                    println!("{:?}", data);
-                                },
-                                MetaEventType::Tempo => {
-                                    data = tempo_as_bytes(self.fields[0].1.as_f32()).to_vec();
-                                }
-                                _ => {}
-                            }
-
-                            if !data.is_empty() {
-                                if let Some(meta_created) = self.meta_created.take() {
-                                    meta_created(data);
-                                }
-                            }
-                            
-                            self.close();
-                        }
-
-                        if ui.button("Cancel").clicked() {
-                            self.close();
-                        }
-                    });
-                });
-            });
-    }*/
 }
 
 impl MetaEventInsertDialog {

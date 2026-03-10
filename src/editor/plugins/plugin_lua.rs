@@ -1,5 +1,5 @@
 use mlua::{Error, Function, Lua, Table, Value};
-use crate::{editor::{plugins::PluginType}};
+use crate::{editor::plugins::PluginType, util::debugger::Debugger};
 use std::{path::PathBuf, rc::Rc};
 use regex::Regex;
 
@@ -58,7 +58,7 @@ impl PluginLua {
 
     pub fn reload_plugin(&mut self) -> Result<(), Error> {
         if self.is_builtin {
-            println!("Skipping {} reload because it is a builtin plugin", self.plugin_name);
+            Debugger::log(format!("Skipping {} reload because it is a builtin plugin", self.plugin_name));
             return Ok(());
         }
 
@@ -71,7 +71,7 @@ impl PluginLua {
         let result = self.load_plugin_from_path(path);
 
         if let Err(ref e) = result {
-            println!("[PluginError] (while reloading {}): \n--> {}", self.plugin_name, e.to_string());
+            Debugger::log_error(format!("[PluginError] (while reloading {}): \n--> {}", self.plugin_name, e.to_string()));
         }
 
         result

@@ -280,17 +280,17 @@ impl TrackEditing {
         }
 
         if ui.input(|i| i.events.iter().any(|ev| matches!(ev, egui::Event::Copy))) {
-            println!("Copied");
+            Debugger::log("Copied");
             self.copy_notes();
         }
 
         if ui.input(|i| i.events.iter().any(|ev| matches!(ev, egui::Event::Cut))) {
-            println!("Cut");
+            Debugger::log("Cut");
             self.cut_notes();
         }
 
         if ui.input(|i| i.events.iter().any(|ev| matches!(ev, egui::Event::Paste(_)))) {
-            println!("Pasted");
+            Debugger::log("Pasted");
             self.paste_notes(curr_track);
         }
     }
@@ -407,10 +407,10 @@ impl TrackEditing {
                     }
                 }
 
-                println!("Selected {num_selected} notes in track view.");
+                Debugger::log("Selected {num_selected} notes in track view.");
             } else {
                 // no notes were selected at all, existing selection cleared already
-                println!("Selected no notes in track view.");
+                Debugger::log("Selected no notes in track view.");
             }
         }
     }

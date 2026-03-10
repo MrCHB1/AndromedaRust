@@ -1,9 +1,7 @@
-use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex, RwLock}};
-use as_any::Downcast;
+use std::sync::{Arc, Mutex, RwLock};
 use eframe::egui::Vec2;
 use eframe::glow;
-use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{editing::{SharedSelectedNotes, note_editing::NoteEditing, track_editing::TrackEditing}, midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project::project_manager::{self, ProjectManager}}, midi::events::note::Note};
-use crate::editor::project::project_data::ProjectData;
+use crate::{app::{rendering::{note_cull_helper::NoteCullHelper, piano_roll::PianoRollRenderer, track_view::TrackViewRenderer}, shared::NoteColors, view_settings::ViewSettings}, audio::event_playback::PlaybackManager, editor::{editing::{SharedSelectedNotes, note_editing::NoteEditing, track_editing::TrackEditing}, midi_bar_cacher::BarCacher, navigation::{PianoRollNavigation, TrackViewNavigation}, project::project_manager::{self, ProjectManager}}, midi::events::note::Note, util::debugger::Debugger};
 
 pub mod buffers;
 pub mod piano_roll;
@@ -18,6 +16,7 @@ pub trait Renderer {
     fn clear_ghost_notes(&mut self) {}
     fn set_selected(&mut self, _selected_ids: &Arc<RwLock<SharedSelectedNotes>>) {}
     fn window_size(&mut self, _size: Vec2) {}
+    fn app_scale(&mut self, _scale: f32) {}
     fn update_ppq(&mut self, _ppq: u16) {}
     fn time_changed(&mut self, _time: u64) {}
     fn set_active(&mut self, _is_active: bool) {}
@@ -66,7 +65,7 @@ impl RenderManager {
             //let project_data = project_data.clone();
             //let project_data = project_data.lock().unwrap();
 
-            println!("init piano roll renderer");
+            Debugger::log("Initializing piano roll renderer");
             let mut piano_roll_renderer = unsafe {
                 PianoRollRenderer::new(
                     &project_manager,
@@ -81,7 +80,7 @@ impl RenderManager {
                 )
             };
 
-            println!("init track view renderer");
+            Debugger::log("Initializing track view renderer");
             let mut track_view_renderer = unsafe {
                 TrackViewRenderer::new(
                     &project_manager,

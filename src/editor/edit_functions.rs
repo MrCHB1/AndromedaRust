@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::{HashMap, HashSet}, rc::Rc, sync::{Arc, Mutex}};
 use eframe::egui;
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, names::*}, util::image_loader::ImageResources}, deprecated, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{MIDITick, SignedMIDITick, bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks}}, midi::events::note::Note};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, dialog_default_close_action, names::*}, util::image_loader::ImageResources}, deprecated, editor::{actions::{EditorAction, EditorActions}, editing::note_editing::note_sequence_funcs::{extract, merge_notes, merge_notes_and_return_ids}, util::{MIDIKey, MIDITick, SignedMIDIKey, SignedMIDITick, bin_search_notes, get_min_max_keys_in_selection, get_min_max_ticks_in_selection, manipulate_note_lengths, manipulate_note_ticks}}, midi::events::note::Note, util::debugger::Debugger};
 use crate::editor::editing::note_editing::NoteEditing;
 
 // modular edit_function
@@ -16,7 +16,8 @@ pub enum EditFunction {
     Glue(Vec<usize>, MIDITick, bool),
     RemoveOverlaps,
     SliceAtTick(Vec<usize>, MIDITick),
-    FadeNotes(bool)
+    FadeNotes(bool),
+    Transpose(SignedMIDIKey)
 }
 
 #[derive(Default)]
@@ -62,6 +63,7 @@ impl EditFunctions {
             EditFunction::Chop(note_ids, max_len) => {
                 // to chop, first we go through all selected notes and change their lengths (if applicable)
                 let mut changed_lengths = Vec::with_capacity(note_ids.len());
+                let mut changed_lengths_ids = Vec::new();
 
                 let mut new_notes = Vec::new();
 
@@ -76,6 +78,7 @@ impl EditFunctions {
                         remaining_length -= new_length;
 
                         changed_lengths.push(new_length as SignedMIDITick - old_length as SignedMIDITick);
+                        changed_lengths_ids.push(*id);
 
                         // generate the new chop notes
                         let mut start_time = note.start() + new_length;
@@ -107,8 +110,8 @@ impl EditFunctions {
                 // finally, register the function for undo/redoing
                 if !chopped_ids.is_empty() && !note_ids.is_empty() && !changed_lengths.is_empty() {
                     editor_actions.register_action(EditorAction::Bulk(vec![
+                        EditorAction::LengthChange(changed_lengths_ids, changed_lengths, curr_track),
                         EditorAction::PlaceNotes(chopped_ids, None, curr_track),
-                        EditorAction::LengthChange(note_ids, changed_lengths, curr_track),
                     ]));
                 }
             },
@@ -254,6 +257,27 @@ impl EditFunctions {
 
                 editor_actions.register_action(EditorAction::VelocityChange(sel_note_ids.clone(), vel_changes, curr_track));
             },
+            EditFunction::Transpose(transpose_amount) => {
+                let mut key_changes = Vec::with_capacity(sel_note_ids.len());
+                let mut affected_note_ids = Vec::new();
+                
+                for &id in sel_note_ids.iter() {
+                    let note = &mut notes[id];
+                    let old_key = note.key();
+                    let new_key = (note.key() as SignedMIDIKey + transpose_amount).clamp(0, 127);
+
+                    let key_change = new_key - old_key as SignedMIDIKey;
+                    if key_change == 0 { continue; }
+
+                    affected_note_ids.push(id);
+                    key_changes.push(key_change);
+                    note.set_key(new_key as MIDIKey);
+                }
+                
+                if !key_changes.is_empty() {
+                    editor_actions.register_action(EditorAction::KeyChange(affected_note_ids, key_changes, curr_track));
+                }
+            },
             EditFunction::RemoveOverlaps => {
                 if sel_note_ids.is_empty() { return; }
 
@@ -281,11 +305,11 @@ impl EditFunctions {
                 *notes = new_notes;
 
                 if removed_notes.is_empty() { 
-                    println!("No overlapped notes were removed.");
+                    Debugger::log("No overlapped notes were removed.");
                     return;
                 }
 
-                println!("Removed {} notes.", removed_indices.len());
+                Debugger::log(format!("Removed {} notes.", removed_indices.len()));
 
                 if !removed_notes.is_empty() {
                     editor_actions.register_action(EditorAction::DeleteNotes(
@@ -476,29 +500,32 @@ impl Dialog for EFChopDialog {
 
     fn get_action_buttons(&self) -> Option<crate::app::ui::dialog::DialogActionButtons> {
         Some(
-            DialogActionButtons::Ok(Box::new(|dlg| {
-                let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
-                let dlg_name = dlg.get_dialog_name();
+            DialogActionButtons::OkCancel(
+                Box::new(|dlg| {
+                    let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
+                    let dlg_name = dlg.get_dialog_name();
 
-                let note_editing = dlg.note_editing.lock().unwrap();
+                    let note_editing = dlg.note_editing.lock().unwrap();
 
-                let tracks = note_editing.get_tracks();
-                let mut tracks = tracks.write().unwrap();
+                    let tracks = note_editing.get_tracks();
+                    let mut tracks = tracks.write().unwrap();
 
-                let sel_notes = note_editing.get_shared_selected_ids();
-                let mut sel_notes = sel_notes.write().unwrap();
+                    let sel_notes = note_editing.get_shared_selected_ids();
+                    let mut sel_notes = sel_notes.write().unwrap();
 
-                let curr_track = note_editing.get_current_track();
-                let notes = (*tracks)[curr_track as usize].get_notes_mut();
+                    let curr_track = note_editing.get_current_track();
+                    let notes = (*tracks)[curr_track as usize].get_notes_mut();
 
-                let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
-                let sel_notes_copy = sel_notes.clone();
+                    let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+                    let sel_notes_copy = sel_notes.clone();
 
-                let mut editor_actions = dlg.edit_actions.try_borrow_mut().unwrap();
-                dlg.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Chop(sel_notes_copy, dlg.target_tick_len.value()), curr_track, &mut editor_actions);
-            
-                Some(DialogAction::Close(dlg_name))
-            }))
+                    let mut editor_actions = dlg.edit_actions.try_borrow_mut().unwrap();
+                    dlg.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Chop(sel_notes_copy, dlg.target_tick_len.value()), curr_track, &mut editor_actions);
+                
+                    Some(DialogAction::Close(dlg_name))
+                }),
+                dialog_default_close_action()
+            )
         )
     }
 
@@ -560,29 +587,32 @@ impl Dialog for EFGlueDialog {
 
     fn get_action_buttons(&self) -> Option<DialogActionButtons> {
         Some(
-            DialogActionButtons::Ok(Box::new(|dlg| {
-                let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
-                let dlg_name = dlg.get_dialog_name();
+            DialogActionButtons::OkCancel(
+                Box::new(|dlg| {
+                    let dlg = dlg.as_any_mut().downcast_mut::<Self>().unwrap();
+                    let dlg_name = dlg.get_dialog_name();
 
-                let note_editing = dlg.note_editing.lock().unwrap();
+                    let note_editing = dlg.note_editing.lock().unwrap();
 
-                let tracks = note_editing.get_tracks();
-                let mut tracks = tracks.write().unwrap();
+                    let tracks = note_editing.get_tracks();
+                    let mut tracks = tracks.write().unwrap();
 
-                let sel_notes = note_editing.get_shared_selected_ids();
-                let mut sel_notes = sel_notes.write().unwrap();
+                    let sel_notes = note_editing.get_shared_selected_ids();
+                    let mut sel_notes = sel_notes.write().unwrap();
 
-                let curr_track = note_editing.get_current_track();
-                let notes = (*tracks)[curr_track as usize].get_notes_mut();
+                    let curr_track = note_editing.get_current_track();
+                    let notes = (*tracks)[curr_track as usize].get_notes_mut();
 
-                let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
-                let sel_notes_copy = sel_notes.clone();
+                    let mut sel_notes = sel_notes.get_selected_ids_mut(curr_track);
+                    let sel_notes_copy = sel_notes.clone();
 
-                let mut editor_actions = dlg.edit_actions.try_borrow_mut().unwrap();
-                dlg.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Glue(sel_notes_copy, dlg.glue_threshold.value(), dlg.separate_channels), curr_track, &mut editor_actions);
-            
-                Some(DialogAction::Close(dlg_name))
-            }))
+                    let mut editor_actions = dlg.edit_actions.try_borrow_mut().unwrap();
+                    dlg.edit_functions.try_borrow_mut().unwrap().apply_function(notes, &mut sel_notes, EditFunction::Glue(sel_notes_copy, dlg.glue_threshold.value(), dlg.separate_channels), curr_track, &mut editor_actions);
+                
+                    Some(DialogAction::Close(dlg_name))
+                }),
+                dialog_default_close_action()
+            ),
         )
     }
 

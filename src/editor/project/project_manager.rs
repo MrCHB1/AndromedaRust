@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc, sync::{Arc, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 
-use crate::{editor::{editing::meta_editing::MetaEditing, midi_bar_cacher::BarCacher, project::{self, ProjectWriter, project_data::{ProjectData, ProjectInfo}}, settings::editor_settings::ESGeneralSettings, tempo_map::TempoMap}, midi::{events::{channel_event::ChannelEvent, meta_event::MetaEvent, note::Note}, midi_file::MIDIFile, midi_track::MIDITrack}};
+use crate::{editor::{editing::meta_editing::MetaEditing, midi_bar_cacher::BarCacher, project::{self, ProjectWriter, project_data::{ProjectData, ProjectInfo}}, settings::editor_settings::ESGeneralSettings, tempo_map::TempoMap}, midi::{events::{channel_event::ChannelEvent, meta_event::MetaEvent, note::Note}, io::MIDIParseStatus, midi_file::MIDIFile, midi_track::MIDITrack}, util::debugger::Debugger};
 
 #[derive(Default)]
 pub struct ProjectManager {
@@ -26,14 +26,18 @@ impl ProjectManager {
         self.project_data.ppq
     }
 
-    pub fn import_from_midi_file(&mut self, path: String) {
+    pub fn import_from_midi_file(&mut self, path: String) -> MIDIParseStatus {
         let mut midi_file = MIDIFile::new();
         
-        midi_file.with_track_discarding(false)
-            .open(&path)
-            .unwrap();
-
-        self.project_data.load_data_from_midi_file(&mut midi_file);
+        match midi_file.with_track_discarding(false).open(&path) {
+            Ok(_) => {
+                self.project_data.load_data_from_midi_file(&mut midi_file);
+                MIDIParseStatus::ParseOK
+            },
+            Err(e) => {
+                MIDIParseStatus::ParseError
+            }
+        }
     }
 
     pub fn save_project(&self) -> std::io::Result<()> {
@@ -46,7 +50,7 @@ impl ProjectManager {
             project_writer.write_header()?;
             project_writer.finalize()?;
 
-            println!("project saved!");
+            Debugger::log("Project saved!");
         }
 
         Ok(())

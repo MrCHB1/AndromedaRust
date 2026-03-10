@@ -40,6 +40,18 @@ impl Buffer {
             );
         }
     }
+
+    pub fn set_sub_data<D>(&self, offset: usize, data: &[D]) {
+        unsafe {
+            self.bind();
+            let (_, data_bytes, _) = data.align_to::<u8>();
+            self.gl.buffer_sub_data_u8_slice(
+                self.target, 
+                offset as i32, 
+                data_bytes
+            );
+        }
+    }
 }
 
 impl Drop for Buffer {

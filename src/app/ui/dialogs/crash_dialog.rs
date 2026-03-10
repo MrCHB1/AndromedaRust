@@ -1,4 +1,4 @@
-use eframe::{APP_KEY, egui::RichText};
+use eframe::egui::RichText;
 
 use crate::{LAST_PANIC, app::ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::DIALOG_NO_COLLAPSABLE, names::DIALOG_NAME_CRASH}, util::{debugger::Debugger, send_discord_webhook_crash_message}};
 
@@ -53,7 +53,7 @@ impl Dialog for CrashDialog {
         Some(DialogActionButtons::Ok(
             Box::new(|dlg| {
                 let dlg = dlg.as_any().downcast_ref::<Self>().unwrap();
-                Debugger::log(format!("{}", dlg.msg));
+                Debugger::log_error(format!("Details of crash: \n{}", dlg.msg));
                 
                 send_discord_webhook_crash_message(
                     "https://nonconvertibly-untrue-denise.ngrok-free.dev/send",
@@ -64,6 +64,8 @@ impl Dialog for CrashDialog {
                 )
                 .unwrap();
 
+                Debugger::log_error(format!("Cause of crash (according to user): {}", dlg.user_crash_details));
+                Debugger::log_error("Closing Andromeda...");
                 Some(DialogAction::TerminateApp)
             })
         ))

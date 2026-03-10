@@ -1,13 +1,8 @@
-use crate::app::{ui::dialog::{Dialog, DialogAction, DialogActionButtons, flags::*, names::DIALOG_NAME_EDITOR_INFO}, util::image_loader::ImageResources};
+use crate::{EDITOR_STAGE, EDITOR_VERSION, app::{ui::dialog::{Dialog, DialogAction, DialogActionButtons, dialog_default_close_action, flags::*, names::DIALOG_NAME_EDITOR_INFO}, util::image_loader::ImageResources}};
 use eframe::egui;
 
-pub const EDITOR_VERSION: &'static str = "2.5.1p3";
-pub const EDITOR_STAGE: &'static str = "Beta";
-
 #[derive(Default)]
-pub struct EditorInfo {
-    showing: bool
-}
+pub struct EditorInfo;
 
 impl Dialog for EditorInfo {
     fn draw(&mut self, ui: &mut egui::Ui, image_resources: &ImageResources) -> Option<super::dialog::DialogAction> {
@@ -33,10 +28,9 @@ impl Dialog for EditorInfo {
 
     fn get_action_buttons(&self) -> Option<super::dialog::DialogActionButtons> {
         Some(
-            DialogActionButtons::Ok(Box::new(|dlg| {
-                let dlg_name = dlg.get_dialog_name();
-                Some(DialogAction::Close(dlg_name))
-            }))
+            DialogActionButtons::Ok(
+                dialog_default_close_action()
+            )
         )
     }
 

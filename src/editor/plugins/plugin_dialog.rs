@@ -4,7 +4,7 @@ use as_any::AsAny;
 use eframe::egui::{self, Align2};
 use mlua::{FromLua, Table, Value};
 
-use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, names::{DIALOG_NAME_PLUGIN_DIALOG, DIALOG_NAME_PLUGIN_ERROR_DIALOG}}}, editor::{actions::EditorActions, editing::{lua_note_editing::LuaNoteEditing, note_editing::NoteEditing}, plugins::{plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}}};
+use crate::{app::{custom_widgets::{NumberField, NumericField}, ui::dialog::{Dialog, DialogAction, DialogActionButtons, names::{DIALOG_NAME_PLUGIN_DIALOG, DIALOG_NAME_PLUGIN_ERROR_DIALOG}}}, editor::{actions::EditorActions, editing::{lua_note_editing::LuaNoteEditing, note_editing::NoteEditing}, plugins::{plugin_error_dialog::PluginErrorDialog, plugin_lua::PluginLua}}, util::debugger::Debugger};
 
 fn hash_table_address(table: &Table) -> u64 {
     let ptr = table.to_pointer() as usize;
@@ -38,7 +38,6 @@ pub struct PluginDialog {
 
 impl PluginDialog {
     pub fn init(&mut self, editor_actions: &Rc<RefCell<EditorActions>>, note_editing: &Arc<Mutex<NoteEditing>>) {
-        // println!("[PluginDialog::init()] Track count: {}", note_editing.lock().unwrap().get_tracks().read().unwrap().len());
         self.editor_actions = editor_actions.clone();
         self.note_editing = note_editing.clone();
         self.plugin_run_result = Some(Ok(()));
@@ -60,7 +59,7 @@ impl PluginDialog {
             for (idx, field) in fields.sequence_values::<Value>().enumerate() {
                 let field = field?;
                 let Some(field_table) = field.as_table() else {
-                    println!("[PluginWarning] skipping field {idx} because it is not a table");
+                    Debugger::log_warning("[PluginWarning] skipping field {idx} because it is not a table");
                     continue;
                 };
 
@@ -88,7 +87,7 @@ impl PluginDialog {
                 };
 
                 let Ok(field_contents) = field_table.get::<Table>(1) else {
-                    println!("[PluginWarning] skipping field {field_id} because the contents are empty");
+                    Debugger::log_warning(format!("[PluginWarning] skipping field {field_id} because the contents are empty"));
                     continue;
                 };
 
@@ -118,7 +117,7 @@ impl PluginDialog {
                         self.add_dropdown(field_id, &field_contents)?;
                     }, 
                     _ => {
-                        println!("[PluginWarning] Unknown field type \"{}\", skipping...", field_type);
+                        Debugger::log_warning(format!("[PluginWarning] Unknown field type \"{}\", skipping...", field_type));
                         continue;
                     }
                 }
@@ -155,7 +154,7 @@ impl PluginDialog {
             },
             Err(lua_error) => {
                 let plugin = plugin.try_borrow().unwrap();
-                println!("[PluginError] (While running {}): \n{}", plugin.plugin_name, lua_error);
+                Debugger::log_error(format!("[PluginError] (While running {}): \n{}", plugin.plugin_name, lua_error));
                 return Err(lua_error);
             }
         }

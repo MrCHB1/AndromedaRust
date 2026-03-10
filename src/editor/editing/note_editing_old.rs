@@ -978,7 +978,7 @@ impl NoteEditing {
                     get_notes_in_range(notes, min_tick, max_tick, min_key, max_key, true)
                 };
 
-                println!("{:?}", selected);
+                // println!("{:?}", selected);
 
                 if !selected.is_empty() {
                     self.delete_notes(std::mem::take(&mut selected), curr_track);

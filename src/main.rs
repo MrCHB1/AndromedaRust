@@ -1,15 +1,15 @@
-//#![deny(unused)]
-//#![deny(deprecated)]
-
 mod midi;
 mod app;
 mod editor;
 mod audio;
 mod util;
 
+pub const EDITOR_VERSION: &'static str = "2.6";
+pub const EDITOR_STAGE: &'static str = "Beta";
+
 use std::{panic, sync::Mutex};
 
-use crate::app::main_window::MainWindow;
+use crate::{app::main_window::MainWindow, editor::util::path_rel_to_abs, util::debugger::Debugger};
 
 #[macro_export]
 macro_rules! deprecated {
@@ -40,6 +40,10 @@ fn make_panic_hook() {
 }
 
 fn main() -> eframe::Result {
+    // initialize debugger
+    Debugger::init_log_file(path_rel_to_abs("./logs/debug.log".into()).to_str().unwrap());
+    Debugger::log_notime("***** APPLICATION STARTED *****");
+    
     dotenvy::dotenv().ok();
     make_panic_hook();
     

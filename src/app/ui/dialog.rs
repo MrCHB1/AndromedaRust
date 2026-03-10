@@ -12,6 +12,7 @@ pub mod flags {
 
 // Dialog names
 pub mod names {
+    pub const DIALOG_NAME_SIMPLE: &'static str = "SimpleDialog";
     pub const DIALOG_NAME_EF_STRETCH: &'static str = "EFStretchDialog";
     pub const DIALOG_NAME_EF_CHOP: &'static str = "EFChopDialog";
     pub const DIALOG_NAME_EF_GLUE: &'static str = "EFGlueDialog";
@@ -47,7 +48,7 @@ use flags::*;
 pub trait Dialog: AsAny {
     /// Called before the dialog is shown.
     /// If initialization was unsuccessful, the resulting [Err] will contain the message explaining why it failed.
-    fn init_dialog(&mut self, args: Vec<Box<dyn Any>>) -> Result<(), &'static str> { Ok(()) }
+    fn init_dialog(&mut self, _args: Vec<Box<dyn Any>>) -> Result<(), &'static str> { Ok(()) }
     
     // fn draw(&mut self, ctx: &egui::Context, image_resources: &ImageResources) -> Option<DialogAction>;
     fn draw(&mut self, ui: &mut Ui, image_resources: &ImageResources) -> Option<DialogAction>;
@@ -63,4 +64,11 @@ pub trait Dialog: AsAny {
     fn flag_enabled(&self, flag: u16) -> bool {
         self.get_flags() & flag != 0
     }
+}
+
+pub fn dialog_default_close_action() -> DlgButtonAction {
+    Box::new(|dlg| {
+        let dlg_name = dlg.get_dialog_name();
+        Some(DialogAction::Close(dlg_name))
+    })
 }

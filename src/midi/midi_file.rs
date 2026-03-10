@@ -77,7 +77,9 @@ impl MIDIFile {
             let mut fs = file_stream.lock().unwrap();
 
             let (header, length) = self.read_u32x2(&mut fs);
-            assert!(header == 0x4D546864 && length == 6, "Invalid file header.");
+            if header != 0x4D546864 || length != 6 {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid file header!"));
+            }
 
             self.read_u16x3(&mut fs)
         };
@@ -91,7 +93,9 @@ impl MIDIFile {
             let mut fs = file_stream.lock().unwrap();
             for _ in 0..trk_count {
                 let (header, length) = self.read_u32x2(&mut fs);
-                assert!(header == 0x4D54726B, "Invalid track header!");
+                if header != 0x4D54726B {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid track header!"));
+                }
 
                 let track_pos = fs.stream_position().unwrap();
                 track_locations.push(MIDITrackPointer { start: track_pos, length });
@@ -433,7 +437,7 @@ impl MIDIFileWriter {
             });
             prev_time = meta_event.tick;
         }
-        println!("{}", seq.len());
+        // println!("{}", seq.len());
         self.flush_evs_to_track(seq);
         self.end_track();
     }

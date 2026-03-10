@@ -7,7 +7,6 @@ ViewSettings};
 use crate::audio::event_playback::PlaybackManager;
 use crate::editor::editing::SharedSelectedNotes;
 use crate::editor::midi_bar_cacher::BarCacher;
-//use crate::editor::note_editing::GhostNote;
 use crate::editor::project::project_manager::ProjectManager;
 use crate::editor::util::get_next_specific_ch_ev_idx;
 use crate::midi::events::channel_event::ChannelEventType;
@@ -287,6 +286,11 @@ impl DataViewRenderer {
             self.dv_handles_vbo.bind();
             self.dv_handles_ebo.bind();
 
+            // use shader
+            unsafe {
+                self.gl.use_program(Some(self.dv_handles_program.program));
+            }
+
             let mut note_culler = self.note_cull_helper.lock().unwrap();
             note_culler.sync_cull_array_lengths();
 
@@ -334,7 +338,7 @@ impl DataViewRenderer {
                         self.dv_handles_ibo.set_data(self.dv_handles_render.as_slice(), glow::DYNAMIC_DRAW);
 
                         unsafe {
-                            self.gl.use_program(Some(self.dv_handles_program.program));
+                            // self.gl.use_program(Some(self.dv_handles_program.program));
                             self.gl.draw_elements_instanced(
                                 glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, HANDLE_BUFFER_SIZE as i32
                             );
@@ -399,7 +403,7 @@ impl DataViewRenderer {
                         self.dv_handles_ibo.set_data(self.dv_handles_render.as_slice(), glow::DYNAMIC_DRAW);
 
                         unsafe {
-                            self.gl.use_program(Some(self.dv_handles_program.program));
+                            // self.gl.use_program(Some(self.dv_handles_program.program));
                             self.gl.draw_elements_instanced(
                                 glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, HANDLE_BUFFER_SIZE as i32
                             );
@@ -443,7 +447,7 @@ impl DataViewRenderer {
                         self.dv_handles_ibo.set_data(self.dv_handles_render.as_slice(), glow::DYNAMIC_DRAW);
 
                         unsafe {
-                            self.gl.use_program(Some(self.dv_handles_program.program));
+                            // self.gl.use_program(Some(self.dv_handles_program.program));
                             self.gl.draw_elements_instanced(
                                 glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, HANDLE_BUFFER_SIZE as i32
                             );
@@ -459,7 +463,7 @@ impl DataViewRenderer {
                 self.dv_handles_ibo.set_data(self.dv_handles_render.as_slice(), glow::DYNAMIC_DRAW);
 
                 unsafe {
-                    self.gl.use_program(Some(self.dv_handles_program.program));
+                    // self.gl.use_program(Some(self.dv_handles_program.program));
                     self.gl.draw_elements_instanced(
                         glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0, handle_id as i32
                     );
@@ -657,13 +661,13 @@ impl DataViewRenderer {
         }
     }
 
-    pub fn set_ghost_notes(&mut self, notes: Arc<Mutex<Vec<Note>>>) {
+    /*pub fn set_ghost_notes(&mut self, notes: Arc<Mutex<Vec<Note>>>) {
         self.ghost_notes = Some(notes);
     }
 
     pub fn clear_ghost_notes(&mut self) {
         self.ghost_notes = None;
-    }
+    }*/
 }
 
 impl Renderer for DataViewRenderer {

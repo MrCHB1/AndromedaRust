@@ -97,6 +97,82 @@ pub fn extract<T>(src: Vec<T>, ids: &[usize]) -> (Vec<T>, Vec<T>) {
     (extracted, new_arr)
 }
 
+/// Excludes each element in B from A.
+pub fn exclude<T: Ord>(a: Vec<T>, b: &[T]) -> Vec<T> {
+    let mut result = Vec::new();
+
+    let mut a_iter = a.into_iter();
+    let mut b_iter = b.iter();
+
+    let mut a_next = a_iter.next();
+    let mut b_next = b_iter.next();
+
+    while let Some(a_val) = a_next {
+        match b_next {
+            Some(b_val) if a_val > *b_val => {
+                b_next = b_iter.next();
+                a_next = Some(a_val);
+            },
+            Some(b_val) if a_val == *b_val => {
+                a_next = a_iter.next();
+                b_next = b_iter.next();
+            },
+            _ => {
+                result.push(a_val);
+                a_next = a_iter.next();
+            }
+        }
+    }
+
+    result
+}
+
+/// Merges two arrays but removes duplicates. Returns 1) The merged array with unique
+pub fn merge_unique<T: Ord>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
+    let mut result = Vec::with_capacity(a.len() + b.len());
+
+    let mut a_iter = a.into_iter().peekable();
+    let mut b_iter = b.into_iter().peekable();
+
+    loop {
+        match (a_iter.peek(), b_iter.peek()) {
+            (Some(a_elem), Some(b_elem)) => {
+                let to_merge = if a_elem < b_elem {
+                    a_iter.next().unwrap()
+                } else if a_elem > b_elem {
+                    b_iter.next().unwrap()
+                } else {
+                    b_iter.next();
+                    a_iter.next().unwrap()
+                };
+
+                if result.last().map_or(true, |last| *last != to_merge) {
+                    result.push(to_merge);
+                }
+            },
+            (Some(_), None) => {
+                while let Some(a_elem) = a_iter.next() {
+                    if result.last().map_or(true, |last| *last != a_elem) {
+                        result.push(a_elem);
+                    }
+                }
+                break;
+            },
+            (None, Some(_)) => {
+                while let Some(b_elem) = b_iter.next() {
+                    if result.last().map_or(true, |last| *last != b_elem) {
+                        result.push(b_elem);
+                    }
+                }
+                break;
+            },
+            (None, None) => { break; }
+        }
+    }
+
+    result
+}
+
 pub fn extract_with<T, U>(src: Vec<T>, ids: &[usize], arr: Vec<U>) -> (Vec<(T, U)>, Vec<T>) {
     assert_eq!(ids.len(), arr.len(), "ids and arr must have the same length");
 

@@ -13,13 +13,15 @@ pub struct MIDITrackParser {
 
     prev_cmd: u8,
     curr_tick: MIDITick,
-    unended_notes: HashMap<usize, VecDeque<usize>>,
+    // 2048 because 16 channels for all 128 keys
+    unended_notes: [VecDeque<usize>; 2048],
     curr_note_id: usize,
 }
 
 impl MIDITrackParser {
     pub fn new(stream: &Arc<Mutex<File>>, start: usize, length: usize) -> Self {
-        let unended_notes = HashMap::with_capacity(128 << 4);
+        // switch from hashmap to array for faster access and no heap allocation
+        let unended_notes: [VecDeque<usize>; 2048] = std::array::from_fn(|_| VecDeque::new());
 
         Self {
             reader: BufferedByteReader::new(stream, start, length, 100000).unwrap(),
@@ -62,9 +64,7 @@ impl MIDITrackParser {
                 let (key, _) = self.reader.read_u8x2().unwrap();
                 
                 // set the end of the last note
-                let un = self.unended_notes
-                    .entry(((key as usize) << 4) | channel as usize)
-                    .or_insert(VecDeque::new());
+                let un = &mut self.unended_notes[((key as usize) << 4) | channel as usize];
 
                 if un.len() > 0 {
                     let n = un.pop_front().unwrap();
@@ -77,9 +77,7 @@ impl MIDITrackParser {
                 // let vel = self.reader.read_byte().unwrap();
                 let (key, vel) = self.reader.read_u8x2().unwrap();
 
-                let un = self.unended_notes
-                    .entry(((key as usize) << 4) | channel as usize)
-                    .or_insert(VecDeque::new());
+                let un = &mut self.unended_notes[((key as usize) << 4) | channel as usize];
 
                 let note_evs_chn = &mut self.note_events;
 

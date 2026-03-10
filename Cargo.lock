@@ -26,6 +26,7 @@ dependencies = [
  "midir",
  "mlua",
  "num-traits",
+ "once_cell",
  "opener",
  "ordered-float 5.0.0",
  "png",

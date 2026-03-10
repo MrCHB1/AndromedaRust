@@ -1,7 +1,7 @@
 // houses all information such as notes, tempos, control/meta events, etc.
 // kinda like midi_file.rs but editable lol
 
-use crate::{editor::{tempo_map::TempoMap, util::tempo_as_bytes}, midi::{events::{meta_event::{MetaEvent, MetaEventType}}, midi_file::MIDIFile, midi_track::MIDITrack}};
+use crate::{editor::{tempo_map::TempoMap, util::tempo_as_bytes}, midi::{events::meta_event::{MetaEvent, MetaEventType}, midi_file::MIDIFile, midi_track::MIDITrack}, util::debugger::Debugger};
 use std::sync::{Arc, RwLock};
 
 pub struct ProjectInfo {
@@ -140,6 +140,6 @@ impl ProjectData {
             }
         }
 
-        println!("Using {} tracks", tracks.len());
+        Debugger::log(format!("Using {} tracks", tracks.len()));
     }
 }

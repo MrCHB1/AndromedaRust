@@ -84,6 +84,11 @@ impl Note {
     }
 
     #[inline(always)]
+    pub fn set_velocity(&mut self, velocity: u8) {
+        *self.velocity_mut() = velocity;
+    }
+
+    #[inline(always)]
     pub fn set_end(&mut self, end: MIDITick) {
         self.set_length(end - self.start());
     }
